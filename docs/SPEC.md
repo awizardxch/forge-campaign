@@ -18,7 +18,8 @@
 | Claims | **Pull, cumulative, at any time**, as Merkl does. Each root lists what a holder has earned so far; a claim pays the difference from what they already claimed |
 | Claim window | **Set by the creator at creation** and committed in the campaign id, so the terms are complete up front. It opens reclaiming; it does not close claiming |
 | Leftovers | From `end + claim_window`, the **creator may reclaim** everything not claimed: budget nobody earned plus earnings nobody claimed. **Holders can claim until the reclaim lands**: a 24 h window with no reclaim after 48 h still pays a late claimer |
-| Window bounds | Per distributor. **Testnet: from ~5 min** (16 blocks, 8-block disputes). **Production: likely 24 min** (77 blocks, 38-block ≈ 12 min disputes). Maximum **365 days**; both can change for a future distributor |
+| Campaign length | Per distributor. **Testnet: from ~5 min** (16 blocks, 8-block disputes). **Production: likely from 24 min** (77 blocks, 38-block ≈ 12 min disputes). Maximum **365 days**. Any of these can change for a future distributor |
+| Claim frequency | **Any interval within the campaign**, at the holder's discretion: every root, once at the end, or anything between. Each claim costs the holder a network fee, so how often is their call. A new root becomes claimable every `dispute_blocks` at most |
 | Assets | **Any CAT that trades in a Forge registry pool**, plus XCH, for the reward asset and for a `CAT_HOLD` target. The pool's oracle gives every such asset an on-chain price. An `LP_HOLD` target must be a registered pool |
 | Who runs it | The puzzle is on chain and permissionless to read and claim from. **Creation needs the distributor's router key**: ours now, so we only score and monitor campaigns our router created. Later, anyone can launch their own distributor with their own router, engine and front end |
 
@@ -111,11 +112,13 @@ budget = amount − fee                  (what holders can earn)
 by both `model.py` and the `create` leaf, are:
 - `amount > 0` and `budget > 0`;
 - `end > start` and `start >= h_create` (no retroactive campaigns);
-- `end − start <= max_duration`;
+- `min_campaign_length <= end − start <= max_campaign_length` (testnet from 16 blocks ≈ 5 min, production
+  from 77 ≈ 24 min, up to 365 days);
 - `time_bps + fees_bps = 10000`, and `CAT_HOLD ⇒ fees_bps = 0`;
 - `blacklist ∩ whitelist = ∅`;
 - `fee_bps` equals the distributor's;
-- `min_claim_window <= claim_window <= max_claim_window` (distributor bounds; default 12 h to 365 days).
+- `2 · dispute_blocks <= claim_window <= max_campaign_length`. The floor is technical only (§5.5); the creator
+  otherwise picks freely.
 
 The full `params` value sits in the `create` solution, so it is on chain and recoverable from the hash.
 
@@ -164,7 +167,7 @@ pushed through in `tests/test_distributor.py`.
 
 ```
 Config  = { distributor_id, reward_asset, treasury_ph, fee_bps = 300, guardian_ph, router_ph,
-            dispute_blocks, min_claim_window, max_claim_window, max_campaigns, max_duration }
+            dispute_blocks, min_campaign_length, max_campaign_length, max_campaigns }
 State   = { engine_ph, campaigns: List<Campaign>, active: Root?, pending: Root?,
             fees_owed, reserve_total }
 Campaign (in state) = (campaign_id, creator_ph, budget, start, end, claim_window, claimed)
@@ -253,19 +256,29 @@ guaranteed to have after the end. For each campaign:
   lands first wins, and the other is rebuilt against the new state (the late claim then finds the
   campaign gone; the late reclaim pays out less).
 
-The distributor bounds the window. `min_claim_window` must be at least twice `dispute_blocks`, so the
-root covering `end` can be posted and clear its dispute window before reclaiming opens.
-`max_claim_window` is 365 days.
+The claim window's only floor is technical: at least twice `dispute_blocks`, so the root covering `end`
+can be posted and clear its dispute window before reclaiming opens. Its ceiling is the longest campaign,
+365 days.
 
-| Preset (`Config` in `distributor.py`) | `dispute_blocks` | `min_claim_window` |
-|---|---|---|
-| `Config.testnet(...)` | 8 (≈ 2.5 min) | 16 (≈ 5 min) |
-| `Config(...)`, production | 38 (≈ 12 min) | 77 (≈ 24 min) |
+### 5.6 Campaign length and claim cadence
 
-A 24-minute window is short, and the operator's posting cadence has to fit it. The engine must post
-the root covering `end` within a few blocks of `end`, and the guardian's watcher must veto within the
-dispute window. Both are bots, not people. A 12-minute dispute window is too short for a human
-guardian to react to; the automated watcher is what makes it safe.
+The distributor bounds **campaign length** (`end − start`):
+
+| Preset (`Config` in `distributor.py`) | `dispute_blocks` | `min_campaign_length` | `max_campaign_length` |
+|---|---|---|---|
+| `Config.testnet(...)` | 8 (≈ 2.5 min) | 16 (≈ 5 min) | 365 days |
+| `Config(...)`, production | 38 (≈ 12 min) | 77 (≈ 24 min) | 365 days |
+
+Within a campaign, holders claim **at any interval they choose**. The engine posts a root as soon as the
+previous one is active, so a fresh root becomes claimable about every `dispute_blocks`, and a holder can
+claim after each one, once at the end, or anything between. Each claim costs the holder a network fee;
+whether frequent small claims are worth it is up to them. The interface shows the claimable amount next
+to the estimated fee.
+
+A 24-minute campaign is short, and the operator's cadence has to fit it. The engine must post the root
+covering `end` within a few blocks of `end`, and the guardian's watcher must veto within the dispute
+window. Both are bots, not people: a 12-minute dispute window is too short for a human guardian to react
+to, and the automated watcher is what makes it safe.
 
 `budget − claimed` covers both kinds of leftover: budget **nobody earned** (stretches with no eligible
 holder, floor dust) and earnings **nobody claimed**. The operator's duty is to post the root covering
@@ -402,10 +415,9 @@ A **🔥 Campaigns** tab in forge-ui, or on whichever site this lands, with four
 1. **Opportunities.** Every pool and CAT with a live campaign: APR (TWAP-valued), daily emission, time
    left, and a "provide liquidity" deep link into the existing add flow.
 2. **Create.** Pick a target (pool search, or a CAT from the Forge registry), the reward asset (any
-   registry CAT or XCH; anything else is refused at quote time by `flpcr/router.py`), the deposit, the duration
-   (with the date shown, at about 18.75 s per block) and the weighting slider (time ↔ fees, `LP_HOLD`
-   only), and the **claim window** (presets 24 min, 24 h, 7 days, 30 days, or custom; testnet allows
-   down to ~5 min). Advanced: min balance and
+   registry CAT or XCH; anything else is refused at quote time by `flpcr/router.py`), the deposit, the **campaign
+   length** (from 24 min, testnet ~5 min, up to 365 days; dates shown at about 18.75 s per block) and the weighting slider (time ↔ fees, `LP_HOLD`
+   only), and the **claim window** after the end (presets 24 h, 7 days, 30 days, or custom). Advanced: min balance and
    the lists. The preview shows the **3% fee**, the resulting budget, per-day emission, an estimated APR
    at current TVL, and the date from which leftovers can be reclaimed. Signing is one Sage offer: give `amount`, request nothing. The responder builds the `create`
    spend around it, the same keyless pattern as Forge's offer lane (`forge_v14_offer.py`).
@@ -435,8 +447,8 @@ Spellbook / agent API: `flpcr.quote`, `flpcr.create`, `flpcr.rewards`, `flpcr.cl
 
 ## 11. Open questions
 
-Decided so far: reward assets (any CAT in a Forge registry pool), window bounds (testnet ~5 min,
-production likely 24 min, max 365 days), who operates (our router key now, others' later), puzzle
+Decided so far: reward assets (any CAT in a Forge registry pool), campaign length (testnet from ~5 min,
+production likely from 24 min, max 365 days), claims at any interval at the holder's discretion, who operates (our router key now, others' later), puzzle
 location (this repo, `contracts/`; `forge-puzzles` stays specific to the n-asset AMM).
 
 1. **Minimum reward rate.** Merkl refuses dust campaigns with a per-token minimum per hour. Do we

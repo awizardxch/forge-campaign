@@ -39,29 +39,34 @@ class Config:
     # front end; a campaign never sits in a distributor nobody scores.
     router_ph: bytes
     fee_bps: int = DEFAULT_FEE_BPS
-    # Production defaults. A 24 min minimum window needs the dispute window
-    # well inside it, so the guardian's watcher must answer within ~12 min.
+    # Production defaults. A root becomes claimable dispute_blocks after it is
+    # posted, so this is also how fresh mid-campaign claims can be.
     dispute_blocks: int = 38  # ~12 min
-    # Bounds on the creator's claim window. The floor leaves room for the root
-    # covering `end` to be posted and clear its dispute window before a
-    # reclaim can open.
-    min_claim_window: int = 77  # ~24 min
-    max_claim_window: int = 365 * BLOCKS_PER_DAY
+    # Bounds on campaign length (end - start). Within a campaign, holders
+    # claim at whatever interval they like; each claim costs them a network
+    # fee, so how often is their call.
+    min_campaign_length: int = 77  # ~24 min
+    max_campaign_length: int = 365 * BLOCKS_PER_DAY
     max_campaigns: int = 32
 
     def __post_init__(self) -> None:
         if self.dispute_blocks <= 0:
             raise ValueError("dispute_blocks must be positive")
-        if self.min_claim_window < 2 * self.dispute_blocks:
-            raise ValueError("min_claim_window must be at least twice dispute_blocks")
-        if self.max_claim_window < self.min_claim_window:
-            raise ValueError("max_claim_window below min_claim_window")
+        if not 0 < self.min_campaign_length <= self.max_campaign_length:
+            raise ValueError("bad campaign length bounds")
+
+    @property
+    def min_claim_window(self) -> int:
+        """The creator's claim window has only a technical floor: room for the
+        root covering `end` to be posted and clear its dispute window before
+        reclaiming opens. Its ceiling is the longest campaign."""
+        return 2 * self.dispute_blocks
 
     @classmethod
     def testnet(cls, *args, **kwargs) -> "Config":
-        """Short clocks for testing: ~2.5 min disputes, claim windows from ~5 min."""
+        """Short clocks for testing: ~2.5 min disputes, campaigns from ~5 min."""
         kwargs.setdefault("dispute_blocks", 8)
-        kwargs.setdefault("min_claim_window", 16)
+        kwargs.setdefault("min_campaign_length", 16)
         return cls(*args, **kwargs)
 
 
@@ -123,7 +128,9 @@ class Distributor:
             raise Refused("fee does not match the distributor's")
         if campaign.start < h:
             raise Refused("campaign would start in the past")
-        if not c.min_claim_window <= campaign.claim_window <= c.max_claim_window:
+        if not c.min_campaign_length <= campaign.length <= c.max_campaign_length:
+            raise Refused("campaign length out of bounds")
+        if not c.min_claim_window <= campaign.claim_window <= c.max_campaign_length:
             raise Refused("claim window out of bounds")
         if campaign.id in self.campaigns:
             raise Refused("campaign id already exists")

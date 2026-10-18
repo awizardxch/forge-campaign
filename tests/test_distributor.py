@@ -24,7 +24,7 @@ WINDOW = 1000
 
 
 def setup(deposit=1_000_000, start=100, end=200):
-    cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, ROUTER, dispute_blocks=DISPUTE, min_claim_window=2 * DISPUTE)
+    cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, ROUTER, dispute_blocks=DISPUTE)
     d = Distributor(cfg, ENGINE)
     c = Campaign(DIST, CREATOR, REWARD, deposit, start, end, Kind.LP_HOLD, POOL, claim_window=WINDOW)
     src = FixtureSource(lp_assets={POOL: LP}, events={LP: [HolderEvent(0, ALICE, 3), HolderEvent(0, BOB, 1)]})
@@ -95,7 +95,7 @@ class TestLifecycle(unittest.TestCase):
 
     def test_unearned_budget_also_goes_back(self):
         # Nobody holds LP for the first half: that half was never earned.
-        cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, ROUTER, fee_bps=0, dispute_blocks=DISPUTE, min_claim_window=2 * DISPUTE)
+        cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, ROUTER, fee_bps=0, dispute_blocks=DISPUTE)
         d = Distributor(cfg, ENGINE)
         c = Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL, fee_bps=0, claim_window=WINDOW)
         src = FixtureSource(lp_assets={POOL: LP}, events={LP: [HolderEvent(150, ALICE, 1)]})
@@ -107,21 +107,39 @@ class TestLifecycle(unittest.TestCase):
 
 
 class TestConfig(unittest.TestCase):
-    def test_testnet_allows_minute_scale_windows(self):
+    def test_testnet_allows_minute_scale_campaigns(self):
         cfg = Config.testnet(DIST, REWARD, TREASURY, GUARDIAN, ROUTER)
-        self.assertEqual((cfg.dispute_blocks, cfg.min_claim_window), (8, 16))  # ~2.5 min, ~5 min
+        self.assertEqual((cfg.dispute_blocks, cfg.min_campaign_length), (8, 16))  # ~2.5 min, ~5 min
         d = Distributor(cfg, ENGINE)
-        c = Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL, claim_window=16)
-        d.create(50, ROUTER, c, 1000)
+        d.create(50, ROUTER, Campaign(DIST, CREATOR, REWARD, 1000, 100, 116, Kind.LP_HOLD, POOL, claim_window=16), 1000)
+        with self.assertRaises(Refused):
+            d.create(50, ROUTER, Campaign(DIST, CREATOR, REWARD, 1000, 100, 115, Kind.LP_HOLD, POOL, claim_window=16), 1000)
 
     def test_production_defaults(self):
         cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, ROUTER)
-        self.assertEqual((cfg.fee_bps, cfg.dispute_blocks, cfg.min_claim_window), (300, 38, 77))
-        self.assertEqual(cfg.max_claim_window, 365 * 4608)
+        self.assertEqual((cfg.fee_bps, cfg.dispute_blocks, cfg.min_campaign_length), (300, 38, 77))
+        self.assertEqual(cfg.max_campaign_length, 365 * 4608)
+        self.assertEqual(cfg.min_claim_window, 76)
+        d = Distributor(cfg, ENGINE)
+        with self.assertRaises(Refused):
+            d.create(50, ROUTER, Campaign(DIST, CREATOR, REWARD, 1000, 100, 100 + 365 * 4608 + 1, Kind.LP_HOLD, POOL), 1000)
+        d.create(50, ROUTER, Campaign(DIST, CREATOR, REWARD, 1000, 100, 177, Kind.LP_HOLD, POOL), 1000)
 
-    def test_dispute_must_fit_inside_the_minimum_window(self):
-        with self.assertRaises(ValueError):
-            Config(DIST, REWARD, TREASURY, GUARDIAN, ROUTER, dispute_blocks=40, min_claim_window=77)
+    def test_claims_at_any_interval_within_the_campaign(self):
+        # Roots every 10 blocks; Alice claims after each one, Bob only once at the end.
+        cfg = Config.testnet(DIST, REWARD, TREASURY, GUARDIAN, ROUTER, fee_bps=0)
+        d = Distributor(cfg, ENGINE)
+        c = Campaign(DIST, CREATOR, REWARD, 1000, 100, 150, Kind.LP_HOLD, POOL, fee_bps=0, claim_window=16)
+        src = FixtureSource(lp_assets={POOL: LP}, events={LP: [HolderEvent(0, ALICE, 1), HolderEvent(0, BOB, 1)]})
+        d.create(50, ROUTER, c, 1000)
+        state, alice = EngineState(DIST, height=100), 0
+        for end in range(110, 151, 10):
+            state, root = run_epoch(state, [c], src, end)
+            post(d, root, end + cfg.dispute_blocks)
+            alice += claim(d, root, end + 2 * cfg.dispute_blocks, ALICE, c)[1]
+        self.assertEqual(alice, 500)
+        self.assertEqual(claim(d, root, 200, BOB, c), (BOB, 500))
+        d.check_invariant()
 
 
 class TestRefusals(unittest.TestCase):

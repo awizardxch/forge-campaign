@@ -44,9 +44,8 @@ claim slot  = slot(distributor_launcher, nonce 1)(sha256tree(slot_value))
 | `guardian_ph` | intended: a Forge multisig safe's puzzle hash |
 | `router_ph` | the operator's router key; `create` requires its message |
 | `dispute_blocks` | production 38 (≈ 12 min), testnet 8; `> 0` |
-| `min_claim_window`, `max_claim_window` | bounds on the creator's choice: production 77 (≈ 24 min), testnet 16 (≈ 5 min); max 365 days. The floor must be `>= 2 * dispute_blocks` |
+| `min_campaign_length`, `max_campaign_length` | bounds on `end − start`: production 77 (≈ 24 min), testnet 16 (≈ 5 min); max 365 days |
 | `max_campaigns` | e.g. 32; bounds the state hashed every spend |
-| `max_duration` | e.g. 4,608 × 365 blocks |
 
 ## State
 
@@ -87,9 +86,9 @@ them.
    `fee_bps` comes from config, not the solution.
 2. Check the struct:
    - `amount > 0`, `fee = amount * fee_bps / 10000`, `budget = amount − fee > 0`;
-   - `start >= h`, `start < end <= start + max_duration`, `kind ∈ {1, 2}`;
+   - `start >= h`, `min_campaign_length <= end − start <= max_campaign_length`, `kind ∈ {1, 2}`;
    - `time_bps + fees_bps == 10000`, and `kind == 2 ⇒ fees_bps == 0`;
-   - `min_claim_window <= claim_window <= max_claim_window`;
+   - `2 * dispute_blocks <= claim_window <= max_campaign_length`;
    - `len(campaigns) < max_campaigns`, and `id` not already present.
 
    The params list shape is checked; its contents are not (the engine interprets them).
@@ -164,7 +163,7 @@ distributor per asset per operator.
 `register` rebuilds the distributor's full puzzle hash from config, so a registry entry **is** a known-good
 config. `RegistryConstants` pins:
 - `fee_bps = 300`;
-- `dispute_blocks > 0` and `min_claim_window >= 2 * dispute_blocks`, and the 365-day ceiling;
+- `dispute_blocks > 0`, `0 < min_campaign_length <= max_campaign_length`, and the 365-day ceiling;
 - `treasury_ph`.
 
 The launcher creates the 0-mojo reserve and the two claim-slot sentinels. `register` proves both, which
