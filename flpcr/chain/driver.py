@@ -24,12 +24,17 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from chia_wallet_sdk import (
+    Cat,
+    CatInfo,
+    CatSpend,
     Clvm,
     Coin,
     CoinSpend,
     Constants,
     Program,
-    Simulator,
+    Spend,
+    cat_puzzle_hash,
+    curry_tree_hash,
     singleton_struct_hash,
 )
 
@@ -68,7 +73,7 @@ class Puzzles:
 
 @dataclass(frozen=True)
 class DistributorConfig:
-    reward_asset: bytes  # XCH (zero) only in this driver; CAT reserves are next
+    reward_asset: bytes  # bytes(32) for XCH, else the CAT asset id
     fee_bps: int
     treasury_ph: bytes
     guardian_ph: bytes
@@ -115,6 +120,10 @@ class Distributor:
             [c.atom(Constants.singleton_top_layer_v1_1_hash()), c.atom(self.struct_hash), to_program(c, RESERVE_NONCE)]
         )
         self.reserve_ph = self.reserve_puzzle.tree_hash()
+        self.is_cat = cfg.reward_asset != bytes(32)
+        self.reserve_full_ph = (
+            cat_puzzle_hash(cfg.reward_asset, self.reserve_ph) if self.is_cat else self.reserve_ph
+        )
 
         self.slot_1st = puzzles.mods["slot"].curry(
             [to_program(c, (Constants.singleton_top_layer_v1_1_hash(), self.struct_hash)), to_program(c, SLOT_NONCE)]
@@ -142,7 +151,7 @@ class Distributor:
         finalizer_1st = puzzles.mods["reserve_finalizer"].curry(
             [
                 c.atom(puzzles.hash("action")),
-                c.atom(self.reserve_ph),  # XCH reserve: full puzzle hash is the inner one
+                c.atom(self.reserve_full_ph),
                 c.atom(self.reserve_ph),
                 to_program(c, 2),  # amount = (f State)
                 c.atom(launcher_id),  # hint
@@ -156,7 +165,8 @@ class Distributor:
         )
         self.coin: Optional[Coin] = None
         self.lineage: Optional[list] = None
-        self.reserve_coin: Optional[Coin] = None
+        self.reserve_coin: Optional[Coin] = None  # the full coin, XCH or CAT
+        self.reserve_cat: Optional[Cat] = None  # set for a CAT reserve
         self.slots: Dict[bytes, SlotRecord] = {}
 
     # --- puzzles -------------------------------------------------------------------
@@ -175,28 +185,39 @@ class Distributor:
 
     # --- launch ----------------------------------------------------------------------
 
-    def launch_spends(self, funding: Coin, funding_puzzle: Program) -> List[CoinSpend]:
-        """Funding coin (anyone-can-spend `(r 1)` style) creates the launcher and the
-        empty reserve; the launcher creates the eve singleton."""
+    def launch_spends(self, funding: Coin, funding_puzzle: Program,
+                      seed_cat: Optional[Cat] = None, seed_puzzle: Optional[Program] = None) -> List[CoinSpend]:
+        """Funding coin (anyone-can-spend `(r 1)` style) creates the launcher; the
+        launcher creates the eve singleton. The empty reserve comes from the
+        funding coin for XCH, or for a CAT from `seed_cat`, a coin of the reward
+        CAT whose inner puzzle is `seed_puzzle` (its value goes back to its
+        owner; only a 0-mojo reserve child is added)."""
         c = self.clvm
         launcher_coin = Coin(funding.coin_id(), Constants.singleton_launcher_hash(), 1)
         assert launcher_coin.coin_id() == self.launcher_id
         eve_ph = self.full_puzzle(self.state).tree_hash()
-        funding_solution = to_program(
-            c,
-            [
-                [51, Constants.singleton_launcher_hash(), 1],
-                [51, self.reserve_ph, 0],
-            ],
-        )
+        funding_conditions = [[51, Constants.singleton_launcher_hash(), 1]]
+        if not self.is_cat:
+            funding_conditions.append([51, self.reserve_ph, 0])
         launcher_solution = to_program(c, [eve_ph, 1, None])
         self.coin = Coin(self.launcher_id, eve_ph, 1)
         self.lineage = [funding.coin_id(), 1]
-        self.reserve_coin = Coin(funding.coin_id(), self.reserve_ph, 0)
-        return [
-            CoinSpend(funding, funding_puzzle.serialize(), funding_solution.serialize()),
+        spends = [
+            CoinSpend(funding, funding_puzzle.serialize(), to_program(c, funding_conditions).serialize()),
             CoinSpend(launcher_coin, self.p.launcher.serialize(), launcher_solution.serialize()),
         ]
+        if not self.is_cat:
+            self.reserve_coin = Coin(funding.coin_id(), self.reserve_ph, 0)
+            return spends
+        if seed_cat is None or seed_puzzle is None:
+            raise ValueError("a CAT distributor needs a seed coin of the reward CAT")
+        owner = seed_cat.info.p2_puzzle_hash
+        seed_conditions = [[51, self.reserve_ph, 0, [self.reserve_ph]], [51, owner, seed_cat.coin.amount, [owner]]]
+        c.spend_cats([CatSpend(seed_cat, Spend(seed_puzzle, to_program(c, seed_conditions)))])
+        spends.extend(c.coin_spends())
+        self.reserve_cat = seed_cat.child(self.reserve_ph, 0)
+        self.reserve_coin = self.reserve_cat.coin
+        return spends
 
     # --- running leaves locally ---------------------------------------------------------
 
@@ -214,7 +235,10 @@ class Distributor:
 
     # --- building a spend ------------------------------------------------------------------
 
-    def spend(self, actions: Sequence[Action]) -> Tuple[List[CoinSpend], Program, List[List[Program]]]:
+    def spend(self, actions: Sequence[Action], cat_spends: Sequence[CatSpend] = ()
+              ) -> Tuple[List[CoinSpend], Program, List[List[Program]]]:
+        """`cat_spends`: other coins of the reward CAT that must sit in the
+        reserve's CAT ring, i.e. a creator's deposit."""
         if not actions:
             raise ValueError("a spend runs at least one action")
         c = self.clvm
@@ -252,7 +276,13 @@ class Distributor:
         recreate = to_program(c, [51, self.reserve_ph, new_reserve, [self.reserve_ph]])
         delegated = c.pair(c.atom(b"\x01"), c.list([recreate, *tagged]))
         reserve_solution = to_program(c, [inner_ph, delegated])
-        spends.append(CoinSpend(self.reserve_coin, self.reserve_puzzle.serialize(), reserve_solution.serialize()))
+        if self.is_cat:
+            c.spend_cats([CatSpend(self.reserve_cat, Spend(self.reserve_puzzle, reserve_solution)), *cat_spends])
+            spends.extend(c.coin_spends())
+        else:
+            if cat_spends:
+                raise ValueError("an XCH distributor takes no CAT spends")
+            spends.append(CoinSpend(self.reserve_coin, self.reserve_puzzle.serialize(), reserve_solution.serialize()))
 
         # Slots the leaves spend: every SEND_MESSAGE mode 18 to a slot puzzle hash.
         by_ph = {self.slot_ph(rec.value(key)): (key, rec) for key, rec in self.slots.items()}
@@ -274,8 +304,6 @@ class Distributor:
         return spends, new_state, per_action
 
     def full_puzzle_hash_for_inner(self, inner_ph: bytes) -> bytes:
-        from chia_wallet_sdk import curry_tree_hash, tree_hash_atom
-
         return curry_tree_hash(Constants.singleton_top_layer_v1_1_hash(), [self.singleton_struct.tree_hash(), inner_ph])
 
     def apply(self, new_state: Program, slot_updates: Dict[bytes, Optional[Tuple[int, bytes, bytes]]]) -> None:
@@ -291,7 +319,12 @@ class Distributor:
         self.lineage = [old_coin.parent_coin_info, old_inner_ph, 1]
         self.state = new_state
         self.coin = Coin(old_coin.coin_id(), self.full_puzzle(new_state).tree_hash(), 1)
-        self.reserve_coin = Coin(self.reserve_coin.coin_id(), self.reserve_ph, to_int(new_state.first()))
+        new_reserve = to_int(new_state.first())
+        if self.is_cat:
+            self.reserve_cat = self.reserve_cat.child(self.reserve_ph, new_reserve)
+            self.reserve_coin = self.reserve_cat.coin
+        else:
+            self.reserve_coin = Coin(self.reserve_coin.coin_id(), self.reserve_ph, new_reserve)
 
     # --- reading state --------------------------------------------------------------------
 

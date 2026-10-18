@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Sequence
 
-from chia_wallet_sdk import Clvm, Coin, Constants, Simulator
+from chia_wallet_sdk import Cat, CatInfo, CatSpend, Clvm, Coin, Constants, LineageProof, Simulator, Spend, cat_puzzle_hash
 
 from ..clvm import sha256tree
 from ..engine import Root
@@ -29,14 +29,17 @@ from .driver import (
 
 class SimWorld:
     def __init__(self, dispute_blocks: int = 8, min_campaign_length: int = 16,
-                 max_campaign_length: int = 365 * 4608, fee_bps: int = 300, max_campaigns: int = 32):
+                 max_campaign_length: int = 365 * 4608, fee_bps: int = 300, max_campaigns: int = 32,
+                 reward_asset: bytes = bytes(32)):
+        """`reward_asset` bytes(32) pays rewards in XCH; anything else is a CAT
+        asset id, minted here with a fabricated lineage (test setup only)."""
         self.clvm = Clvm()
         self.sim = Simulator()
         self.puzzles = Puzzles(self.clvm)
         self.keys = Keys(self.clvm)
         k = self.keys
         self.cfg = DistributorConfig(
-            reward_asset=bytes(32),
+            reward_asset=reward_asset,
             fee_bps=fee_bps,
             treasury_ph=k.ph("treasury"),
             guardian_ph=k.ph("guardian"),
@@ -50,7 +53,10 @@ class SimWorld:
         fund = self.sim.new_coin(k.ph("deployer"), 1)
         self.launcher_id = Coin(fund.coin_id(), Constants.singleton_launcher_hash(), 1).coin_id()
         self.d = Distributor(self.puzzles, self.cfg, self.launcher_id)
-        self.sim.spend_coins(self.d.launch_spends(fund, k.puzzle("deployer")), [])
+        seed = self.mint_cat("deployer", 1) if self.d.is_cat else None
+        self.sim.spend_coins(
+            self.d.launch_spends(fund, k.puzzle("deployer"), seed, k.puzzle("deployer") if seed else None), []
+        )
         self.push([Action("init", [self.h])], slot_updates={LOW: (0, LOW, HIGH), HIGH: (0, LOW, HIGH)})
 
     # --- plumbing ---------------------------------------------------------------------
@@ -70,16 +76,31 @@ class SimWorld:
         coin = self.sim.new_coin(ph, 1)
         return [self.keys.spend(coin, label, [send_message_condition(message, self.d.coin.coin_id()), [51, ph, 1]])]
 
-    def push(self, actions: Sequence[Action], extra_builders=(), slot_updates: Optional[Dict] = None):
-        spends, new_state, per_action = self.d.spend(actions)
+    def push(self, actions: Sequence[Action], extra_builders=(), slot_updates: Optional[Dict] = None,
+             cat_spends=()):
+        spends, new_state, per_action = self.d.spend(actions, cat_spends)
         for build in extra_builders:
             spends.extend(build())
         self.sim.spend_coins(spends, [])
         self.d.apply(new_state, slot_updates or {})
         return per_action
 
+    def mint_cat(self, label: str, amount: int) -> Cat:
+        """A coin of the reward CAT owned by `label`. The parent never existed;
+        consensus only checks the lineage arithmetic, which is all a test needs."""
+        asset = self.cfg.reward_asset
+        ph = self.keys.ph(label)
+        info = CatInfo(asset, None, ph)
+        fake_grandparent = self.clvm.atom(label.encode() + amount.to_bytes(8, "big")).tree_hash()
+        parent = Coin(fake_grandparent, info.puzzle_hash(), amount)
+        coin = Coin(parent.coin_id(), info.puzzle_hash(), amount)
+        self.sim.insert_coin(coin)
+        return Cat(coin, LineageProof(fake_grandparent, ph, amount), info)
+
     def balance(self, label_or_ph) -> int:
         ph = label_or_ph if isinstance(label_or_ph, bytes) else self.keys.ph(label_or_ph)
+        if self.d.is_cat:
+            ph = cat_puzzle_hash(self.cfg.reward_asset, ph)
         return sum(c.amount for c in self.sim.unspent_coins(ph, False))
 
     # --- leaves -------------------------------------------------------------------------
@@ -95,6 +116,13 @@ class SimWorld:
 
         def router_msg():
             return self.message_from(router, b"c" + campaign.id)
+
+        if self.d.is_cat:
+            # The deposit sits in the reserve's CAT ring and creates nothing:
+            # its value flows into the recreated reserve.
+            cat = self.mint_cat(creator, deposit)
+            spend = CatSpend(cat, Spend(self.keys.puzzle(creator), self.clvm.nil()))
+            return self.push([Action("create", sol)], [router_msg], cat_spends=[spend])
 
         def deposit_coin():
             coin = self.sim.new_coin(self.keys.ph(creator), deposit)

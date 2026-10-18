@@ -19,6 +19,7 @@ from flpcr import EngineState, FixtureSource, HolderEvent, Kind, run_epoch
 
 POOL, LP = b"\xb0" * 32, b"\x1b" * 32
 WINDOW = 16
+CAT_ASSET = b"\xa5" * 32  # a reward CAT; every test class also runs with it below
 
 
 def refused(test, fn, *args, **kwargs):
@@ -28,8 +29,10 @@ def refused(test, fn, *args, **kwargs):
 
 @unittest.skipUnless(HAVE_CHAIN, "chia-wallet-sdk or compiled puzzles missing")
 class ChainTest(unittest.TestCase):
+    ASSET = bytes(32)  # XCH
+
     def setUp(self):
-        self.w = SimWorld()
+        self.w = SimWorld(reward_asset=self.ASSET)
         w = self.w
         w.advance_to(w.h + 3)
         self.camp = w.campaign("creator", 1_000_000, w.h + 2, w.h + 42, Kind.LP_HOLD, POOL, claim_window=WINDOW)
@@ -224,6 +227,22 @@ class TestClaimRefusals(ChainTest):
         w, c = self.w, self.camp
         self.assertEqual(w.claim(self.r, c.id, "bob"), 242_500)
         refused(self, w.claim, self.r, c.id, "bob")
+
+
+class TestLifecycleCat(TestLifecycle):
+    ASSET = CAT_ASSET
+
+
+class TestCreateRefusalsCat(TestCreateRefusals):
+    ASSET = CAT_ASSET
+
+
+class TestRootRefusalsCat(TestRootRefusals):
+    ASSET = CAT_ASSET
+
+
+class TestClaimRefusalsCat(TestClaimRefusals):
+    ASSET = CAT_ASSET
 
 
 if __name__ == "__main__":

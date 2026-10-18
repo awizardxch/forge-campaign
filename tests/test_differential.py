@@ -25,7 +25,8 @@ HOLDERS = ["h1", "h2", "h3", "h4", "h5"]
 class TestModelAndChainAgree(unittest.TestCase):
     def run_scenario(self, seed: int):
         rng = random.Random(seed)
-        w = SimWorld()
+        # Odd seeds pay rewards in a CAT, even seeds in XCH.
+        w = SimWorld(reward_asset=b"\xa5" * 32 if seed % 2 else bytes(32))
         k = w.keys
         model = Distributor(
             Config(w.launcher_id, w.cfg.reward_asset, w.cfg.treasury_ph, w.cfg.guardian_ph, w.cfg.router_ph,
