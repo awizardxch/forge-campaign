@@ -37,6 +37,12 @@ class Source(Protocol):
     def fee_events(self, pool_launcher: bytes, start: int, end: int) -> List[Tuple[int, int]]:
         """(height, weight) for each fee-paying action of the pool in [start, end)."""
 
+    def nft_events(self, collection_id: bytes, before: int) -> List[HolderEvent]:
+        """Every change in how many NFTs of a collection each owner holds, at
+        heights < `before`: +1 when an NFT of the collection arrives at an owner
+        puzzle hash (the NFT ownership layer's inner puzzle, as hinted), -1 when
+        it leaves. Collection = NFTs minted by the DID with this launcher id."""
+
     def excluded(self, asset_id: bytes) -> Set[bytes]:
         """Puzzle hashes that hold `asset_id` but are never anyone's position:
         pool reserves, OFFER_MOD settlement coins, the zero-hash burn (the
@@ -54,6 +60,7 @@ class FixtureSource:
     fees: Dict[bytes, List[Tuple[int, int]]] = field(default_factory=dict)
     exclusions: Dict[bytes, Set[bytes]] = field(default_factory=dict)
     wrappers: Dict[bytes, Dict[bytes, bytes]] = field(default_factory=dict)
+    nfts: Dict[bytes, List[HolderEvent]] = field(default_factory=dict)
 
     def lp_asset(self, pool_launcher: bytes) -> bytes:
         return self.lp_assets[pool_launcher]
@@ -66,6 +73,12 @@ class FixtureSource:
 
     def fee_events(self, pool_launcher: bytes, start: int, end: int) -> List[Tuple[int, int]]:
         return sorted((h, w) for h, w in self.fees.get(pool_launcher, []) if start <= h < end)
+
+    def nft_events(self, collection_id: bytes, before: int) -> List[HolderEvent]:
+        return sorted(
+            (e for e in self.nfts.get(collection_id, []) if e.height < before),
+            key=lambda e: e.height,
+        )
 
     def excluded(self, asset_id: bytes) -> Set[bytes]:
         return set(self.exclusions.get(asset_id, set()))
@@ -86,6 +99,10 @@ class FixtureSource:
             exclusions={h(k): {h(x) for x in v} for k, v in data.get("exclusions", {}).items()},
             wrappers={
                 h(k): {h(a): h(b) for a, b in v.items()} for k, v in data.get("wrappers", {}).items()
+            },
+            nfts={
+                h(coll): [HolderEvent(e[0], h(e[1]), e[2]) for e in evs]
+                for coll, evs in data.get("nfts", {}).items()
             },
         )
 

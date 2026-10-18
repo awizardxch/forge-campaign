@@ -15,8 +15,12 @@ import sys
 
 from .engine import EngineState, run_epoch
 from .manifest import manifest_hash, root_to_json, state_from_json, state_to_json
-from .model import Campaign, Kind, Params
+from .model import Boost, Campaign, Holding, Kind, Params, Requirement
 from .sources import FixtureSource
+
+
+def requirement_from_json(r: dict) -> Requirement:
+    return Requirement(Holding[r["holding"]], bytes.fromhex(r["asset"]), r.get("min_count", 1))
 
 
 def campaign_from_json(d: dict) -> Campaign:
@@ -38,6 +42,9 @@ def campaign_from_json(d: dict) -> Campaign:
             blacklist=frozenset(h(x) for x in p.get("blacklist", [])),
             whitelist=frozenset(h(x) for x in p.get("whitelist", [])),
             forward=p.get("forward", True),
+            gates=tuple(requirement_from_json(g) for g in p.get("gates", [])),
+            boosts=tuple(Boost(requirement_from_json(b), b["bps"]) for b in p.get("boosts", [])),
+            boost_cap_bps=p.get("boost_cap_bps", 25_000),
         ),
         nonce=d.get("nonce", 0),
         **{k: d[k] for k in ("fee_bps", "claim_window") if k in d},

@@ -109,6 +109,36 @@ class TestLifecycle(ChainTest):
             self.assertEqual(st["reserve"], owed + st["fees_owed"])
             self.assertEqual(w.reserve_on_chain(), st["reserve"])
 
+    def test_wizard_gated_and_boosted_campaign(self):
+        """Gates and boosts live in the params the campaign id commits to; the
+        puzzle reads only the first two fields, so a gated campaign creates and
+        pays like any other, with the engine's split."""
+        from flpcr import Params
+        from flpcr.model import Boost, Holding, Requirement
+
+        w = self.w
+        wizards, spell = b"\x33" * 32, b"\x5e" * 32
+        params = Params(
+            gates=(Requirement(Holding.NFT, wizards),),
+            boosts=(Boost(Requirement(Holding.CAT, spell, 500), 10000),),
+        )
+        c = w.campaign("creator", 1_000_000, w.h + 2, w.h + 42, Kind.LP_HOLD, POOL, claim_window=WINDOW,
+                       params=params)
+        carol = w.keys.ph("carol")
+        src = FixtureSource(
+            lp_assets={POOL: LP},
+            events={LP: [HolderEvent(0, self.alice, 1), HolderEvent(0, self.bob, 1), HolderEvent(0, carol, 1)],
+                    spell: [HolderEvent(0, self.alice, 500)]},
+            nfts={wizards: [HolderEvent(0, self.alice, 1), HolderEvent(0, self.bob, 1)]},
+        )
+        w.create(c, "creator")
+        w.advance_to(c.end + 1)
+        _, r = run_epoch(EngineState(w.launcher_id, height=c.start), [c], src, c.end)
+        self.active(r)
+        self.assertEqual(w.claim(r, c.id, "alice"), 646_666)  # 2x boost: 2/3 of 970,000
+        self.assertEqual(w.claim(r, c.id, "bob"), 323_333)
+        self.assertIsNone(r.claim_for(c.id, carol))  # no Wizard, no leaf
+
     def test_several_actions_in_one_spend(self):
         w, c = self.w, self.camp
         self.created()

@@ -3,10 +3,11 @@
 from .distributor import Config, Distributor, Refused
 from .engine import Claim, EngineState, Root, accrue, run_epoch
 from .merkle import build_tree, claim_leaf, root_from_proof
-from .model import DEFAULT_FEE_BPS, Campaign, Kind, Params
+from .model import DEFAULT_FEE_BPS, Boost, Campaign, Holding, Kind, Params, Requirement
 from .sources import FixtureSource, HolderEvent, Source
 
 __all__ = [
+    "Boost",
     "Campaign",
     "Claim",
     "Config",
@@ -14,10 +15,12 @@ __all__ = [
     "Distributor",
     "EngineState",
     "FixtureSource",
+    "Holding",
     "HolderEvent",
     "Kind",
     "Params",
     "Refused",
+    "Requirement",
     "Root",
     "Source",
     "accrue",

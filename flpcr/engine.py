@@ -20,7 +20,7 @@ from fractions import Fraction
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from .merkle import Proof, build_tree, claim_leaf
-from .model import BPS, Campaign, Kind
+from .model import BPS, Campaign, Holding, Kind, Requirement
 from .sources import HolderEvent, Source
 
 Balances = Dict[bytes, Fraction]
@@ -125,8 +125,53 @@ class Holdings:
         return dict(out)
 
 
-def _eligible(campaign: Campaign, balances: Balances) -> Balances:
-    return {ph: b for ph, b in balances.items() if campaign.eligible(ph, b)}
+class Requirements:
+    """Timelines for every gate and boost a campaign names, so a holder's
+    eligibility and multiplier can be read at any height."""
+
+    def __init__(self, campaign: Campaign, source: Source, before: int):
+        self.params = campaign.params
+        self.timelines: Dict[Tuple[int, bytes], Timeline] = {}
+        for req in [*self.params.gates, *(b.requirement for b in self.params.boosts)]:
+            key = (int(req.holding), req.asset)
+            if key in self.timelines:
+                continue
+            if req.holding == Holding.NFT:
+                events = source.nft_events(req.asset, before)
+            else:
+                events = source.holder_events(req.asset, before)
+            self.timelines[key] = Timeline(events)
+
+    def changes(self, start: int, end: int) -> List[int]:
+        hs = set()
+        for tl in self.timelines.values():
+            hs.update(tl.changes(start, end))
+        return sorted(hs)
+
+    def at(self, height: int) -> Dict[Tuple[int, bytes], Dict[bytes, int]]:
+        return {key: tl.at(height) for key, tl in self.timelines.items()}
+
+    def weights(self, campaign: Campaign, balances: Balances, height: int) -> Balances:
+        """Eligible holders' weights at `height`: balance, filtered by the
+        campaign's lists, minimum and gates, times the boost multiplier."""
+        p = self.params
+        held = self.at(height) if self.timelines else {}
+
+        def meets(req: Requirement, ph: bytes) -> bool:
+            return held[(int(req.holding), req.asset)].get(ph, 0) >= req.min_count
+
+        out: Balances = {}
+        for ph, b in balances.items():
+            if not campaign.eligible(ph, b):
+                continue
+            if not all(meets(g, ph) for g in p.gates):
+                continue
+            if p.boosts:
+                mult = p.multiplier_bps(tuple(meets(x.requirement, ph) for x in p.boosts))
+                out[ph] = b * Fraction(mult, BPS)
+            else:
+                out[ph] = b
+        return out
 
 
 # --- one campaign over one window ---------------------------------------------
@@ -140,15 +185,17 @@ def accrue(campaign: Campaign, source: Source, start: int, end: int) -> Balances
     lo, hi = window
     asset = source.lp_asset(campaign.target) if campaign.kind == Kind.LP_HOLD else campaign.target
     holdings = Holdings(source, asset, hi, campaign.params.forward)
+    reqs = Requirements(campaign, source, hi)
 
-    cuts = [lo, *holdings.changes(lo, hi), hi]
-    segments = [(a, b, _eligible(campaign, holdings.at(a))) for a, b in zip(cuts, cuts[1:])]
+    # A segment ends wherever a balance, a gate or a boost changes.
+    cuts = [lo, *sorted(set(holdings.changes(lo, hi)) | set(reqs.changes(lo, hi))), hi]
+    segments = [(a, b, reqs.weights(campaign, holdings.at(a), a)) for a, b in zip(cuts, cuts[1:])]
 
     p = campaign.params
     fee_points: List[Tuple[int, Balances]] = []
     if p.fees_bps:
         fee_points = [
-            (w, _eligible(campaign, holdings.at(h)))
+            (w, reqs.weights(campaign, holdings.at(h), h))
             for h, w in source.fee_events(campaign.target, lo, hi)
             if w > 0
         ]

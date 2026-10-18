@@ -45,6 +45,8 @@ Returns the struct from SPEC §3.1 in full (params expanded), plus:
       "claimed": "…",         // from the claim slot
       "claimable": "…",       // cumulative − claimed
       "pending": "…",         // extra in a root still in its dispute window
+      "qualifies": true,         // meets every gate right now
+      "multiplier_bps": 15000,   // current boost (10000 = none), capped by the campaign
       "reclaim_from": 4850000,   // claims stay open past this until the creator reclaims
       "reclaimed": false,
       "proof": { "path": 5, "hashes": ["…"] } }] }] }
@@ -65,6 +67,16 @@ The registry contents: per reward asset, the launcher, the config, and a summary
 
 Body: the campaign fields minus `distributor_id`, which is resolved from `reward_asset`. `claim_window`
 (blocks) is required; the distributor's bounds are returned in the error if it is out of range.
+Optional `params.gates` and `params.boosts`:
+
+```json
+"params": {
+  "gates":  [{ "holding": "NFT", "asset": "<minter DID launcher id>", "min_count": 1 }],
+  "boosts": [{ "holding": "NFT", "asset": "<minter DID>", "min_count": 3, "bps": 3000 },
+             { "holding": "CAT", "asset": "<asset id>", "min_count": 1000000, "bps": 2000 }],
+  "boost_cap_bps": 25000
+}
+```
 
 Returns:
 - the validated struct and `campaign_id`;

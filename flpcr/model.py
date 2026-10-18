@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import FrozenSet, Optional
+from typing import FrozenSet, Optional, Tuple
 
 from .clvm import sha256tree
 
@@ -25,6 +25,51 @@ class Kind(IntEnum):
     CAT_HOLD = 2
 
 
+class Holding(IntEnum):
+    # NFTs of one collection, counted per holder. `asset` is the collection
+    # id: the launcher id of the DID that minted the collection (see SPEC
+    # section 6.8 for why not the marketplace "collection id").
+    NFT = 1
+    # Mojos of one CAT. `asset` is the CAT's asset id.
+    CAT = 2
+
+
+MAX_BOOST_CAP_BPS = 100_000  # 10x
+
+
+@dataclass(frozen=True)
+class Requirement:
+    """Holding at least `min_count` of something, checked block by block."""
+
+    holding: Holding
+    asset: bytes
+    min_count: int = 1
+
+    def __post_init__(self) -> None:
+        if self.min_count < 1:
+            raise ValueError("min_count must be at least 1")
+
+    def as_clvm(self) -> list:
+        return [int(self.holding), self.asset, self.min_count]
+
+
+@dataclass(frozen=True)
+class Boost:
+    """While `requirement` is met, the holder's weight is raised by `bps`
+    (2,000 = +20%). Boosts stack up to the campaign's cap, so tiers are boosts
+    on the same collection at rising counts."""
+
+    requirement: Requirement
+    bps: int
+
+    def __post_init__(self) -> None:
+        if self.bps <= 0:
+            raise ValueError("a boost must add something")
+
+    def as_clvm(self) -> list:
+        return [*self.requirement.as_clvm(), self.bps]
+
+
 @dataclass(frozen=True)
 class Params:
     """Scoring rules. Committed on chain by `params_hash`; published in full in the
@@ -42,8 +87,24 @@ class Params:
     # Credit balances held by known wrappers (a vault pool's nested LP reserve)
     # to the wrapper's own holders instead of to the wrapper.
     forward: bool = True
+    # A holder earns only while meeting every gate (e.g. holding a Wizard NFT).
+    gates: Tuple[Requirement, ...] = ()
+    # Weight multipliers while a requirement is met, stacking up to the cap.
+    boosts: Tuple[Boost, ...] = ()
+    boost_cap_bps: int = 25_000  # 2.5x, Merkl's usual ceiling
+
+    def __post_init__(self) -> None:
+        if not BPS <= self.boost_cap_bps <= MAX_BOOST_CAP_BPS:
+            raise ValueError("boost_cap_bps must be between 10000 (1x) and 100000 (10x)")
+
+    def multiplier_bps(self, satisfied: Tuple[bool, ...]) -> int:
+        """Weight multiplier for a holder meeting the boosts flagged in `satisfied`."""
+        raw = BPS + sum(b.bps for b, ok in zip(self.boosts, satisfied) if ok)
+        return min(raw, self.boost_cap_bps)
 
     def as_clvm(self) -> list:
+        # The first two fields are the only ones the create puzzle reads; the
+        # rest are committed by the hash and applied by the engine.
         return [
             self.time_bps,
             self.fees_bps,
@@ -51,6 +112,9 @@ class Params:
             sorted(self.blacklist),
             sorted(self.whitelist),
             1 if self.forward else 0,
+            [g.as_clvm() for g in self.gates],
+            [b.as_clvm() for b in self.boosts],
+            self.boost_cap_bps,
         ]
 
     def hash(self) -> bytes:

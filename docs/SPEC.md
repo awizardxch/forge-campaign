@@ -23,6 +23,7 @@
 | Campaign length | Per distributor. **Testnet: from ~5 min** (16 blocks, 8-block disputes). **Production: likely from 24 min** (77 blocks, 38-block ≈ 12 min disputes). Maximum **365 days**. Any of these can change for a future distributor |
 | Claim frequency | **Any interval within the campaign**, at the holder's discretion: every root, once at the end, or anything between. Each claim costs the holder a network fee, so how often is their call. A new root becomes claimable every `dispute_blocks` at most |
 | Assets | **Any CAT that trades in a Forge registry pool**, plus XCH, for the reward asset and for a `CAT_HOLD` target. The pool's oracle gives every such asset an on-chain price. An `LP_HOLD` target must be a registered pool |
+| Gates and boosts | A campaign can **require** holdings to earn at all (at least N NFTs of a collection, e.g. the Wizards, or at least X of a CAT) and **boost** holders who meet further requirements (+N% weight per tier, up to a cap the creator sets). Engine-side rules, committed in the campaign id; no puzzle change (§6.8) |
 | Who runs it | The puzzle is on chain and permissionless to read and claim from. **Creation needs the distributor's router key**: ours now, so we only score and monitor campaigns our router created. Later, anyone can launch their own distributor with their own router, engine and front end |
 
 ---
@@ -95,7 +96,8 @@ kind, for creators who want the puzzle itself to enforce the split.
 
 Phase 2 candidates, each a new `Kind` with its own scoring function and none needing a puzzle change:
 `SWAP_VOLUME` (pay traders by routed volume, from the same replay), `VAULT_DEPOSIT`, and `NFT_HOLD`
-(collection holders; BOW soulbound tiers would work better as a **boost** than as a kind).
+(rewarding collection holders directly). Gating and boosting by NFT or CAT holdings is not a kind: it
+applies to every kind (§6.8).
 
 ### 3.1 The campaign struct (what the id commits to)
 
@@ -103,7 +105,10 @@ Phase 2 candidates, each a new `Kind` with its own scoring function and none nee
 campaign = ["flpcr-campaign-v1", distributor_id, creator_ph, reward_asset, amount,
             start, end, kind, target, params_hash, nonce, fee_bps, claim_window]
 campaign_id = sha256tree(campaign)
-params = [time_bps, fees_bps, min_balance, sorted(blacklist), sorted(whitelist), forward]
+params = [time_bps, fees_bps, min_balance, sorted(blacklist), sorted(whitelist), forward,
+          gates, boosts, boost_cap_bps]
+          gates  = ([holding, asset, min_count] ...)            holding: 1 = NFT, 2 = CAT
+          boosts = ([holding, asset, min_count, bps] ...)
 params_hash = sha256tree(params)
 
 fee    = amount * fee_bps / 10000      (floor; fee_bps = 300)
@@ -394,6 +399,59 @@ blacklist apply. Self-trading to farm fee weight costs the trader the full pool 
 **fixed** budget, so it pays only when the fee weight per mojo of fee is worth more than the fee. The
 create form should show creators that trade-off next to the `fees_bps` slider.
 
+### 6.8 Token gates and boosts
+
+A creator can restrict a campaign to holders of something, reward them more for holding something, or
+both. Each **requirement** is "hold at least `min_count` of `asset`":
+
+| `holding` | `asset` | Counted |
+|---|---|---|
+| `NFT` (1) | the collection id (below) | NFTs of the collection owned by the puzzle hash |
+| `CAT` (2) | CAT asset id | mojos of the CAT held by the puzzle hash |
+
+- **Gates.** A holder's balance counts only while they meet **every** gate. Example: an LP campaign on
+  a Forge pool open only to Wizard holders, `gates = [(NFT, wizards_did, 1)]`.
+- **Boosts.** While a holder meets a boost's requirement, their weight rises by its `bps`. Boosts stack,
+  so tiers are boosts on the same collection at rising counts: `(NFT, wizards, 1, +2000)`,
+  `(NFT, wizards, 3, +3000)` and `(NFT, wizards, 10, +20000)` give 1.2x, 1.5x and the cap. The total
+  multiplier is capped at `boost_cap_bps` (default 25,000 = 2.5x, Merkl's usual ceiling; at most 10x).
+- **A boost reshares, it never adds.** Every block's emission is fixed by the schedule; boosted holders
+  take a larger share of it and everyone else a smaller one. The emission ceiling (§5.3) is untouched.
+- **Checked block by block**, like balances: requirement changes cut segments the same way balance
+  changes do. An NFT borrowed for one block earns its holder exactly one block of gated or boosted share,
+  so flash-lending a Wizard is worth almost nothing.
+- **After forwarding.** Gates and boosts apply to whoever is credited, so for LP held in a Forge vault
+  the vault's own holders are checked, not the vault.
+- **Nobody qualifies:** that stretch's budget is unallocated and returns to the creator at reclaim,
+  exactly like a stretch with no holders.
+
+Weights are exact: `weight = balance × multiplier / 10000`, inside the same rational arithmetic as §6.2
+and §6.3.
+
+**What "collection id" means on Chia.** The collection id marketplaces show (MintGarden, Dexie) comes
+from CHIP-0007 off-chain metadata, which anyone can copy into an unrelated NFT. The on-chain identifier
+that cannot be forged is the **minter DID**. An NFT minted by a DID carries that DID's launcher id from
+its eve spend, and only the DID's owner can mint as it. So a campaign's NFT `asset` is the minter DID's
+launcher id. Two alternatives, for when that does not fit:
+- **A fixed list.** For a collection minted without a DID, or a curated subset (e.g. only certain
+  Wizards), `asset` is the root of a published list of NFT launcher ids. The list is part of the
+  campaign's published terms. *(Not built; the engine's source interface takes it without change.)*
+- **Soulbound NFTs** (BOW rewards, `nftRewards.md`) work as is: they cannot be transferred, so the gate
+  cannot be lent at all.
+
+The live `Source` finds a collection's NFTs by walking the minter DID's mints, follows each NFT's owner
+through its ownership layer (owner = the hinted inner puzzle hash) and emits `+1/−1` events per owner,
+like a CAT balance. NFTs held in an offer or settlement coin are excluded the same way LP is.
+
+**One wallet, many addresses.** Sage spreads a wallet across many addresses (puzzle hashes). A holder
+whose Wizard sits at one address and LP at another would not match, because requirements are checked
+per puzzle hash. The fix is **address links**: the holder signs, with each address's key (CHIP-0002
+`signMessageByAddress`), a message naming their primary address. The engine treats linked addresses as
+one holder for gates and boosts only; payouts still go to the address that holds the LP. Links are
+published with the campaign's manifests and verified by anyone (signature against the address's synthetic
+key, then that key's standard puzzle hash against the address), so replays stay reproducible.
+*(Specified, not built.)*
+
 ---
 
 ## 7. Trust model and disputes
@@ -437,7 +495,10 @@ A **🔥 Campaigns** tab in forge-ui, or on whichever site this lands, with four
 2. **Create.** Pick a target (pool search, or a CAT from the Forge registry), the reward asset (any
    registry CAT or XCH; anything else is refused at quote time by `flpcr/router.py`), the deposit, the **campaign
    length** (from 24 min, testnet ~5 min, up to 365 days; dates shown at about 18.75 s per block) and the weighting slider (time ↔ fees, `LP_HOLD`
-   only), and the **claim window** after the end (presets 24 h, 7 days, 30 days, or custom). Advanced: min balance and
+   only), and the **claim window** after the end (presets 24 h, 7 days, 30 days, or custom). **Gates and boosts:** pick
+   an NFT collection (by minter DID, with the collection's name and image shown) or a CAT, a minimum count,
+   and whether it gates or boosts (+%); add tiers; set the boost cap. The preview shows what share a holder
+   with and without each requirement would get at current holdings. Advanced: min balance and
    the lists. The preview shows the **3% fee**, the resulting budget, per-day emission, an estimated APR
    at current TVL, and the date from which leftovers can be reclaimed. Signing is one Sage offer: give `amount`, request nothing. The responder builds the `create`
    spend around it, the same keyless pattern as Forge's offer lane (`forge_v14_offer.py`).
