@@ -110,12 +110,26 @@ class SimWorld:
                         target, fee_bps=self.cfg.fee_bps, **kw)
 
     def create(self, campaign: Campaign, creator: str, router: str = "router", deposit: Optional[int] = None):
-        sol = [self.h, campaign.creator, campaign.amount, campaign.start, campaign.end, int(campaign.kind),
-               campaign.target, campaign.params.as_clvm(), campaign.nonce, campaign.claim_window]
-        deposit = campaign.amount if deposit is None else deposit
+        return self.create_raw(
+            creator, campaign.amount, campaign.start, campaign.end, int(campaign.kind), campaign.target,
+            campaign.params.as_clvm(), campaign.nonce, campaign.claim_window, router=router, deposit=deposit,
+        )
+
+    def create_raw(self, creator: str, amount: int, start: int, end: int, kind: int, target: bytes, params: list,
+                   nonce, claim_window: int, router: str = "router", deposit: Optional[int] = None,
+                   h: Optional[int] = None):
+        """`create` with every field as given, including ones `Campaign` would
+        refuse, for refusal probes. The router signs the id the leaf derives."""
+        creator_ph = self.keys.ph(creator)
+        sol = [self.h if h is None else h, creator_ph, amount, start, end, kind, target, params, nonce, claim_window]
+        campaign_id = sha256tree([
+            "flpcr-campaign-v1", self.launcher_id, creator_ph, self.cfg.reward_asset, amount, start, end, kind,
+            target, sha256tree(params), nonce, self.cfg.fee_bps, claim_window,
+        ])
+        deposit = max(amount, 0) if deposit is None else deposit
 
         def router_msg():
-            return self.message_from(router, b"c" + campaign.id)
+            return self.message_from(router, b"c" + campaign_id)
 
         if self.d.is_cat:
             # The deposit sits in the reserve's CAT ring and creates nothing:
@@ -131,10 +145,13 @@ class SimWorld:
         return self.push([Action("create", sol)], [router_msg, deposit_coin])
 
     def post(self, root: Root, sender: str = "engine", totals: Optional[Dict[bytes, int]] = None,
-             root_id: Optional[int] = None):
-        totals_list = [(k, v) for k, v in sorted((root.totals if totals is None else totals).items())]
+             root_id: Optional[int] = None, totals_list: Optional[list] = None,
+             start: Optional[int] = None, end: Optional[int] = None):
+        if totals_list is None:
+            totals_list = [(k, v) for k, v in sorted((root.totals if totals is None else totals).items())]
         rid = root.root_id if root_id is None else root_id
-        args = [rid, root.start, root.end, root.root, totals_list, bytes(32)]
+        args = [rid, root.start if start is None else start, root.end if end is None else end, root.root,
+                totals_list, bytes(32)]
         return self.push(
             [Action("post_root", [self.h, *args])],
             [lambda: self.message_from(sender, b"p" + sha256tree(args))],

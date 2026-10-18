@@ -23,8 +23,13 @@ CAT_ASSET = b"\xa5" * 32  # a reward CAT; every test class also runs with it bel
 
 
 def refused(test, fn, *args, **kwargs):
-    with test.assertRaises(Exception):
+    """A genuine refusal only: the leaf raised when run (`clvm raise`) or
+    consensus rejected the bundle (`Simulator error`). A Python error in the
+    test or driver is a bug, not a refusal, and fails the test."""
+    with test.assertRaises(ValueError) as ctx:
         fn(*args, **kwargs)
+    message = str(ctx.exception)
+    test.assertTrue("clvm raise" in message or "Simulator error" in message, message)
 
 
 @unittest.skipUnless(HAVE_CHAIN, "chia-wallet-sdk or compiled puzzles missing")
@@ -227,6 +232,169 @@ class TestClaimRefusals(ChainTest):
         w, c = self.w, self.camp
         self.assertEqual(w.claim(self.r, c.id, "bob"), 242_500)
         refused(self, w.claim, self.r, c.id, "bob")
+
+
+class TestAssertionProbes(ChainTest):
+    """One probe per assertion the mutation run (scripts/mutate.py) found
+    unpinned. Each is built so that the assertion it names is the first thing
+    that can refuse it."""
+
+    PARAMS = [10000, 0, 0, None, None, 1]
+
+    def raw(self, **kw):
+        w = self.w
+        f = dict(creator="creator", amount=1000, start=w.h + 2, end=w.h + 40, kind=1, target=POOL,
+                 params=list(self.PARAMS), nonce=0, claim_window=WINDOW)
+        f.update(kw)
+        return w.create_raw(**f)
+
+    # --- create ---
+
+    def test_create_baseline_is_accepted(self):
+        self.raw()
+
+    def test_create_amount_and_budget(self):
+        refused(self, self.raw, amount=0)
+        refused(self, self.raw, amount=-1000, deposit=0)
+
+    def test_create_max_length(self):
+        w = self.w
+        refused(self, self.raw, end=w.h + 2 + w.cfg.max_campaign_length + 1)
+
+    def test_create_kind(self):
+        refused(self, self.raw, kind=0)
+        refused(self, self.raw, kind=3)
+
+    def test_create_params(self):
+        refused(self, self.raw, params=[10001, -1, 0, None, None, 1])
+        refused(self, self.raw, params=[-1, 10001, 0, None, None, 1])
+        refused(self, self.raw, params=[9999, 0, 0, None, None, 1])
+        refused(self, self.raw, kind=2, params=[5000, 5000, 0, None, None, 1])
+        self.raw(kind=1, params=[5000, 5000, 0, None, None, 1])
+
+    def test_create_claim_window_ceiling(self):
+        refused(self, self.raw, claim_window=self.w.cfg.max_campaign_length + 1)
+
+    def test_create_campaign_cap(self):
+        w = SimWorld(reward_asset=self.ASSET, max_campaigns=1)
+        w.create_raw("creator", 1000, w.h + 2, w.h + 40, 1, POOL, list(self.PARAMS), 0, WINDOW)
+        refused(self, w.create_raw, "creator", 1000, w.h + 2, w.h + 40, 1, POOL, list(self.PARAMS), 1, WINDOW)
+
+    # --- the height pin ---
+
+    def test_height_must_be_positive(self):
+        self.assertLess(self.w.h, 32)  # below 32, ASSERT_BEFORE_HEIGHT h+32 cannot catch h = 0
+        refused(self, self.raw, h=0)
+
+    def test_one_height_per_spend(self):
+        w, c = self.w, self.camp
+        self.created()
+        _, r = self.root_at(EngineState(w.launcher_id, height=c.start), c.end)
+        self.active(r)
+        action, updates = w.claim_action(r, c.id, self.bob)
+        early = Action("reclaim", [w.h + c.claim_window + 100, c.id])  # a later action claiming a later height
+        refused(self, w.push, [action, early], slot_updates=updates)
+
+    # --- post_root ---
+
+    def posted_setup(self):
+        self.created()
+        return self.root_at(EngineState(self.w.launcher_id, height=self.camp.start), self.camp.start + 20)
+
+    def test_post_cannot_replace_a_pending_root(self):
+        w, c = self.w, self.camp
+        state, r1 = self.posted_setup()
+        w.post(r1)
+        refused(self, w.post, r1, totals={c.id: 1})  # same id, different totals, still pending
+
+    def test_post_window_and_future(self):
+        w, c = self.w, self.camp
+        state, r1 = self.posted_setup()
+        refused(self, w.post, r1, start=r1.end, end=r1.end)
+        future = w.h + 50
+        refused(self, w.post, r1, end=future, totals={c.id: c.emittable(future)})
+
+    def test_post_first_id_and_tiling(self):
+        w, c = self.w, self.camp
+        state, r1 = self.posted_setup()
+        refused(self, w.post, r1, root_id=2)
+        self.active(r1)
+        _, r2 = self.root_at(state, c.start + 30)
+        refused(self, w.post, r2, start=r1.end + 1)
+        refused(self, w.post, r2, start=r1.end - 1)
+        w.post(r2)
+
+    def test_post_totals_sorted_unique_and_kept(self):
+        w, c = self.w, self.camp
+        state, r1 = self.posted_setup()
+        t = r1.totals[c.id]
+        refused(self, w.post, r1, totals_list=[(c.id, t), (c.id, t)])
+        self.active(r1)
+        _, r2 = self.root_at(state, c.start + 30)
+        refused(self, w.post, r2, totals_list=[])  # a live campaign may not be dropped
+
+    def test_post_unknown_campaign(self):
+        w = self.w
+        state, r1 = self.posted_setup()
+        refused(self, w.post, r1, totals_list=[(b"\x77" * 32, 1)])
+
+    # --- veto ---
+
+    def test_veto_names_the_pending_root(self):
+        w = self.w
+        state, r1 = self.posted_setup()
+        w.post(r1)
+        refused(self, w.veto, 2)
+        w.veto(1)
+
+    # --- claim ---
+
+    def test_claims_cannot_exceed_the_posted_total(self):
+        w, c = self.w, self.camp
+        self.created()
+        _, r = self.root_at(EngineState(w.launcher_id, height=c.start), c.end)
+        w.post(r, totals={c.id: r.totals[c.id] - 1})  # leaves sum to one more than the stated total
+        w.advance_to(w.h + w.cfg.dispute_blocks)
+        w.claim(r, c.id, "alice")
+        refused(self, w.claim, r, c.id, "bob")
+
+    def test_insert_must_be_ordered(self):
+        """A second slot for an existing key, placed between two other
+        neighbours, would reset the holder's claimed total and pay again.
+
+        Built so the ordering check is the only thing that can refuse: Alice
+        holds little and has claimed; a large holder ("whale") has not, so the
+        campaign's posted total has room for Alice's duplicate. Several small
+        holders claim first so there are neighbour pairs on both sides of
+        Alice's key."""
+        w, c = self.w, self.camp
+        alice_key = Distributor.claim_key(c.id, self.alice)
+        below = [f"s{i}" for i in range(64) if Distributor.claim_key(c.id, w.keys.ph(f"s{i}")) < alice_key][:3]
+        above = [f"s{i}" for i in range(64) if Distributor.claim_key(c.id, w.keys.ph(f"s{i}")) > alice_key][:3]
+        small = below + above
+        self.src = FixtureSource(
+            lp_assets={POOL: LP},
+            events={LP: [HolderEvent(0, w.keys.ph(x), 1) for x in ["alice", *small]]
+                    + [HolderEvent(0, w.keys.ph("whale"), 1000)]},
+        )
+        self.created()
+        _, r = self.root_at(EngineState(w.launcher_id, height=c.start), c.end)
+        self.active(r)
+        for holder in ["alice", *small]:
+            w.claim(r, c.id, holder)
+        d = w.d
+        keys = sorted(d.slots)
+        cl = r.claim_for(c.id, self.alice)
+        sides = set()
+        for lk, rk in zip(keys, keys[1:]):
+            if lk <= alice_key <= rk:
+                continue
+            sides.add("left" if rk < alice_key else "right")
+            L, R = d.slots[lk], d.slots[rk]
+            info = [lk, L.claimed, L.left, rk, R.claimed, R.right]
+            sol = [w.h, c.id, self.alice, cl.cumulative, cl.proof, 1, info]
+            refused(self, w.push, [Action("claim", sol)])
+        self.assertEqual(sides, {"left", "right"})
 
 
 class TestLifecycleCat(TestLifecycle):

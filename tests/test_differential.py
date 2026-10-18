@@ -89,7 +89,7 @@ class TestModelAndChainAgree(unittest.TestCase):
                     expected = None
                 try:
                     got = w.claim(root, c.id, hd)
-                except Exception:
+                except ValueError:  # a refusal; any other error is a bug
                     got = None
                 self.assertEqual(got, expected, f"seed {seed} claim {hd} at {h}")
                 self.stats["paid" if got else "refused"] += 1
@@ -101,7 +101,7 @@ class TestModelAndChainAgree(unittest.TestCase):
                     expected = None
                 try:
                     got = w.reclaim(c.id) if c.id in w.d.read_state()["campaigns"] else None
-                except Exception:
+                except ValueError:  # a refusal; any other error is a bug
                     got = None
                 self.assertEqual(got, expected, f"seed {seed} reclaim at {h}")
                 self.stats["reclaimed"] += got is not None
@@ -112,7 +112,7 @@ class TestModelAndChainAgree(unittest.TestCase):
                     expected = None
                 try:
                     got = w.collect()
-                except Exception:
+                except ValueError:  # a refusal; any other error is a bug
                     got = None
                 self.assertEqual(got, expected, f"seed {seed} collect at {h}")
                 self.stats["collected"] += got is not None

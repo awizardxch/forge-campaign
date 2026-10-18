@@ -1,0 +1,4 @@
+{
+  "create: assert amount > 0;": "Implied by `budget > 0` (and the reverse) while fee_bps < 10000: budget = amount - floor(amount * fee_bps / 10000) has the sign of amount. fee_bps is curried and pinned at 300 by the registry. Both kept; removing one alone is masked by the other.",
+  "create: assert budget > 0;": "See `amount > 0`: each implies the other while fee_bps < 10000."
+}

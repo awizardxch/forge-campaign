@@ -19,6 +19,7 @@ Conventions the upstream puzzles fix, which this file must follow exactly:
 
 from __future__ import annotations
 
+import os
 import pathlib
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -42,7 +43,9 @@ from ..clvm import sha256tree
 from ..merkle import build_tree
 from .values import to_bytes, to_int, to_list, to_program
 
-COMPILED = pathlib.Path(__file__).resolve().parents[2] / "contracts" / "compiled"
+COMPILED = pathlib.Path(
+    os.environ.get("FLPCR_COMPILED") or pathlib.Path(__file__).resolve().parents[2] / "contracts" / "compiled"
+)
 LEAVES = ["init", "create", "post_root", "veto", "claim", "reclaim", "collect", "rotate"]
 SLOT_NONCE = 1
 RESERVE_NONCE = 0
@@ -292,7 +295,10 @@ class Distributor:
                 if len(items) >= 4 and items[0].is_atom() and to_int(items[0]) == 66 and to_int(items[1]) == 18:
                     target = to_bytes(items[3])
                     if target not in by_ph:
-                        raise KeyError("a leaf spends a slot the driver does not know")
+                        # No such slot. Build the bundle anyway: the singleton's
+                        # message then has no receiver and consensus refuses it,
+                        # which is the refusal a test should observe.
+                        continue
                     key, rec = by_ph[target]
                     slot_coin = Coin(
                         Coin(rec.creator_parent, self.full_puzzle_hash_for_inner(rec.creator_inner_ph), 1).coin_id(),

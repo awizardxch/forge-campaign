@@ -2,8 +2,8 @@
 
 The distributor puzzle verifies claim leaves with `sha256tree`, so the engine must
 hash exactly what CLVM would. Values are bytes (atoms), ints (atoms in CLVM's
-minimal two's-complement encoding), str (UTF-8 atoms), tuples of two (pairs) and
-lists (nil-terminated). No dependency on `clvm` here; `tests/test_clvm.py`
+minimal two's-complement encoding), str (UTF-8 atoms), None (nil), tuples of two
+(pairs) and lists (nil-terminated). No dependency on `clvm` here; `tests/test_clvm.py`
 cross-checks against it when it is installed.
 """
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 from hashlib import sha256
 from typing import Union
 
-Value = Union[bytes, int, str, tuple, list]
+Value = Union[bytes, int, str, tuple, list, None]
 
 
 def int_to_atom(n: int) -> bytes:
@@ -29,7 +29,9 @@ def int_to_atom(n: int) -> bytes:
     return atom
 
 
-def atom_of(value: Union[bytes, int, str]) -> bytes:
+def atom_of(value: Union[bytes, int, str, None]) -> bytes:
+    if value is None:
+        return b""  # nil
     if isinstance(value, bool):
         raise TypeError("bool is not a CLVM value; use 0 or 1")
     if isinstance(value, bytes):
