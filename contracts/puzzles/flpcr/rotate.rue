@@ -1,0 +1,36 @@
+// rotate.rue: the guardian replaces the operator key that posts roots.
+
+import shared::*;
+
+fn main(
+    CONFIG: Config,
+    truth: Truth,
+    h: Int,
+    new_engine_ph: Bytes32,
+) -> (Truth, List<Condition>) {
+    let (pinned, conditions) = prologue(truth, h);
+    let state = pinned.state;
+
+    (
+        Truth {
+            ephemeral: pinned.ephemeral,
+            state: State {
+                reserve: state.reserve,
+                fees_owed: state.fees_owed,
+                engine_ph: new_engine_ph,
+                initialized: state.initialized,
+                campaigns: state.campaigns,
+                active: state.active,
+                pending: state.pending,
+            },
+        },
+        [
+            ReceiveMessage {
+                mode: MODE_PUZZLE_TO_COIN,
+                message: "r" + new_engine_ph,
+                sender: [CONFIG.guardian_ph],
+            },
+            ...conditions,
+        ],
+    )
+}

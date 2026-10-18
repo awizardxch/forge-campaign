@@ -1,0 +1,41 @@
+// veto.rue: the guardian clears a pending root inside its dispute window.
+// The operator then posts a corrected root under the same id.
+
+import shared::*;
+
+fn main(
+    CONFIG: Config,
+    truth: Truth,
+    h: Int,
+    root_id: Int,
+) -> (Truth, List<Condition>) {
+    let (pinned, conditions) = prologue(truth, h);
+    let state = pinned.state;
+
+    // After the prologue's promotion, a root past its window is no longer pending.
+    assert !(state.pending is nil);
+    assert state.pending.root_id == root_id;
+
+    (
+        Truth {
+            ephemeral: pinned.ephemeral,
+            state: State {
+                reserve: state.reserve,
+                fees_owed: state.fees_owed,
+                engine_ph: state.engine_ph,
+                initialized: state.initialized,
+                campaigns: state.campaigns,
+                active: state.active,
+                pending: nil,
+            },
+        },
+        [
+            ReceiveMessage {
+                mode: MODE_PUZZLE_TO_COIN,
+                message: "v" + tree_hash(root_id),
+                sender: [CONFIG.guardian_ph],
+            },
+            ...conditions,
+        ],
+    )
+}

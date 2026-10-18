@@ -1,0 +1,103 @@
+// claim.rue: pays a holder `cumulative - claimed` for one campaign, against
+// the active root. Anyone may submit; the payment always goes to the leaf's
+// puzzle hash. There is no deadline: a claim works until the campaign has
+// been reclaimed.
+//
+// `claimed` lives in a claim slot. The first claim for a key inserts a slot
+// between its neighbours (whose values name each other, so adjacency is
+// structural); a later claim spends and recreates the key's own slot.
+
+import shared::*;
+import super::upstream::singleton::merkle_utils::*;
+
+struct OwnSlot {
+    claimed: Int,
+    left: Bytes32,
+    ...right: Bytes32,
+}
+
+struct Neighbours {
+    left_key: Bytes32,
+    left_claimed: Int,
+    left_left: Bytes32,
+    right_key: Bytes32,
+    right_claimed: Int,
+    right_right: Bytes32,
+}
+
+fn main(
+    CONFIG: Config,
+    truth: Truth,
+    h: Int,
+    campaign_id: Bytes32,
+    puzzle_hash: Bytes32,
+    cumulative: Int,
+    proof: MerkleProof,
+    insert: Int,
+    slot_info: Any,
+) -> (Truth, List<Condition>) {
+    let (pinned, conditions) = prologue(truth, h);
+    let state = pinned.state;
+    assert !(state.active is nil);
+    let campaign = get_campaign(state.campaigns, campaign_id);
+
+    let leaf = tree_hash(["flpcr-claim-v1", CONFIG.distributor_id, campaign_id, puzzle_hash, cumulative]);
+    assert simplify_merkle_proof(leaf, proof) == state.active.root;
+
+    let key = tree_hash((campaign_id, puzzle_hash));
+
+    let (previous, slot_conditions): (Int, List<Condition>) = if insert == 0 {
+        let own = unchecked_cast::<OwnSlot>(slot_info);
+        (
+            own.claimed,
+            [
+                spend_claim_slot(CONFIG, ClaimSlot { key: key, claimed: own.claimed, left: own.left, right: own.right }),
+                create_claim_slot(CONFIG, ClaimSlot { key: key, claimed: cumulative, left: own.left, right: own.right }),
+            ],
+        )
+    } else {
+        let n = unchecked_cast::<Neighbours>(slot_info);
+        assert key > n.left_key;
+        assert n.right_key > key;
+        (
+            0,
+            [
+                spend_claim_slot(CONFIG, ClaimSlot { key: n.left_key, claimed: n.left_claimed, left: n.left_left, right: n.right_key }),
+                spend_claim_slot(CONFIG, ClaimSlot { key: n.right_key, claimed: n.right_claimed, left: n.left_key, right: n.right_right }),
+                create_claim_slot(CONFIG, ClaimSlot { key: n.left_key, claimed: n.left_claimed, left: n.left_left, right: key }),
+                create_claim_slot(CONFIG, ClaimSlot { key: n.right_key, claimed: n.right_claimed, left: key, right: n.right_right }),
+                create_claim_slot(CONFIG, ClaimSlot { key: key, claimed: cumulative, left: n.left_key, right: n.right_key }),
+            ],
+        )
+    };
+
+    let amount = cumulative - previous;
+    assert amount > 0;
+    assert campaign.claimed + amount <= total_for(state.active.totals, campaign_id);
+
+    let updated = Campaign {
+        id: campaign.id,
+        creator: campaign.creator,
+        budget: campaign.budget,
+        start: campaign.start,
+        end: campaign.end,
+        claim_window: campaign.claim_window,
+        claimed: campaign.claimed + amount,
+    };
+
+    (
+        Truth {
+            ephemeral: pinned.ephemeral,
+            state: with_campaigns(
+                state,
+                state.reserve - amount,
+                state.fees_owed,
+                replace_campaign(state.campaigns, updated),
+            ),
+        },
+        [
+            reserve_payment(puzzle_hash, amount),
+            ...merge_list(slot_conditions, conditions),
+        ],
+    )
+}

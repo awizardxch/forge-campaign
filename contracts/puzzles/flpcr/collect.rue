@@ -1,0 +1,24 @@
+// collect.rue: pays the creation fees owed to the treasury. Anyone may run it.
+
+import shared::*;
+
+fn main(
+    CONFIG: Config,
+    truth: Truth,
+    h: Int,
+) -> (Truth, List<Condition>) {
+    let (pinned, conditions) = prologue(truth, h);
+    let state = pinned.state;
+    assert state.fees_owed > 0;
+
+    (
+        Truth {
+            ephemeral: pinned.ephemeral,
+            state: with_campaigns(state, state.reserve - state.fees_owed, 0, state.campaigns),
+        },
+        [
+            reserve_payment(CONFIG.treasury_ph, state.fees_owed),
+            ...conditions,
+        ],
+    )
+}

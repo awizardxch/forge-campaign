@@ -136,13 +136,16 @@ class Distributor:
             raise Refused("campaign id already exists")
         if len(self.campaigns) >= c.max_campaigns:
             raise Refused("distributor is full")
+        # `deposit` is what the bundle supplies. On chain the reserve is
+        # recreated at exactly `reserve + amount`, so the bundle must supply at
+        # least that (conservation is checked over the whole bundle, so who
+        # supplies it is not the puzzle's concern) and anything over it is
+        # ordinary bundle slack, i.e. network fee. It is never kept.
         if deposit < campaign.amount:
             raise Refused("deposit is short")
-        # Anything over the stated amount is slack in the bundle: it is kept as
-        # fee so the reserve and the state agree (V14's settlement lesson).
         self.campaigns[campaign.id] = CampaignRecord(campaign)
-        self.fees_owed += campaign.fee + (deposit - campaign.amount)
-        self.reserve += deposit
+        self.fees_owed += campaign.fee
+        self.reserve += campaign.amount
         return campaign.id
 
     def post_root(self, h: int, sender: bytes, root_id: int, start: int, end: int,

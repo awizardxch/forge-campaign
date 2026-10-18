@@ -1,0 +1,38 @@
+// init.rue: one-shot. Creates the two sentinel claim slots every insert
+// sits between. A second set of sentinels would let one key be inserted
+// twice, so `initialized` makes this run exactly once.
+
+import shared::*;
+
+fn main(
+    CONFIG: Config,
+    truth: Truth,
+    h: Int,
+) -> (Truth, List<Condition>) {
+    let (pinned, conditions) = prologue(truth, h);
+    let state = pinned.state;
+    assert state.initialized == 0;
+
+    let low = 0x0000000000000000000000000000000000000000000000000000000000000000;
+    let high = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
+
+    (
+        Truth {
+            ephemeral: pinned.ephemeral,
+            state: State {
+                reserve: state.reserve,
+                fees_owed: state.fees_owed,
+                engine_ph: state.engine_ph,
+                initialized: 1,
+                campaigns: state.campaigns,
+                active: state.active,
+                pending: state.pending,
+            },
+        },
+        [
+            create_claim_slot(CONFIG, ClaimSlot { key: low, claimed: 0, left: low, right: high }),
+            create_claim_slot(CONFIG, ClaimSlot { key: high, claimed: 0, left: low, right: high }),
+            ...conditions,
+        ],
+    )
+}

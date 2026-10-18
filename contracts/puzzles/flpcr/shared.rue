@@ -1,0 +1,232 @@
+// shared.rue: types and helpers every FLPCR distributor leaf uses.
+//
+// A distributor is singleton(action_layer(reserve_finalizer, LEAVES_ROOT, State)).
+// Every leaf is curried with the same Config and receives
+//     (Truth . solution)    where Truth = (ephemeral . State)
+// and returns
+//     (Truth' . conditions)
+// Conditions tagged (-42 . condition) are spent from the reserve by the
+// upstream reserve finalizer; State.reserve is the first state field so the
+// finalizer's default amount program (f State) sizes the reserve.
+
+import super::upstream::slot::*;
+
+export const BPS: Int = 10000;
+// The leaf commits to a height `h` no later than the block it lands in and
+// no earlier than this many blocks before it.
+export const HEIGHT_WINDOW: Int = 32;
+export const RESERVE_TAG: Int = -42;
+// SEND/RECEIVE_MESSAGE mode: sender identified by puzzle hash, receiver by
+// coin id. The receiver here is always this singleton coin, so a message
+// cannot be replayed against a later generation.
+export const MODE_PUZZLE_TO_COIN: Int = 23;
+
+export struct Config {
+    distributor_id: Bytes32,
+    reward_asset: Bytes32,
+    fee_bps: Int,
+    treasury_ph: Bytes32,
+    guardian_ph: Bytes32,
+    router_ph: Bytes32,
+    dispute_blocks: Int,
+    min_campaign_length: Int,
+    max_campaign_length: Int,
+    max_campaigns: Int,
+    slot_1st_curry_hash: Bytes32,
+}
+
+export struct Campaign {
+    id: Bytes32,
+    creator: Bytes32,
+    budget: Int,
+    start: Int,
+    end: Int,
+    claim_window: Int,
+    claimed: Int,
+}
+
+export struct Root {
+    root_id: Int,
+    start: Int,
+    end: Int,
+    root: Bytes32,
+    totals: List<(Bytes32, Int)>,
+    activates_at: Int,
+}
+
+export struct State {
+    reserve: Int,
+    fees_owed: Int,
+    engine_ph: Bytes32,
+    initialized: Int,
+    campaigns: List<Campaign>,
+    active: Root | nil,
+    pending: Root | nil,
+}
+
+export struct Truth {
+    ephemeral: List<Int> | nil,
+    ...state: State,
+}
+
+// --- the height pin --------------------------------------------------------
+
+// The first action of a spend pins `h` and promotes a pending root whose
+// dispute window has passed; later actions in the same spend must name the
+// same `h`. Returns the state to act on and the conditions to emit.
+export fn prologue(truth: Truth, h: Int) -> (Truth, List<Condition>) {
+    if truth.ephemeral is nil {
+        assert h > 0;
+        (
+            Truth { ephemeral: [h], state: promote(truth.state, h) },
+            [
+                AssertHeightAbsolute { height: h },
+                AssertBeforeHeightAbsolute { height: h + HEIGHT_WINDOW },
+            ],
+        )
+    } else {
+        assert truth.ephemeral.first == h;
+        (truth, nil)
+    }
+}
+
+fn promote(state: State, h: Int) -> State {
+    if state.pending is nil {
+        state
+    } else {
+        if h >= state.pending.activates_at {
+            State {
+                reserve: state.reserve,
+                fees_owed: state.fees_owed,
+                engine_ph: state.engine_ph,
+                initialized: state.initialized,
+                campaigns: state.campaigns,
+                active: state.pending,
+                pending: nil,
+            }
+        } else {
+            state
+        }
+    }
+}
+
+// --- campaigns ---------------------------------------------------------------
+
+export fn find_campaign(campaigns: List<Campaign>, id: Bytes32) -> Campaign | nil {
+    if campaigns is nil {
+        nil
+    } else {
+        if campaigns.first.id == id {
+            campaigns.first
+        } else {
+            find_campaign(campaigns.rest, id)
+        }
+    }
+}
+
+export fn get_campaign(campaigns: List<Campaign>, id: Bytes32) -> Campaign {
+    let found = find_campaign(campaigns, id);
+    assert !(found is nil);
+    unchecked_cast::<Campaign>(found)
+}
+
+export fn replace_campaign(campaigns: List<Campaign>, updated: Campaign) -> List<Campaign> {
+    assert !(campaigns is nil);
+    if campaigns.first.id == updated.id {
+        [updated, ...campaigns.rest]
+    } else {
+        [campaigns.first, ...replace_campaign(campaigns.rest, updated)]
+    }
+}
+
+export fn remove_campaign(campaigns: List<Campaign>, id: Bytes32) -> List<Campaign> {
+    assert !(campaigns is nil);
+    if campaigns.first.id == id {
+        campaigns.rest
+    } else {
+        [campaigns.first, ...remove_campaign(campaigns.rest, id)]
+    }
+}
+
+export fn count(campaigns: List<Campaign>) -> Int {
+    if campaigns is nil {
+        0
+    } else {
+        1 + count(campaigns.rest)
+    }
+}
+
+// Mojos of the budget the schedule has released by `height`; mirrors
+// flpcr/model.py Campaign.emittable.
+export fn emittable(campaign: Campaign, height: Int) -> Int {
+    let clamped = if height < campaign.start {
+        campaign.start
+    } else {
+        if height > campaign.end { campaign.end } else { height }
+    };
+    campaign.budget * (clamped - campaign.start) / (campaign.end - campaign.start)
+}
+
+export fn total_for(totals: List<(Bytes32, Int)>, id: Bytes32) -> Int {
+    if totals is nil {
+        0
+    } else {
+        if totals.first.first == id {
+            totals.first.rest
+        } else {
+            total_for(totals.rest, id)
+        }
+    }
+}
+
+// --- state updates -------------------------------------------------------------
+
+export fn with_campaigns(state: State, reserve: Int, fees_owed: Int, campaigns: List<Campaign>) -> State {
+    State {
+        reserve: reserve,
+        fees_owed: fees_owed,
+        engine_ph: state.engine_ph,
+        initialized: state.initialized,
+        campaigns: campaigns,
+        active: state.active,
+        pending: state.pending,
+    }
+}
+
+// --- reserve payouts -----------------------------------------------------------
+
+export fn reserve_payment(puzzle_hash: Bytes32, amount: Int) -> Condition {
+    unchecked_cast::<Condition>((
+        RESERVE_TAG,
+        CreateCoin {
+            puzzle_hash: puzzle_hash,
+            amount: amount,
+            memos: Memos { value: [puzzle_hash] },
+        },
+    ))
+}
+
+// --- claim slots -----------------------------------------------------------------
+
+// A sorted, doubly linked list of slots, one per (campaign, holder), keyed by
+// tree_hash((campaign_id . puzzle_hash)), between sentinels 0x00.. and 0xff...
+export struct ClaimSlot {
+    key: Bytes32,
+    claimed: Int,
+    left: Bytes32,
+    ...right: Bytes32,
+}
+
+export inline fn claim_slot_hash(slot: ClaimSlot) -> Bytes32 {
+    tree_hash(slot)
+}
+
+export fn spend_claim_slot(config: Config, slot: ClaimSlot) -> Condition {
+    spend_slot(config.slot_1st_curry_hash, claim_slot_hash(slot))
+}
+
+export fn create_claim_slot(config: Config, slot: ClaimSlot) -> Condition {
+    // Hinted with the key, so a reader can find the slot for (campaign,
+    // holder) without knowing how much has been claimed.
+    create_slot_with_hint(config.slot_1st_curry_hash, claim_slot_hash(slot), slot.key)
+}

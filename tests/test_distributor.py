@@ -204,8 +204,8 @@ class TestRefusals(unittest.TestCase):
             d.create(50, ROUTER, Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL, fee_bps=0), 1000)
         with self.assertRaises(Refused):
             d.create(50, STRANGER, c, 1000)  # not our router
-        d.create(50, ROUTER, c, 1005)  # slack is kept as fee
-        self.assertEqual(d.fees_owed, 30 + 5)
+        d.create(50, ROUTER, c, 1005)  # slack is network fee, as on chain
+        self.assertEqual((d.fees_owed, d.reserve), (30, 1000))
         with self.assertRaises(Refused):
             d.create(50, ROUTER, c, 1000)
         d.check_invariant()

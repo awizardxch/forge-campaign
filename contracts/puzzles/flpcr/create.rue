@@ -1,0 +1,98 @@
+// create.rue: adds a campaign the distributor's router has authorized.
+//
+// The deposit is enforced by conservation, not by naming a coin: the state's
+// reserve grows by `amount`, the reserve finalizer recreates the reserve at
+// that size, and the bundle (for a CAT, the CAT ring) must supply the
+// difference or it is invalid.
+
+import shared::*;
+
+struct Params {
+    time_bps: Int,
+    fees_bps: Int,
+    ...rest: Any,
+}
+
+fn main(
+    CONFIG: Config,
+    truth: Truth,
+    h: Int,
+    creator: Bytes32,
+    amount: Int,
+    start: Int,
+    end: Int,
+    kind: Int,
+    target: Bytes32,
+    params: Params,
+    nonce: Any,
+    claim_window: Int,
+) -> (Truth, List<Condition>) {
+    let (pinned, conditions) = prologue(truth, h);
+    let state = pinned.state;
+
+    let id = tree_hash([
+        "flpcr-campaign-v1",
+        CONFIG.distributor_id,
+        creator,
+        CONFIG.reward_asset,
+        amount,
+        start,
+        end,
+        kind,
+        target,
+        tree_hash(params),
+        nonce,
+        CONFIG.fee_bps,
+        claim_window,
+    ]);
+
+    let fee = amount * CONFIG.fee_bps / BPS;
+    let budget = amount - fee;
+    let length = end - start;
+
+    assert amount > 0;
+    assert budget > 0;
+    assert start >= h;
+    assert length >= CONFIG.min_campaign_length;
+    assert length <= CONFIG.max_campaign_length;
+    assert (kind == 1) | (kind == 2);
+    assert params.time_bps >= 0;
+    assert params.fees_bps >= 0;
+    assert params.time_bps + params.fees_bps == BPS;
+    assert (kind == 1) | (params.fees_bps == 0);
+    assert claim_window >= 2 * CONFIG.dispute_blocks;
+    assert claim_window <= CONFIG.max_campaign_length;
+    assert count(state.campaigns) < CONFIG.max_campaigns;
+    assert find_campaign(state.campaigns, id) is nil;
+
+    (
+        Truth {
+            ephemeral: pinned.ephemeral,
+            state: with_campaigns(
+                state,
+                state.reserve + amount,
+                state.fees_owed + fee,
+                [
+                    Campaign {
+                        id: id,
+                        creator: creator,
+                        budget: budget,
+                        start: start,
+                        end: end,
+                        claim_window: claim_window,
+                        claimed: 0,
+                    },
+                    ...state.campaigns,
+                ],
+            ),
+        },
+        [
+            ReceiveMessage {
+                mode: MODE_PUZZLE_TO_COIN,
+                message: "c" + id,
+                sender: [CONFIG.router_ph],
+            },
+            ...conditions,
+        ],
+    )
+}

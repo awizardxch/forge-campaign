@@ -1,0 +1,124 @@
+// post_root.rue: the operator posts a claim tree. It becomes the pending
+// root and turns active `dispute_blocks` later unless the guardian vetoes it.
+//
+// The emission ceiling: no campaign's total may exceed what its schedule has
+// released by `end`, and no total may fall. Whatever tree is posted, no key
+// can release a campaign's money faster than its schedule.
+
+import shared::*;
+
+// Every (id . total) is strictly ascending by id, names a live campaign, does
+// not fall below the previous root's total and stays under the ceiling.
+fn check_totals(
+    campaigns: List<Campaign>,
+    previous: List<(Bytes32, Int)>,
+    totals: List<(Bytes32, Int)>,
+    end: Int,
+    last_id: Bytes32,
+) -> Bool {
+    if totals is nil {
+        true
+    } else {
+        let id = totals.first.first;
+        let total = totals.first.rest;
+        let campaign = get_campaign(campaigns, id);
+        assert id > last_id;
+        assert total >= total_for(previous, id);
+        assert total <= emittable(campaign, end);
+        check_totals(campaigns, previous, totals.rest, end, id)
+    }
+}
+
+// A live campaign in the previous root may not be dropped from the new one.
+fn check_kept(
+    campaigns: List<Campaign>,
+    previous: List<(Bytes32, Int)>,
+    totals: List<(Bytes32, Int)>,
+) -> Bool {
+    if previous is nil {
+        true
+    } else {
+        let id = previous.first.first;
+        if find_campaign(campaigns, id) is nil {
+            check_kept(campaigns, previous.rest, totals)
+        } else {
+            assert has_total(totals, id);
+            check_kept(campaigns, previous.rest, totals)
+        }
+    }
+}
+
+fn has_total(totals: List<(Bytes32, Int)>, id: Bytes32) -> Bool {
+    if totals is nil {
+        false
+    } else {
+        if totals.first.first == id { true } else { has_total(totals.rest, id) }
+    }
+}
+
+fn main(
+    CONFIG: Config,
+    truth: Truth,
+    h: Int,
+    root_id: Int,
+    start: Int,
+    end: Int,
+    root: Bytes32,
+    totals: List<(Bytes32, Int)>,
+    manifest_hash: Bytes32,
+) -> (Truth, List<Condition>) {
+    let (pinned, conditions) = prologue(truth, h);
+    let state = pinned.state;
+
+    assert state.pending is nil;
+    assert start < end;
+    assert end <= h;
+
+    let previous: List<(Bytes32, Int)> = if state.active is nil {
+        assert root_id == 1;
+        nil
+    } else {
+        assert root_id == state.active.root_id + 1;
+        assert start == state.active.end;
+        state.active.totals
+    };
+
+    assert check_totals(
+        state.campaigns,
+        previous,
+        totals,
+        end,
+        0x0000000000000000000000000000000000000000000000000000000000000000,
+    );
+    assert check_kept(state.campaigns, previous, totals);
+
+    (
+        Truth {
+            ephemeral: pinned.ephemeral,
+            state: State {
+                reserve: state.reserve,
+                fees_owed: state.fees_owed,
+                engine_ph: state.engine_ph,
+                initialized: state.initialized,
+                campaigns: state.campaigns,
+                active: state.active,
+                pending: Root {
+                    root_id: root_id,
+                    start: start,
+                    end: end,
+                    root: root,
+                    totals: totals,
+                    activates_at: h + CONFIG.dispute_blocks,
+                },
+            },
+        },
+        [
+            ReceiveMessage {
+                mode: MODE_PUZZLE_TO_COIN,
+                message: "p" + tree_hash([root_id, start, end, root, totals, manifest_hash]),
+                sender: [state.engine_ph],
+            },
+            ...conditions,
+        ],
+    )
+}
