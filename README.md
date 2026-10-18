@@ -9,30 +9,42 @@ unclaimed; holders can keep claiming until that reclaim actually lands. The puzz
 campaign at its emission schedule.
 
 The reference design is Merkl's EVM incentive layer, rebuilt for Chia's coin set model on the
-CHIP-0050 action layer that Forge V14 runs on. **Testnet only. Not audited.**
+CHIP-0050 action layer that Forge V14 runs on. **Simulator-tested, not yet on testnet. Not audited.**
 
 | | |
 |---|---|
-| [`docs/SPEC.md`](docs/SPEC.md) | The whole design: the Merkl mapping, campaign kinds, distributor, scoring, trust model, phases |
-| [`docs/PUZZLES.md`](docs/PUZZLES.md) | Leaf-by-leaf build spec for the distributor (phase 2) |
+| [`docs/SPEC.md`](docs/SPEC.md) | The whole design: the Merkl mapping, campaign kinds, distributor, scoring, trust model, phases, and what the tests prove (§12) |
+| [`docs/PUZZLES.md`](docs/PUZZLES.md) | The distributor puzzles as built: types, every leaf's rules, driver conventions |
 | [`docs/API.md`](docs/API.md) | HTTP API, read and write |
-| `flpcr/` | The engine (campaigns, exact time and fee weighting, forwarding, claim tree, manifests), `distributor.py` (the executable reference for the on-chain rules) and `router.py` (which campaigns our router signs: Forge-registry-priced assets only) |
-| `tests/` | Engine and hashing tests; hashing is cross-checked against `clvm` when installed |
+| [`docs/TESTNET.md`](docs/TESTNET.md) | Local setup, and what is left before the first testnet11 campaign |
+| `contracts/` | Rue project: upstream CHIP-0050 puzzles (pinned), the eight FLPCR leaves, `build.py`, `pins.json` |
+| `flpcr/` | The engine (campaigns, exact time and fee weighting, forwarding, claim tree, manifests), `distributor.py` (the same rules as the puzzles, in Python), `router.py` (which campaigns our router signs) |
+| `flpcr/chain/` | Driver that builds distributor spends, and `SimWorld`, a distributor on the chia-wallet-sdk simulator |
+| `tests/` | Engine, reference model, router, chain (XCH and CAT), differential (model vs puzzles) |
+| `scripts/mutate.py` | Mutation run: every leaf assertion must be pinned by a test or argued |
 
 ## Run
 
 ```bash
-python -m pip install pytest clvm   # clvm is optional, it enables the cross-check
-python -m pytest -q
-python -m flpcr fixtures/demo.json --end 2000 --state /tmp/flpcr-state.json   # root 1
+cargo install rue-cli --version 0.8.4 --locked
+python -m pip install chia-wallet-sdk==0.36.0 pytest clvm
+python contracts/build.py      # compile and check pins
+python -m pytest -q            # 100 tests
+python scripts/mutate.py       # optional, ~3 min
+
+python -m flpcr fixtures/demo.json --end 2000 --state /tmp/flpcr-state.json   # engine: root 1
 python -m flpcr fixtures/demo.json --end 3000 --state /tmp/flpcr-state.json   # root 2, cumulative
 ```
 
-The engine itself is standard library only (Python 3.10+).
+The engine on its own needs only the standard library (Python 3.10+). The chain tests skip if
+`chia-wallet-sdk` is not installed.
 
 ## Status
 
-- **Phase 0 (here):** spec, engine, reference distributor model, tests.
-- **Phase 1:** live chain source for testnet11 (hinted LP CAT coins, `forge_v14_resync` for fee events).
-- **Phase 2:** distributor puzzles in Rue, in this repo under `contracts/`, with V14-style suites.
-- **Phase 3:** operator / keeper / watcher bots, API, interface tab.
+- **Phase 0 ✅:** spec, engine, reference model, router rules.
+- **Phase 2 ✅ on the simulator:** distributor puzzles, driver, chain, differential and mutation suites, for
+  XCH and CAT rewards. Still open: the distributor registry, cost measurements, a second reader.
+- **Phase 1 (next):** live chain source for testnet11 (hinted LP CAT coins, `forge_v14_resync` for fee
+  events).
+- **Phase 3:** deploy script with real keys, operator / watcher bots, API, interface tab. See
+  [`docs/TESTNET.md`](docs/TESTNET.md).

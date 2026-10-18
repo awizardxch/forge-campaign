@@ -1,182 +1,178 @@
-# FLPCR — Distributor Puzzles (build spec)
+# FLPCR — Distributor Puzzles (as built)
 
-> The phase 2 build spec, in the shape the V14 specs took. Nothing here is written in Rue yet. It is
-> meant to be built **in this repo** under `contracts/` (a rue project, `Rue.toml` entrypoint
-> `puzzles`, dist `compiled`, as in Forge's `contracts/v14/`), not in `forge-puzzles`, which is
-> specific to the n-asset AMM. It needs `rue` 0.8.4 and `chia_rs`; the upstream CHIP-0050 sources are
-> vendored and hash-pinned here the same way Forge pins them. Read with `SPEC.md` §5, `chip0050ActionLayer.md` and `clvmPuzzleAudit.md`.
-> **`flpcr/distributor.py` is the executable form of this document.** Where the two disagree, fix
-> one of them before writing Rue, and every scenario in `tests/test_distributor.py` becomes a puzzle
-> suite case.
+> The reference for `contracts/`. Read with `SPEC.md` §5 and §12. **The Rue sources are the authority**;
+> where this text and `contracts/puzzles/flpcr/*.rue` disagree, the source wins and this file is
+> wrong. `flpcr/distributor.py` is the same rules in Python and is held to the puzzles by
+> `tests/test_differential.py`.
+
+## Build
+
+```bash
+cargo install rue-cli --version 0.8.4 --locked   # Forge's version; reproduces upstream's hashes
+pip install chia-wallet-sdk==0.36.0 pytest
+python contracts/build.py            # compile to contracts/compiled/*.hex, refuse on pin drift
+python contracts/build.py --check    # CI: exit 1 if compiled/ is stale or any pin moved
+python contracts/build.py --repin    # after an intended leaf change; never touches upstream pins
+python scripts/mutate.py             # the mutation run, ~3 min
+```
+
+`contracts/Rue.toml` names 0.8.4. Upstream's own `Rue.toml` says 0.9.0, but 0.8.4 reproduces every
+upstream hash; `build.py` checks that on every build.
+
+## Layout
+
+```
+contracts/
+  puzzles/upstream/      verbatim from Yakuhito/slot-machine@2d37ba1: action, finalizer,
+                         reserve_finalizer, slot, p2_delegated_by_singleton, merkle_utils,
+                         common_types, slot helpers. Never edited; pinned by tree hash and sha256.
+  puzzles/flpcr/         shared.rue + eight leaves
+  compiled/*.hex         build output, committed
+  pins.json              upstream hashes (published values), our leaf hashes, upstream source sha256s
+```
 
 ## Shape
 
 ```
-distributor = singleton( action_layer( reserve_finalizer, LEAVES_ROOT, state ) )
-reserve     = p2_delegated_by_singleton(distributor_launcher, nonce 0), bare XCH or CAT(reward_asset)
-claim slot  = slot(distributor_launcher, nonce 1)(sha256tree(slot_value))
+distributor  = singleton_top_layer_v1_1( action_layer( reserve_finalizer, LEAVES_ROOT, State ) )
+reserve      = p2_delegated_by_singleton(SINGLETON_MOD_HASH, struct_hash, nonce 0)
+               wrapped in CAT(reward_asset) for a CAT reward, bare for XCH
+claim slot   = slot(SingletonInfo, nonce 1)(sha256tree(slot_value))
+LEAVES_ROOT  = merkle root of the eight curried leaf hashes, in this order:
+               init, create, post_root, veto, claim, reclaim, collect, rotate
 ```
 
-- `action_layer`, `reserve_finalizer`, `p2_delegated_by_singleton` and `slot` are the upstream
-  builds, hash-pinned. **None is edited.** The reserve finalizer's `RESERVE_AMOUNT_PROGRAM` is
-  `flpcr_reserve_amount.rue`: `state -> state.reserve_total`.
-- Seven leaves, each curried with the same `Config`. This is the M-4 lesson: the finalizer is curried
-  with `CONFIG_HASH` and the leaf mod hashes, and rebuilds the root every spend. Copy V14's
-  `config_root`.
-- A shared prologue runs in the first action only:
-  - `h > last_height`, `ASSERT_HEIGHT_ABSOLUTE h`, `ASSERT_BEFORE_HEIGHT_ABSOLUTE h + 32`;
-  - `ASSERT_MY_BIRTH_HEIGHT birth` with `h >= birth`, and `ASSERT_MY_AMOUNT 1`;
-  - **promotion**: if `pending` and `h >= pending.activates_at`, then `active = pending; pending = nil`.
+The reserve finalizer is curried with `(ACTION_LAYER_MOD_HASH, RESERVE_FULL_PH, RESERVE_INNER_PH, 2,
+launcher_id)`, then with its own hash. The `2` is the program `(f State)`: the reserve amount is the
+first state field.
 
-  Later actions read `h` from ephemeral state.
-- Every solution is a proper list of fixed fields, `[h, …]`. **Derived, never claimed**: any value the
-  puzzle can compute (campaign id, fee, budget, settlement coin id, claim leaf, slot puzzle hash) is
-  computed, not read from the solution.
+Every leaf is curried with the **same** `Config`, so the leaves cannot disagree about which distributor
+they belong to. A registry entry rebuilds `LEAVES_ROOT` from one `Config`, which is how a reader checks
+that a distributor is genuine (Forge's M-4 lesson).
 
-## Config (curried)
-
-| Field | Value / bound |
-|---|---|
-| `distributor_id` | the launcher id; it is also in every claim leaf |
-| `reward_asset` | `ZERO_32` = XCH |
-| `treasury_ph` | the protocol treasury |
-| `fee_bps` | **300** (3%). The registry pins it, so every registered distributor charges the same |
-| `guardian_ph` | intended: a Forge multisig safe's puzzle hash |
-| `router_ph` | the operator's router key; `create` requires its message |
-| `dispute_blocks` | production 38 (≈ 12 min), testnet 8; `> 0` |
-| `min_campaign_length`, `max_campaign_length` | bounds on `end − start`: production 77 (≈ 24 min), testnet 16 (≈ 5 min); max 365 days |
-| `max_campaigns` | e.g. 32; bounds the state hashed every spend |
-
-## State
+## Types (`shared.rue`)
 
 ```
-[engine_ph, campaigns, active, pending, fees_owed, reserve_total, last_height]
-campaign = (id, creator_ph, budget, start, end, claim_window, claimed)
-root     = (root_id, start, end, root, totals, activates_at)       totals = ((campaign_id . total) ...) sorted
+Config   [distributor_id, reward_asset, fee_bps, treasury_ph, guardian_ph, router_ph,
+          dispute_blocks, min_campaign_length, max_campaign_length, max_campaigns, slot_1st_curry_hash]
+State    [reserve, fees_owed, engine_ph, initialized, campaigns, active, pending]
+Campaign [id, creator, budget, start, end, claim_window, claimed]
+Root     [root_id, start, end, root, totals, activates_at]      totals = ((id . total) ...), ascending ids
+Truth    (ephemeral . State)                                    ephemeral = nil or (h)
+ClaimSlot (key . (claimed . (left . right)))
 ```
 
-The invariant every leaf must preserve, and that a suite checks after every leaf on random state, is
-`reserve_total == Σ (budget − claimed) + fees_owed` (`Distributor.check_invariant`).
+A leaf receives `(Truth . solution)` and returns `(Truth' . conditions)`. A condition `(-42 . c)` is
+spent by the reserve: the finalizer gathers them into the reserve's delegated puzzle.
 
-## Claim slots
+## The prologue
 
-A slot value is `(key . (claimed . (left . right)))`, with `key = sha256tree((campaign_id . puzzle_hash))`
-and sentinels `0x00…` and `0xff…` created by the launcher. This is the Forge registry's sorted-slot
-pattern, with `claimed` where the registry keeps `launcher`. Adjacency is structural: a slot names its
-neighbours' keys.
+Every solution starts with `h`.
 
-- **First claim for a key:** spend the left neighbour `L` with `L.key < key < L.right`. Recreate `L` with
-  `right = key`, recreate the right neighbour's left pointer the same way, and create the new slot with
-  `claimed = cumulative`. Two slots for one key would need an insert between equal keys, which the strict
-  `<` refuses.
-- **Later claims:** spend the key's own slot and recreate it with the new `claimed`. The pointers are
-  unchanged.
-
-Slots are spent with the singleton's message, as in upstream, so only a distributor spend can touch
-them.
+- **First action of a spend** (ephemeral is nil):
+  - assert `h > 0`;
+  - emit `ASSERT_HEIGHT_ABSOLUTE h` and `ASSERT_BEFORE_HEIGHT_ABSOLUTE h + 32`;
+  - promote `pending` to `active` if `h >= pending.activates_at`;
+  - store `(h)` as the ephemeral state.
+- **Later actions:** assert `h` equals the stored one.
 
 ## Leaves
 
-### `create` `[h, campaign_fields, params, settle_parent, settle_amount]`
+All messages are `RECEIVE_MESSAGE` mode 23 (sender puzzle hash → this coin).
 
-0. `RECEIVE_MESSAGE` mode 23 from a coin at `router_ph`, with content
-   `sha256tree(["flpcr-create", distributor_id, id])`, where `id` is the id derived in step 1.
-1. Rebuild `params_hash = sha256tree(params)` and
-   `id = sha256tree(["flpcr-campaign-v1", distributor_id, creator, reward_asset, amount, start, end, kind, target, params_hash, nonce, fee_bps, claim_window])`.
-   `fee_bps` comes from config, not the solution.
-2. Check the struct:
-   - `amount > 0`, `fee = amount * fee_bps / 10000`, `budget = amount − fee > 0`;
-   - `start >= h`, `min_campaign_length <= end − start <= max_campaign_length`, `kind ∈ {1, 2}`;
-   - `time_bps + fees_bps == 10000`, and `kind == 2 ⇒ fees_bps == 0`;
+### `init` `[h]`
+- `initialized == 0`.
+- Create the two sentinel slots, `(0x00.., 0, 0x00.., 0xff..)` and `(0xff.., 0, 0x00.., 0xff..)`.
+- Set `initialized = 1`.
+
+### `create` `[h, creator, amount, start, end, kind, target, params, nonce, claim_window]`
+1. Derive `id = sha256tree(["flpcr-campaign-v1", distributor_id, creator, reward_asset, amount, start, end, kind, target, sha256tree(params), nonce, fee_bps, claim_window])`.
+2. Compute `fee = amount * fee_bps / 10000` and `budget = amount − fee`.
+3. Check:
+   - `amount > 0` and `budget > 0`;
+   - `start >= h`, and `min_campaign_length <= end − start <= max_campaign_length`;
+   - `kind ∈ {1, 2}`;
+   - for `params = (time_bps fees_bps …)`: both `>= 0` and they sum to 10000; `kind == 1` or `fees_bps == 0`;
    - `2 * dispute_blocks <= claim_window <= max_campaign_length`;
-   - `len(campaigns) < max_campaigns`, and `id` not already present.
-
-   The params list shape is checked; its contents are not (the engine interprets them).
-3. Bind the deposit with `settlement_binding(reward_asset, settle_parent, settle_amount, amount)` (V14 §2:
-   derived id, `ASSERT_CONCURRENT_SPEND`, `settle_amount >= amount`).
-4. Update state:
-   - append `(id, creator, budget, start, end, claim_window, 0)`;
-   - `fees_owed += fee + (settle_amount − amount)`. The slack is kept, not dropped, so the reserve matches
-     the coins;
-   - `reserve_total += settle_amount`.
-5. Emit `CREATE_PUZZLE_ANNOUNCEMENT ["flpcr-created", id]` for indexers.
+   - fewer than `max_campaigns` campaigns, and `id` is new.
+4. Receive `"c" + id` from `router_ph`.
+5. Update state: `reserve += amount`, `fees_owed += fee`, and prepend the campaign. The deposit is
+   enforced by conservation (SPEC §5.2).
 
 ### `post_root` `[h, root_id, start, end, root, totals, manifest_hash]`
-
-1. `RECEIVE_MESSAGE` mode 23 from a coin at `engine_ph`, with content
-   `sha256tree(["flpcr-post", distributor_id, root_id, start, end, root, totals, manifest_hash])`.
-2. `pending == nil`. After the prologue's promotion, a root still in its dispute window blocks the post.
-3. Let `last = active`. Check the sequence and window:
-   - `root_id == (last ? last.root_id + 1 : 1)`;
-   - `start == last.end` when there is a `last`;
+1. Check the window:
+   - `pending` is nil;
    - `start < end <= h`.
-4. Check the totals:
-   - `totals` is sorted by id with no duplicates;
-   - every campaign in `last.totals` that is still live appears in `totals`;
-   - for each `(c . t)`: `c` is live, `t >= last.totals[c]` (0 if absent), and
-     `t <= budget_c * (clamp(end, start_c, end_c) − start_c) / (end_c − start_c)`.
-5. `pending = (root_id, start, end, root, totals, h + dispute_blocks)`. Neither `reserve_total` nor the
-   campaigns change.
+2. Check the sequence:
+   - with no active root, `root_id == 1`;
+   - otherwise `root_id == active.root_id + 1` and `start == active.end`.
+3. Check each `(id . total)`, in strictly ascending id order:
+   - the campaign is live;
+   - `total >= previous total`;
+   - `total <= emittable(campaign, end)`.
+4. Every live campaign in the active root's totals must appear in the new totals.
+5. Receive `"p" + sha256tree([root_id, start, end, root, totals, manifest_hash])` from `engine_ph`.
+6. Set `pending = Root(…, activates_at = h + dispute_blocks)`.
 
 ### `veto` `[h, root_id]`
+- `pending` is not nil and `pending.root_id == root_id`. The prologue has already promoted a root whose
+  window passed, so a late veto finds nothing pending.
+- Receive `"v" + sha256tree(root_id)` from `guardian_ph`.
+- Set `pending = nil`.
 
-1. `RECEIVE_MESSAGE` mode 23 from `guardian_ph`, with content
-   `sha256tree(["flpcr-veto", distributor_id, root_id])`.
-2. `pending` exists, `pending.root_id == root_id` and `h < pending.activates_at`.
-3. `pending = nil`. The operator re-posts under the same id.
-
-### `claim` `[h, campaign_id, puzzle_hash, cumulative, path, hashes, slot_proof]`
-
-`slot_proof` is either `(own . (claimed . (left . right)))` or `(neighbour . (key . (right . left_of_right)))`.
-
-1. `active` exists and the campaign is live (not reclaimed). **There is no height check**: a claim after
-   `end_c + claim_window` is valid until `reclaim` removes the campaign.
-2. `simplify_merkle_proof(sha256tree(["flpcr-claim-v1", distributor_id, campaign_id, puzzle_hash, cumulative]), (path . hashes)) == active.root`.
-3. Read `prev` from the slot proof: the own slot's `claimed`, or `0` for an insert, with adjacency checked.
-4. `amount = cumulative − prev > 0`, and `claimed_c + amount <= active.totals[campaign_id]`.
-5. Update state: `claimed_c += amount`, `reserve_total -= amount`, and the slot's `claimed = cumulative`.
-6. Reserve condition: `(-42 . (CREATE_COIN puzzle_hash amount (puzzle_hash)))`.
-7. Several claims in one spend run as several actions. Equal `(puzzle_hash, amount)` pairs in one spend
-   would be `DUPLICATE_OUTPUT` (the V13 `collect` lesson), so the driver merges or splits them across
-   spends.
+### `claim` `[h, campaign_id, puzzle_hash, cumulative, proof, insert, slot_info]`
+1. There is an active root, and the campaign is live (there is no height check).
+2. `simplify_merkle_proof(sha256tree(["flpcr-claim-v1", distributor_id, campaign_id, puzzle_hash, cumulative]), proof) == active.root`.
+3. Let `key = sha256tree((campaign_id . puzzle_hash))`.
+   - **`insert == 0`**: `slot_info = (claimed . (left . right))`. Spend the key's slot and recreate it
+     with `claimed = cumulative`.
+   - **`insert == 1`**: `slot_info = [left_key, left_claimed, left_left, right_key, right_claimed, right_right]`.
+     Assert `left_key < key < right_key`. Spend both neighbours, whose values name each other, and
+     recreate them pointing at `key`. Create `(key, cumulative, left_key, right_key)`.
+4. Let `amount = cumulative − previous`. Assert `amount > 0` and `claimed_c + amount <= active.totals[campaign_id]`.
+5. Pay `(-42 . (CREATE_COIN puzzle_hash amount (puzzle_hash)))`.
+6. Set `claimed_c += amount` and `reserve -= amount`.
 
 ### `reclaim` `[h, campaign_id]`
-
-1. The campaign is live and `h >= end_c + claim_window_c` (the creator's own window, from state).
-2. `amount = budget − claimed`. If `amount > 0`, emit reserve `CREATE_COIN creator_ph amount (creator_ph)`.
-3. Remove the campaign and set `reserve_total -= amount`. Later claims are refused by "campaign is live",
-   and later roots must leave it out of `totals`.
+- The campaign is live and `h >= end + claim_window`.
+- If `budget − claimed > 0`, pay it to the creator.
+- Remove the campaign and set `reserve -= that`.
 
 ### `collect` `[h]`
-
-1. `fees_owed > 0`. Pay it to `treasury_ph` (hinted).
-2. Set `fees_owed = 0` and `reserve_total -= it`.
+- `fees_owed > 0`.
+- Pay it to `treasury_ph`, then set `reserve -= fees_owed` and `fees_owed = 0`.
 
 ### `rotate` `[h, new_engine_ph]`
+- Receive `"r" + new_engine_ph` from `guardian_ph`.
+- Set `engine_ph = new_engine_ph`.
 
-1. A message from `guardian_ph`, with content `sha256tree(["flpcr-rotate", distributor_id, new_engine_ph])`.
+## Driver conventions (`flpcr/chain/driver.py`)
 
-## Registry
+- **Action-layer solution:** `(puzzles . (selectors_and_proofs . (solutions . reserve_parent_id)))`.
+  - `puzzles` lists each distinct leaf once.
+  - A selector is the path to its leaf in that list: 2, 5, 11, … (`2^(i+1) + 2^i − 1`).
+  - `selectors_and_proofs` is in **reverse** execution order and carries a proof on every entry.
+  - `solutions` is one per action, in execution order.
+- **Reserve:**
+  - Solution: `(singleton_inner_ph . (delegated_puzzle . nil))`.
+  - Delegated puzzle: `(q . (recreate . tagged))`, where `tagged` is each action's `-42` conditions
+    **reversed**, concatenated in execution order (the finalizer prepends as it walks).
+  - For a CAT reward, the reserve and any deposit are spent in one CAT ring (`Clvm.spend_cats`).
+- **Slot spends:**
+  - Puzzle: `slot_1st.curry(value_hash)`.
+  - Solution: `((creator_parent . (creator_inner_ph . 1)) . spender_inner_ph)`, where the creator is the
+    singleton generation that created the slot.
+  - The driver adds a spend for every `SEND_MESSAGE` mode 18 a leaf emits. An unknown slot is left out,
+    so consensus refuses the bundle, rather than the driver refusing it first.
+- **`Clvm.alloc` gotcha:** it encodes a list of small ints as a byte string. Values are built
+  explicitly in `flpcr/chain/values.py`.
+- **Conservation is bundle-wide:** an XCH deposit can be topped up by any spare mojo in the bundle.
+  The test harness's message coins recreate themselves, so the bundle carries no slack and a short
+  deposit is refused.
 
-Copy `forge_registry_{common,init,register}` with key = `sha256tree((reward_asset . router_ph))`, one
-distributor per asset per operator.
-`register` rebuilds the distributor's full puzzle hash from config, so a registry entry **is** a known-good
-config. `RegistryConstants` pins:
-- `fee_bps = 300`;
-- `dispute_blocks > 0`, `0 < min_campaign_length <= max_campaign_length`, and the 365-day ceiling;
-- `treasury_ph`.
+## Still to build
 
-The launcher creates the 0-mojo reserve and the two claim-slot sentinels. `register` proves both, which
-is V14's R-1 lesson: derived, never claimed.
-
-## Suites to write (V14 conventions)
-
-| Suite | Proves |
-|---|---|
-| `_test_flpcr_integrity.py` | every puzzle recompiles to its pinned hash, and upstream is untouched |
-| `_test_flpcr_reference.py` | every scenario in `tests/test_distributor.py` gives the same result (payments and refusals) on the puzzles |
-| `_test_flpcr_ceiling.py` | `post_root` refuses one mojo above `emittable(end)` at the boundaries (before start, start, mid, end, after end) and any decreasing total |
-| `_test_flpcr_claims.py` | double claim (same root, same spend, two spends); stale root after promotion; another distributor's or campaign's proof; claim past the posted total; insert of an existing key; claim after the window |
-| `_test_flpcr_reclaim.py` | reclaim inside the window, twice, and with claims racing in the same block; a claim long after the window succeeds while the campaign exists and is refused after the reclaim |
-| `_test_flpcr_invariant.py` | the `reserve_total` identity after random leaf sequences |
-| `scripts/mutate-flpcr.py` | every assertion killed, or reported UNREACHED with a written argument |
+- **Registry.** Key `sha256tree((reward_asset . router_ph))`. Rebuilds `LEAVES_ROOT` from `Config` and
+  pins `fee_bps = 300`, the `dispute_blocks` floor and `treasury_ph`.
+- **Cost measurements.** State with `max_campaigns` entries, and many claims per spend.
+- **A `clvmPuzzleAudit.md` pass by a second reader.**

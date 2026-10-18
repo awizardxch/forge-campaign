@@ -7,8 +7,10 @@
 > **FLPCR is the working name.** It appears in identifiers (`flpcr`, `flpcr-*-v1` tags), so a
 > rename is a find-and-replace until something is deployed. Merkl is the reference design, not a
 > dependency; nothing here uses Merkl's name, contracts or API.
-> Status: **draft v0.2, 2026-10-18.** Engine and a reference model of the distributor are built
-> and tested; the distributor puzzles are specified but not yet written. Not audited. Testnet first.
+> Status: **v0.3, 2026-10-18.** Engine, reference model **and the distributor puzzles** are built.
+> The puzzles run on the in-process simulator (chia-wallet-sdk 0.36.0) for XCH and CAT rewards, agree
+> with the reference model on randomized scenarios, and every leaf assertion is pinned by a probe
+> (§12). Not on testnet yet. Not audited.
 
 **Decisions so far**
 
@@ -129,7 +131,7 @@ The full `params` value sits in the `create` solution, so it is on chain and rec
 ```
  creator ──offer──▶ responder ──create──▶ ┌──────────────────────────────┐
                                           │ Distributor singleton        │
- chain ──▶ Engine ──root manifest──▶ IPFS │  action layer, 7 leaves      │
+ chain ──▶ Engine ──root manifest──▶ IPFS │  action layer, 8 leaves      │
             │                             │  reserve (upstream finalizer)│
             └──post_root (operator)─────▶ │  state: campaigns, roots     │
  guardian ──veto / rotate───────────────▶ │  claim slots (campaign,ph)   │
@@ -166,30 +168,42 @@ pushed through in `tests/test_distributor.py`.
 ### 5.1 Config (curried, so the leaf root commits to it) and state
 
 ```
-Config  = { distributor_id, reward_asset, treasury_ph, fee_bps = 300, guardian_ph, router_ph,
-            dispute_blocks, min_campaign_length, max_campaign_length, max_campaigns }
-State   = { engine_ph, campaigns: List<Campaign>, active: Root?, pending: Root?,
-            fees_owed, reserve_total }
-Campaign (in state) = (campaign_id, creator_ph, budget, start, end, claim_window, claimed)
-Root     = (root_id, start, end, root, totals: ((campaign_id . cumulative_total) ...), activates_at)
-Claim slot (one per campaign and holder) = ((campaign_id . puzzle_hash) . claimed)
+Config  = [ distributor_id, reward_asset, fee_bps = 300, treasury_ph, guardian_ph, router_ph,
+            dispute_blocks, min_campaign_length, max_campaign_length, max_campaigns, slot_1st_curry_hash ]
+State   = [ reserve, fees_owed, engine_ph, initialized, campaigns, active, pending ]
+Campaign (in state) = [ id, creator_ph, budget, start, end, claim_window, claimed ]
+Root     = [ root_id, start, end, root, totals: ((campaign_id . cumulative_total) ...), activates_at ]
+Claim slot = (key . (claimed . (left . right))),   key = sha256tree((campaign_id . puzzle_hash))
 ```
 
-`reserve_total = Σ (budget − claimed) over campaigns + fees_owed`. The reserve finalizer sizes
-the reserve coin from it. Conservation is the reserve's job, and honesty about this sum is each
+These are the exact layouts in `contracts/puzzles/flpcr/shared.rue` (proper lists; the slot is dotted).
+`reserve` is the first state field, so the upstream reserve finalizer's default amount program `(f State)`
+sizes the reserve coin and no custom program is needed. The invariant is
+`reserve = Σ (budget − claimed) over campaigns + fees_owed`. Conservation is the reserve's job, and honesty about this sum is each
 leaf's job (the Forge rule, `chip0050ActionLayer.md`).
 
 ### 5.2 Leaves (fixed forever per distributor)
 
 | Leaf | Who | Does |
 |---|---|---|
-| `create` | router (mode-23 message from a coin at `router_ph`, content = campaign id) | Binds a settlement of at least `amount` (V14 `settlement_binding`: parent + amount + `ASSERT_CONCURRENT_SPEND`); validates the struct; appends the campaign with `claimed = 0`; accrues `fee` + any slack to `fees_owed`. Refuses a duplicate id or a full list |
-| `post_root` | operator (mode-23 message from a coin at `engine_ph`) | Sets `pending`. Checks §5.3. `activates_at = h + dispute_blocks` |
-| `veto` | guardian (mode-23 message from `guardian_ph`) | Clears `pending` while it is still in its dispute window |
+| `init` | anyone, once | Creates the two sentinel claim slots (keys `0x00…` and `0xff…`); `initialized` makes it one-shot, because a second pair would let one key be inserted twice |
+| `create` | router (mode-23 message `"c" + campaign_id` from a coin at `router_ph`) | Validates the struct and derives the id; appends the campaign with `claimed = 0`; `reserve += amount`, `fees_owed += fee`. The deposit is enforced by **conservation**, not by naming a coin: the reserve is recreated at the new size, so the bundle (for a CAT, the reserve's CAT ring) must supply `amount` or it is invalid. Who supplies it is not the puzzle's concern; any excess is ordinary bundle slack (network fee) |
+| `post_root` | operator (mode-23 message `"p" + sha256tree([root_id, start, end, root, totals, manifest_hash])` from `engine_ph`) | Sets `pending`. Checks §5.3. `activates_at = h + dispute_blocks` |
+| `veto` | guardian (mode-23 message `"v" + sha256tree(root_id)` from `guardian_ph`) | Clears `pending` while it is still in its dispute window |
 | `claim` | anyone | Against the **active** root, for any campaign not yet reclaimed (no deadline): verifies `(campaign, ph, cumulative)`, pays `cumulative − claimed` from the reserve to `ph` (hinted), and records `cumulative` in the claim slot |
 | `reclaim` | anyone, from the campaign's `end + claim_window` | Pays `budget − claimed` to `creator_ph` (hinted) and removes the campaign |
 | `collect` | anyone | Pays `fees_owed` to `treasury_ph` |
-| `rotate` | guardian | Replaces `engine_ph` |
+| `rotate` | guardian (message `"r" + new_engine_ph`) | Replaces `engine_ph` |
+
+Every message is mode 23: sender identified by puzzle hash, receiver by **coin id**, the current
+singleton coin. A message is therefore bound to one generation of the distributor and cannot be
+replayed against a later one.
+
+**The height pin.** Every solution starts with `h`. The first action of a spend asserts
+`ASSERT_HEIGHT_ABSOLUTE h` and `ASSERT_BEFORE_HEIGHT_ABSOLUTE h + 32` and stores `h` in ephemeral
+state; every later action in the same spend must name the same `h`. Without that last rule a second
+action could claim a later height than the first, for example to reclaim before the window opens.
+The mutation run found the test that proves it was missing (§12).
 
 There is no upgrade leaf and no "withdraw everything" leaf. A compromised operator and a
 compromised guardian together can still pay out only up to each campaign's emission schedule
@@ -228,11 +242,17 @@ verifies; the newer one includes everything the older one did.
 
 `claimed` lives in a **slot** per (campaign, holder), because it grows without bound and is read only
 by that holder's claim, which is the CHIP-0050 slot use case. The first claim must prove that no slot
-exists for its key. FLPCR does this the same way the Forge registry does, with **sorted slots and
-sentinels**: inserting `(c, ph)` spends its left neighbour, proving adjacency, and recreates it
-pointing at the new slot. A later claim spends only the holder's own slot. Claims serialize on the
+exists for its key. FLPCR does this the way CATalog does, with a **sorted, doubly linked list of
+slots between sentinels**: a first claim for key `k` spends its left neighbour `L` and right neighbour
+`R`, whose values name each other (`L.right = R.key`, `R.left = L.key`), so the adjacency is structural:
+a slot with the wrong pointers does not exist. It asserts `L.key < k < R.key` and recreates `L` and `R`
+pointing at a new slot for `k`. **The ordering assertion is what stops a double claim.** Without it, a
+holder could insert a second slot for their own key between two other neighbours, starting again from
+`claimed = 0`. A later claim spends only the holder's own slot. Slots are hinted with their key, so the
+API finds a holder's slot without knowing how much they have claimed. Claims serialize on the
 singleton anyway (each one pays from the reserve), so neighbour contention costs nothing extra.
-Several claims, for several holders and campaigns, batch into one singleton spend.
+Several claims, for several holders and campaigns, batch into one singleton spend, as long as no two
+of them touch the same slot.
 
 **Wallet experience.** The interface (and any keeper) builds the claim bundle and the holder signs
 nothing but the network fee, through a Sage offer that pays it. Because the payout always goes to the
@@ -437,9 +457,9 @@ Spellbook / agent API: `flpcr.quote`, `flpcr.create`, `flpcr.rewards`, `flpcr.cl
 
 | Phase | Deliverable | Gate |
 |---|---|---|
-| **0 (this repo)** | Spec; engine (`model`, `engine`, `merkle`, `manifest`, CLI); reference distributor model; router rules; tests | 44 tests green; hashing cross-checked against `clvm` |
-| **1: engine on real data** | Live `Source` for testnet11 (coinset or full node + `forge_v14_resync`); run against the 32 V14 pools; publish manifests | Replaying a week of testnet from scratch twice gives identical roots |
-| **2: distributor puzzles** | `contracts/` rue project in this repo: 7 leaves, claim slots, registry, pins; driver; suites in the V14 style (integrity, before/after, mutation with UNREACHED reporting) that also run every scenario in `tests/test_distributor.py` against the puzzles | `clvmPuzzleAudit.md` pass; every refusal in the reference model reproduced by a puzzle refusal |
+| **0 ✅** | Spec; engine (`model`, `engine`, `merkle`, `manifest`, CLI); reference distributor model; router rules | Hashing cross-checked against `clvm` |
+| **1: engine on real data** (next) | Live `Source` for testnet11 (coinset or full node + `forge_v14_resync`); run against the 32 V14 pools; publish manifests | Replaying a week of testnet from scratch twice gives identical roots |
+| **2 ✅ (simulator)** | `contracts/`: 8 leaves, claim slots, pins, `build.py`; driver and `SimWorld`; chain, differential and mutation suites, XCH and CAT rewards (§12) | Done on the simulator. Still open: the distributor registry, a `clvmPuzzleAudit.md` pass by a second reader |
 | **3: testnet lane** | Router (quote + create, our key), operator bot, watcher, API, forge-ui tab, on `Config.testnet` distributors | One campaign end to end on testnet11: create → roots → claims at several points → reclaim of leftovers |
 | **4: hardening** | Public dispute leaf, guardian as a Forge multisig safe, external review | No mainnet before external review |
 
@@ -457,3 +477,34 @@ location (this repo, `contracts/`; `forge-puzzles` stays specific to the n-asset
    FLPCR registry *also* refuse to register a distributor whose reward asset is not in a Forge pool,
    which would mean proving a Forge registry slot on chain? Proposal: no. The router check is enough
    while every distributor is ours; revisit when third-party operators arrive.
+
+---
+
+## 12. What the simulator proves, and what it does not
+
+Run everything with `python -m pytest -q` (100 tests, about 2 s) after `python contracts/build.py`.
+
+| Suite | Proves |
+|---|---|
+| `contracts/build.py` | Every puzzle compiles with rue 0.8.4; the five upstream puzzles reproduce slot-machine@2d37ba1's published hashes; our eight leaves match `pins.json` |
+| `tests/test_chain.py` | On the simulator, for XCH **and** a CAT reward: the full lifecycle (3% fee, claims at several points, late claim past the window, leftovers to the creator, fee collection), the reserve coin equal to state after every step, several actions in one spend, and a refusal probe per rule (router, deposit, lengths, claim window, duplicates, operator, ceiling, sequence, tiling, totals, veto, rotate, forged claims, slot inserts, double claims, height pin) |
+| `tests/test_differential.py` | Twelve random scenarios (alternating XCH and CAT) through the reference model and the puzzles side by side: 48 roots, 80 paid claims, 45 refused claims, reclaims and collects. Every payout and every refusal agrees, and the reserve matches after each step |
+| `scripts/mutate.py` | Deleting any single assertion in our leaves makes a test fail (35 of 42), or does not compile (5, enforced by rue's type narrowing), or is argued in `scripts/mutation-arguments.json` (2: `amount > 0` and `budget > 0` imply each other while the fee is below 100%) |
+
+A refusal counts only if the leaf raised (`clvm raise`) or consensus rejected the bundle (`Simulator
+error`). A Python error in a test or the driver is a bug and fails the test.
+
+**What the first mutation run found.** With every test green, 25 of 37 buildable mutants survived. Three
+of the unpinned assertions guard attacks: the slot ordering check (a double claim), `end <= h` in
+`post_root` (a root dated in the future releases budget early), and the height pin (a later action naming
+a later height reclaims early). The assertions were in the puzzles; the tests that proved them were not.
+Each now has a probe built so that the assertion it names is the first thing that can refuse it.
+
+**Not yet proven:**
+- **Real consensus.** The simulator runs chia_rs consensus checks, but testnet11 is the gate (phase 3).
+- **Cost under load.** Spend cost with many campaigns in state, and with many claims in one spend, is not
+  measured yet. `max_campaigns` bounds the state.
+- **Real keys.** Router, operator and guardian are anyone-can-spend test puzzles here. On testnet they
+  are a wallet key (router, operator) and a Forge multisig safe (guardian).
+- **The distributor registry** is not built.
+- **No second reader.** Nothing here has been reviewed by anyone but its author.
