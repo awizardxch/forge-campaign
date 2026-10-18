@@ -9,8 +9,10 @@ raises `Refused` and leaves the state untouched.
 Claims follow Merkl: the active root lists each holder's cumulative earnings
 per campaign; `claim` pays `cumulative - claimed` and records the new claimed
 total (on chain: one slot per (campaign, holder) in a sorted slot list, the
-Forge registry's pattern). Once a campaign's claim window has closed, its
-creator reclaims everything holders did not claim, earned or not.
+Forge registry's pattern). Each campaign carries its own claim window, set by
+its creator. Once it has passed the creator may reclaim everything holders did
+not claim, earned or not. Until the creator actually does, holders can still
+claim: the window only says when reclaiming opens, not when claiming closes.
 """
 
 from __future__ import annotations
@@ -19,9 +21,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from .merkle import Proof, claim_leaf, root_from_proof
-from .model import DEFAULT_FEE_BPS, Campaign
-
-BLOCKS_PER_DAY = 4608  # 18.75 s per block
+from .model import BLOCKS_PER_DAY, DEFAULT_FEE_BPS, Campaign
 
 
 class Refused(Exception):
@@ -36,7 +36,11 @@ class Config:
     guardian_ph: bytes
     fee_bps: int = DEFAULT_FEE_BPS
     dispute_blocks: int = 1152  # ~6 h
-    claim_window: int = 30 * BLOCKS_PER_DAY  # after a campaign's end, before the creator may reclaim
+    # Bounds on the creator's claim window. The floor leaves room for the root
+    # covering `end` to be posted and clear its dispute window before a
+    # reclaim can open.
+    min_claim_window: int = 2304  # ~12 h, twice the default dispute window
+    max_claim_window: int = 365 * BLOCKS_PER_DAY
     max_campaigns: int = 32
 
 
@@ -94,6 +98,8 @@ class Distributor:
             raise Refused("fee does not match the distributor's")
         if campaign.start < h:
             raise Refused("campaign would start in the past")
+        if not c.min_claim_window <= campaign.claim_window <= c.max_claim_window:
+            raise Refused("claim window out of bounds")
         if campaign.id in self.campaigns:
             raise Refused("campaign id already exists")
         if len(self.campaigns) >= c.max_campaigns:
@@ -155,9 +161,9 @@ class Distributor:
         self._settle(h)
         rec = self.campaigns.get(campaign_id)
         if rec is None:
-            raise Refused("campaign is closed")
-        if h >= rec.campaign.end + self.config.claim_window:
-            raise Refused("claim window has closed")
+            raise Refused("campaign has been reclaimed")
+        # No deadline here: past the claim window a holder can still claim
+        # until the creator's reclaim lands. Whichever spend comes first wins.
         if self.active is None:
             raise Refused("no active root")
         leaf = claim_leaf(self.config.distributor_id, campaign_id, puzzle_hash, cumulative)
@@ -175,13 +181,14 @@ class Distributor:
         return puzzle_hash, amount
 
     def reclaim(self, h: int, campaign_id: bytes) -> Tuple[bytes, int]:
-        """After the claim window, the creator gets back whatever holders left:
-        budget never earned plus earnings never claimed. Anyone may submit."""
+        """Once the campaign's claim window has passed, the creator gets back
+        whatever holders left: budget never earned plus earnings never claimed.
+        Anyone may submit; the payment always goes to the creator."""
         self._settle(h)
         rec = self.campaigns.get(campaign_id)
         if rec is None:
             raise Refused("no such campaign")
-        if h < rec.campaign.end + self.config.claim_window:
+        if h < rec.campaign.reclaim_from:
             raise Refused("claim window still open")
         amount = rec.campaign.budget - rec.claimed
         del self.campaigns[campaign_id]

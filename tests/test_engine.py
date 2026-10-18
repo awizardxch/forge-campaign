@@ -49,6 +49,14 @@ class TestCampaign(unittest.TestCase):
         self.assertEqual(c.emittable(10), 970_000)
         self.assertNotEqual(c.id, lp_campaign(1_000_000, 0, 10).id)
 
+    def test_claim_window_is_part_of_the_terms(self):
+        a = lp_campaign()
+        b = Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL, fee_bps=0, claim_window=4608)
+        self.assertNotEqual(a.id, b.id)
+        self.assertEqual(b.reclaim_from, 200 + 4608)
+        with self.assertRaises(ValueError):
+            Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL, claim_window=0)
+
     def test_emittable_telescopes_to_amount(self):
         c = lp_campaign(amount=1001, start=0, end=7)
         self.assertEqual(c.emittable(7), 1001)

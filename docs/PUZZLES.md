@@ -1,8 +1,10 @@
 # FLPCR — Distributor Puzzles (build spec)
 
 > The phase 2 build spec, in the shape the V14 specs took. Nothing here is written in Rue yet. It is
-> meant to be built in `contracts/flpcr/` on the Forge workstation, where `rue` 0.8.4, `chia_rs` and
-> the V14 harness live. Read with `SPEC.md` §5, `chip0050ActionLayer.md` and `clvmPuzzleAudit.md`.
+> meant to be built **in this repo** under `contracts/` (a rue project, `Rue.toml` entrypoint
+> `puzzles`, dist `compiled`, as in Forge's `contracts/v14/`), not in `forge-puzzles`, which is
+> specific to the n-asset AMM. It needs `rue` 0.8.4 and `chia_rs`; the upstream CHIP-0050 sources are
+> vendored and hash-pinned here the same way Forge pins them. Read with `SPEC.md` §5, `chip0050ActionLayer.md` and `clvmPuzzleAudit.md`.
 > **`flpcr/distributor.py` is the executable form of this document.** Where the two disagree, fix
 > one of them before writing Rue, and every scenario in `tests/test_distributor.py` becomes a puzzle
 > suite case.
@@ -41,7 +43,7 @@ claim slot  = slot(distributor_launcher, nonce 1)(sha256tree(slot_value))
 | `fee_bps` | **300** (3%). The registry pins it, so every registered distributor charges the same |
 | `guardian_ph` | intended: a Forge multisig safe's puzzle hash |
 | `dispute_blocks` | default 1,152 (≈ 6 h); `>= MIN_DISPUTE_BLOCKS` (384) |
-| `claim_window` | default 138,240 (30 days); `>= MIN_CLAIM_WINDOW` (7 days) |
+| `min_claim_window`, `max_claim_window` | bounds on the creator's choice; default 2,304 (≈ 12 h) and 365 days. The floor must be `>= 2 * dispute_blocks` |
 | `max_campaigns` | e.g. 32; bounds the state hashed every spend |
 | `max_duration` | e.g. 4,608 × 365 blocks |
 
@@ -49,7 +51,7 @@ claim slot  = slot(distributor_launcher, nonce 1)(sha256tree(slot_value))
 
 ```
 [engine_ph, campaigns, active, pending, fees_owed, reserve_total, last_height]
-campaign = (id, creator_ph, budget, start, end, claimed)
+campaign = (id, creator_ph, budget, start, end, claim_window, claimed)
 root     = (root_id, start, end, root, totals, activates_at)       totals = ((campaign_id . total) ...) sorted
 ```
 
@@ -78,19 +80,20 @@ them.
 ### `create` `[h, campaign_fields, params, settle_parent, settle_amount]`
 
 1. Rebuild `params_hash = sha256tree(params)` and
-   `id = sha256tree(["flpcr-campaign-v1", distributor_id, creator, reward_asset, amount, start, end, kind, target, params_hash, nonce, fee_bps])`.
+   `id = sha256tree(["flpcr-campaign-v1", distributor_id, creator, reward_asset, amount, start, end, kind, target, params_hash, nonce, fee_bps, claim_window])`.
    `fee_bps` comes from config, not the solution.
 2. Check the struct:
    - `amount > 0`, `fee = amount * fee_bps / 10000`, `budget = amount − fee > 0`;
    - `start >= h`, `start < end <= start + max_duration`, `kind ∈ {1, 2}`;
    - `time_bps + fees_bps == 10000`, and `kind == 2 ⇒ fees_bps == 0`;
+   - `min_claim_window <= claim_window <= max_claim_window`;
    - `len(campaigns) < max_campaigns`, and `id` not already present.
 
    The params list shape is checked; its contents are not (the engine interprets them).
 3. Bind the deposit with `settlement_binding(reward_asset, settle_parent, settle_amount, amount)` (V14 §2:
    derived id, `ASSERT_CONCURRENT_SPEND`, `settle_amount >= amount`).
 4. Update state:
-   - append `(id, creator, budget, start, end, 0)`;
+   - append `(id, creator, budget, start, end, claim_window, 0)`;
    - `fees_owed += fee + (settle_amount − amount)`. The slack is kept, not dropped, so the reserve matches
      the coins;
    - `reserve_total += settle_amount`.
@@ -124,7 +127,8 @@ them.
 
 `slot_proof` is either `(own . (claimed . (left . right)))` or `(neighbour . (key . (right . left_of_right)))`.
 
-1. `active` exists. The campaign is live and `h < end_c + claim_window`.
+1. `active` exists and the campaign is live (not reclaimed). **There is no height check**: a claim after
+   `end_c + claim_window` is valid until `reclaim` removes the campaign.
 2. `simplify_merkle_proof(sha256tree(["flpcr-claim-v1", distributor_id, campaign_id, puzzle_hash, cumulative]), (path . hashes)) == active.root`.
 3. Read `prev` from the slot proof: the own slot's `claimed`, or `0` for an insert, with adjacency checked.
 4. `amount = cumulative − prev > 0`, and `claimed_c + amount <= active.totals[campaign_id]`.
@@ -136,7 +140,7 @@ them.
 
 ### `reclaim` `[h, campaign_id]`
 
-1. The campaign is live and `h >= end_c + claim_window`.
+1. The campaign is live and `h >= end_c + claim_window_c` (the creator's own window, from state).
 2. `amount = budget − claimed`. If `amount > 0`, emit reserve `CREATE_COIN creator_ph amount (creator_ph)`.
 3. Remove the campaign and set `reserve_total -= amount`. Later claims are refused by "campaign is live",
    and later roots must leave it out of `totals`.
@@ -156,7 +160,7 @@ Copy `forge_registry_{common,init,register}` with key = `reward_asset`, one dist
 `register` rebuilds the distributor's full puzzle hash from config, so a registry entry **is** a known-good
 config. `RegistryConstants` pins:
 - `fee_bps = 300`;
-- the `dispute_blocks` and `claim_window` floors;
+- the `dispute_blocks` floor and the claim-window bounds;
 - `treasury_ph`.
 
 The launcher creates the 0-mojo reserve and the two claim-slot sentinels. `register` proves both, which
@@ -170,6 +174,6 @@ is V14's R-1 lesson: derived, never claimed.
 | `_test_flpcr_reference.py` | every scenario in `tests/test_distributor.py` gives the same result (payments and refusals) on the puzzles |
 | `_test_flpcr_ceiling.py` | `post_root` refuses one mojo above `emittable(end)` at the boundaries (before start, start, mid, end, after end) and any decreasing total |
 | `_test_flpcr_claims.py` | double claim (same root, same spend, two spends); stale root after promotion; another distributor's or campaign's proof; claim past the posted total; insert of an existing key; claim after the window |
-| `_test_flpcr_reclaim.py` | reclaim inside the window, twice, and with claims racing in the same block |
+| `_test_flpcr_reclaim.py` | reclaim inside the window, twice, and with claims racing in the same block; a claim long after the window succeeds while the campaign exists and is refused after the reclaim |
 | `_test_flpcr_invariant.py` | the `reserve_total` identity after random leaf sequences |
 | `scripts/mutate-flpcr.py` | every assertion killed, or reported UNREACHED with a written argument |

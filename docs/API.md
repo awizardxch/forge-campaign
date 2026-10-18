@@ -28,8 +28,9 @@ Returns the struct from SPEC §3.1 in full (params expanded), plus:
 - `created_height` and `distributor`;
 - `emitted`, which is `emittable(peak)`;
 - `posted_total` (in the active root) and `claimed`;
-- `claim_deadline` (`end + claim_window`);
-- `reclaimable` (`budget − claimed`, once past the deadline) and `reclaimed`.
+- `claim_window` (the creator's choice) and `reclaim_from` (`end + claim_window`);
+- `reclaimable` (`budget − claimed`, from `reclaim_from`) and `reclaimed`. Until `reclaimed`, holders can
+  still claim, even past `reclaim_from`.
 
 ### `GET /users/{address}/rewards?reward_asset=`
 
@@ -44,7 +45,8 @@ Returns the struct from SPEC §3.1 in full (params expanded), plus:
       "claimed": "…",         // from the claim slot
       "claimable": "…",       // cumulative − claimed
       "pending": "…",         // extra in a root still in its dispute window
-      "claim_deadline": 4850000,
+      "reclaim_from": 4850000,   // claims stay open past this until the creator reclaims
+      "reclaimed": false,
       "proof": { "path": 5, "hashes": ["…"] } }] }] }
 ```
 
@@ -61,11 +63,12 @@ The registry contents: per reward asset, the launcher, the config, and a summary
 
 ### `POST /campaigns/quote`
 
-Body: the campaign fields minus `distributor_id`, which is resolved from `reward_asset`.
+Body: the campaign fields minus `distributor_id`, which is resolved from `reward_asset`. `claim_window`
+(blocks) is required; the distributor's bounds are returned in the error if it is out of range.
 
 Returns:
 - the validated struct and `campaign_id`;
-- `fee` (3%), `budget`, the per-day emission and `claim_deadline`;
+- `fee` (3%), `budget`, the per-day emission and `reclaim_from`;
 - the **offer to make**: give `amount` of `reward_asset`, request nothing.
 
 Validation errors follow the same rules as the `create` leaf, so a quote that passes builds.
@@ -84,7 +87,7 @@ holder.
 
 ### `POST /reclaims/build`
 
-Body: `{ campaign_id }`. This is refused before `claim_deadline`. Returns the bundle that pays the
+Body: `{ campaign_id }`. This is refused before `reclaim_from`. Returns the bundle that pays the
 creator.
 
 ## Rate limits and keys

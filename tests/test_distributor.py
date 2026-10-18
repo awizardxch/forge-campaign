@@ -24,9 +24,9 @@ WINDOW = 1000
 
 
 def setup(deposit=1_000_000, start=100, end=200):
-    cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, dispute_blocks=DISPUTE, claim_window=WINDOW)
+    cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, dispute_blocks=DISPUTE, min_claim_window=2 * DISPUTE)
     d = Distributor(cfg, ENGINE)
-    c = Campaign(DIST, CREATOR, REWARD, deposit, start, end, Kind.LP_HOLD, POOL)
+    c = Campaign(DIST, CREATOR, REWARD, deposit, start, end, Kind.LP_HOLD, POOL, claim_window=WINDOW)
     src = FixtureSource(lp_assets={POOL: LP}, events={LP: [HolderEvent(0, ALICE, 3), HolderEvent(0, BOB, 1)]})
     d.create(50, c, deposit)
     return d, c, src
@@ -62,28 +62,42 @@ class TestLifecycle(unittest.TestCase):
         self.assertEqual(claim(d, r2, 210, ALICE, c), (ALICE, 727_500 - 363_750))
         d.check_invariant()
 
-        # Creator gets Bob's unclaimed 242,500 back, but not before the window closes.
+        # The creator gets Bob's unclaimed 242,500 back, but not before the window passes.
         with self.assertRaises(Refused):
             d.reclaim(200 + WINDOW - 1, c.id)
         self.assertEqual(d.reclaim(200 + WINDOW, c.id), (CREATOR, 242_500))
         with self.assertRaises(Refused):
-            claim(d, r2, 200 + WINDOW, BOB, c)
+            claim(d, r2, 200 + WINDOW, BOB, c)  # reclaimed: nothing left to claim from
         self.assertEqual(d.collect(200 + WINDOW), (TREASURY, 30_000))
         self.assertEqual(d.reserve, 0)
         d.check_invariant()
 
-    def test_claim_window_closes_for_holders(self):
+    def test_holders_claim_past_the_window_until_the_creator_reclaims(self):
+        # Twice the window has passed and the creator has not reclaimed: Bob still claims.
         d, c, src = setup()
         _, r = run_epoch(EngineState(DIST, height=100), [c], src, 200)
         post(d, r, 200)
+        late = 200 + 2 * WINDOW
+        self.assertEqual(claim(d, r, late, BOB, c), (BOB, 242_500))
+        self.assertEqual(d.reclaim(late, c.id), (CREATOR, 727_500))  # only Alice's share was left
         with self.assertRaises(Refused):
-            claim(d, r, 200 + WINDOW, BOB, c)
+            claim(d, r, late, ALICE, c)
+        d.check_invariant()
+
+    def test_claim_window_is_the_creators_and_bounded(self):
+        d, c, src = setup()
+        self.assertEqual(c.reclaim_from, 200 + WINDOW)
+        short = Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL, nonce=1, claim_window=2 * DISPUTE - 1)
+        with self.assertRaises(Refused):
+            d.create(50, short, 1000)
+        other = Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL, nonce=1, claim_window=WINDOW + 1)
+        self.assertNotEqual(other.id, Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL, nonce=1, claim_window=WINDOW).id)
 
     def test_unearned_budget_also_goes_back(self):
         # Nobody holds LP for the first half: that half was never earned.
-        cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, fee_bps=0, dispute_blocks=DISPUTE, claim_window=WINDOW)
+        cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, fee_bps=0, dispute_blocks=DISPUTE, min_claim_window=2 * DISPUTE)
         d = Distributor(cfg, ENGINE)
-        c = Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL, fee_bps=0)
+        c = Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL, fee_bps=0, claim_window=WINDOW)
         src = FixtureSource(lp_assets={POOL: LP}, events={LP: [HolderEvent(150, ALICE, 1)]})
         d.create(50, c, 1000)
         _, r = run_epoch(EngineState(DIST, height=100), [c], src, 200)

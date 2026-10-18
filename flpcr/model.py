@@ -13,6 +13,9 @@ BPS = 10_000
 # Creation fee, taken out of the deposit as Merkl does: a creator who deposits
 # 1,000 funds a 970 budget. The distributor curries the same number.
 DEFAULT_FEE_BPS = 300
+BLOCKS_PER_DAY = 4608  # 18.75 s per block
+# A convenience for tests and fixtures; the interface makes the creator choose.
+DEFAULT_CLAIM_WINDOW = 7 * BLOCKS_PER_DAY
 
 
 class Kind(IntEnum):
@@ -67,6 +70,10 @@ class Campaign:
     params: Params = field(default_factory=Params)
     nonce: int = 0  # lets one creator fund two otherwise identical campaigns
     fee_bps: int = DEFAULT_FEE_BPS  # the distributor's, copied in so the id commits to it
+    # Blocks after `end` before the creator may reclaim. Chosen by the creator
+    # and committed in the id, so the campaign's terms are complete at creation.
+    # Holders can claim past it, right up until a reclaim actually lands.
+    claim_window: int = DEFAULT_CLAIM_WINDOW
 
     def __post_init__(self) -> None:
         if self.amount <= 0:
@@ -75,6 +82,8 @@ class Campaign:
             raise ValueError("fee_bps out of range")
         if self.budget <= 0:
             raise ValueError("nothing left to distribute after the fee")
+        if self.claim_window <= 0:
+            raise ValueError("claim_window must be positive")
         if self.end <= self.start:
             raise ValueError("end must be after start")
         p = self.params
@@ -97,6 +106,11 @@ class Campaign:
         return self.amount - self.fee
 
     @property
+    def reclaim_from(self) -> int:
+        """First height at which the creator may reclaim what is left."""
+        return self.end + self.claim_window
+
+    @property
     def length(self) -> int:
         return self.end - self.start
 
@@ -114,6 +128,7 @@ class Campaign:
             self.params.hash(),
             self.nonce,
             self.fee_bps,
+            self.claim_window,
         ]
 
     @property

@@ -2,8 +2,8 @@
 
 > Incentive campaigns for Forge liquidity and Chia CATs. Anyone can fund a reward budget on a
 > Forge pool or a CAT over a block range. Holders earn from it every block and claim whenever
-> they like. After the campaign ends and its claim window closes, the creator takes back
-> everything holders left unclaimed.
+> they like. Once the claim window the creator chose has passed, the creator may take back
+> everything holders left unclaimed; until they actually do, holders can still claim.
 > **FLPCR is the working name.** It appears in identifiers (`flpcr`, `flpcr-*-v1` tags), so a
 > rename is a find-and-replace until something is deployed. Merkl is the reference design, not a
 > dependency; nothing here uses Merkl's name, contracts or API.
@@ -16,7 +16,8 @@
 |---|---|
 | Creation fee | **3%**, taken out of the deposit, as Merkl does. A 1,000 deposit funds a 970 budget |
 | Claims | **Pull, cumulative, at any time**, as Merkl does. Each root lists what a holder has earned so far; a claim pays the difference from what they already claimed |
-| Leftovers | After `end + claim_window`, the **creator reclaims** everything not claimed: budget nobody earned plus earnings nobody claimed |
+| Claim window | **Set by the creator at creation** and committed in the campaign id, so the terms are complete up front. It opens reclaiming; it does not close claiming |
+| Leftovers | From `end + claim_window`, the **creator may reclaim** everything not claimed: budget nobody earned plus earnings nobody claimed. **Holders can claim until the reclaim lands**: a 24 h window with no reclaim after 48 h still pays a late claimer |
 
 ---
 
@@ -32,7 +33,7 @@ the incentive layer most EVM DEXs use.
 | Off-chain engine | Every few hours, scores positions (time-weighted liquidity; for CLAMMs, fees/token0/token1 weights, in-range only, boosts, blacklists, forwarders for ALMs) and builds a tree of **cumulative** `(user, token, amount)` | Same model, deterministic and exact (§6). The tree is **cumulative per (campaign, holder)**. It scores LP and CAT holders from chain data, using the Forge replay that already exists |
 | `Distributor.updateTree(root)` + dispute | An updater posts a root; it becomes claimable after a dispute period; a bonded disputer can freeze it; governance resolves or revokes | `post_root` leaf, then a **dispute window in blocks** before it becomes active; a guardian can `veto`. The same leaf enforces each campaign's **emission ceiling** on chain (§5.3), which Merkl does not have |
 | `Distributor.claim(users, tokens, amounts, proofs)` | Leaf `keccak(user, token, cumulative)`; pays `cumulative − claimed[user][token]`; operators may claim for users | `claim` leaf. Leaf `(campaign, holder, cumulative)`; pays `cumulative − claimed`, with `claimed` kept in a **slot** per (campaign, holder). **Anyone** may submit a claim, but it only ever pays the holder's puzzle hash |
-| Unclaimed rewards | Stay claimable forever; governance can reallocate | Claimable until `end + claim_window`; then **the creator reclaims** them (`reclaim` leaf) |
+| Unclaimed rewards | Stay claimable forever; governance can reallocate | Claimable until the creator reclaims, which they may do from `end + claim_window` (`reclaim` leaf) |
 | API `api.merkl.xyz/v4` (`/opportunities`, `/campaigns`, `/users/{addr}/rewards`) | Read side for apps and wallets | `/v1/...` with the same three resources (§8) |
 
 Merkl's incentive models carried over:
@@ -73,7 +74,7 @@ kind, for creators who want the puzzle itself to enforce the split.
 | **Distributor** | The singleton holding one reward asset (XCH or one CAT) for every campaign paying in it |
 | **Engine** | The off-chain scorer (`flpcr/engine.py`); its output is a root |
 | **Root** | A posted claim tree: every `(campaign, holder, cumulative)` earned up to the root's `end` |
-| **Claim window** | Blocks after a campaign's `end` during which holders can still claim; after it, the creator reclaims |
+| **Claim window** | The creator's choice, in blocks after `end`, before which no one can reclaim. Holders can claim during it and after it, until a reclaim lands |
 | **Operator** | The key allowed to post roots (a coin at `engine_ph` sends a message) |
 | **Guardian** | The key (intended to be a Forge multisig safe) that can veto a pending root and rotate the operator |
 
@@ -94,7 +95,7 @@ Phase 2 candidates, each a new `Kind` with its own scoring function and none nee
 
 ```
 campaign = ["flpcr-campaign-v1", distributor_id, creator_ph, reward_asset, amount,
-            start, end, kind, target, params_hash, nonce, fee_bps]
+            start, end, kind, target, params_hash, nonce, fee_bps, claim_window]
 campaign_id = sha256tree(campaign)
 params = [time_bps, fees_bps, min_balance, sorted(blacklist), sorted(whitelist), forward]
 params_hash = sha256tree(params)
@@ -110,7 +111,8 @@ by both `model.py` and the `create` leaf, are:
 - `end − start <= max_duration`;
 - `time_bps + fees_bps = 10000`, and `CAT_HOLD ⇒ fees_bps = 0`;
 - `blacklist ∩ whitelist = ∅`;
-- `fee_bps` equals the distributor's.
+- `fee_bps` equals the distributor's;
+- `min_claim_window <= claim_window <= max_claim_window` (distributor bounds; default 12 h to 365 days).
 
 The full `params` value sits in the `create` solution, so it is on chain and recoverable from the hash.
 
@@ -151,10 +153,10 @@ pushed through in `tests/test_distributor.py`.
 
 ```
 Config  = { distributor_id, reward_asset, treasury_ph, fee_bps = 300, guardian_ph,
-            dispute_blocks, claim_window, max_campaigns, max_duration }
+            dispute_blocks, min_claim_window, max_claim_window, max_campaigns, max_duration }
 State   = { engine_ph, campaigns: List<Campaign>, active: Root?, pending: Root?,
             fees_owed, reserve_total }
-Campaign (in state) = (campaign_id, creator_ph, budget, start, end, claimed)
+Campaign (in state) = (campaign_id, creator_ph, budget, start, end, claim_window, claimed)
 Root     = (root_id, start, end, root, totals: ((campaign_id . cumulative_total) ...), activates_at)
 Claim slot (one per campaign and holder) = ((campaign_id . puzzle_hash) . claimed)
 ```
@@ -170,8 +172,8 @@ leaf's job (the Forge rule, `chip0050ActionLayer.md`).
 | `create` | anyone | Binds a settlement of at least `amount` (V14 `settlement_binding`: parent + amount + `ASSERT_CONCURRENT_SPEND`); validates the struct; appends the campaign with `claimed = 0`; accrues `fee` + any slack to `fees_owed`. Refuses a duplicate id or a full list |
 | `post_root` | operator (mode-23 message from a coin at `engine_ph`) | Sets `pending`. Checks §5.3. `activates_at = h + dispute_blocks` |
 | `veto` | guardian (mode-23 message from `guardian_ph`) | Clears `pending` while it is still in its dispute window |
-| `claim` | anyone | Against the **active** root and within the campaign's claim window: verifies `(campaign, ph, cumulative)`, pays `cumulative − claimed` from the reserve to `ph` (hinted), and records `cumulative` in the claim slot |
-| `reclaim` | anyone, after `end + claim_window` | Pays `budget − claimed` to `creator_ph` (hinted) and removes the campaign |
+| `claim` | anyone | Against the **active** root, for any campaign not yet reclaimed (no deadline): verifies `(campaign, ph, cumulative)`, pays `cumulative − claimed` from the reserve to `ph` (hinted), and records `cumulative` in the claim slot |
+| `reclaim` | anyone, from the campaign's `end + claim_window` | Pays `budget − claimed` to `creator_ph` (hinted) and removes the campaign |
 | `collect` | anyone | Pays `fees_owed` to `treasury_ph` |
 | `rotate` | guardian | Replaces `engine_ph` |
 
@@ -226,11 +228,22 @@ in.
 
 ### 5.5 Leftovers go back to the creator
 
-`claim_window` is distributor config (default 30 days = 138,240 blocks). For each campaign:
+The **creator sets `claim_window` when creating the campaign**. It is part of the struct and the id, so
+anyone reading the campaign sees every term: budget, schedule, scoring, and how long holders are
+guaranteed to have after the end. For each campaign:
 
-- `claim` is refused at `h >= end + claim_window`;
-- `reclaim` is refused before then; after it, it pays `budget − claimed` to the creator and removes
-  the campaign (its claim slots stay as inert 0-mojo coins).
+- `reclaim` is refused before `end + claim_window`. From then on, anyone may submit it. It pays
+  `budget − claimed` to the creator and removes the campaign (its claim slots stay as inert 0-mojo
+  coins).
+- `claim` has **no deadline**. It works for as long as the campaign exists, so a holder who comes back
+  after the window, before the creator has reclaimed, is still paid in full. The window guarantees
+  holders a minimum; it never takes anything from them early.
+- A claim and a reclaim racing in the same block are serialized by the singleton: whichever spend
+  lands first wins, and the other is rebuilt against the new state (the late claim then finds the
+  campaign gone; the late reclaim pays out less).
+
+The distributor bounds the window (`min_claim_window`, default 2,304 blocks ≈ 12 h, so the root covering
+`end` can be posted and clear its dispute window before reclaiming opens; `max_claim_window`, 365 days).
 
 `budget − claimed` covers both kinds of leftover: budget **nobody earned** (stretches with no eligible
 holder, floor dust) and earnings **nobody claimed**. The operator's duty is to post the root covering
@@ -334,7 +347,7 @@ create form should show creators that trade-off next to the `fees_bps` slider.
 |---|---|---|
 | Operator | Post a wrong split | Exceed any campaign's schedule; lower a total; post for the future; skip or repeat a window; make a root claimable before its dispute window ends |
 | Guardian | Veto a pending root; rotate the operator | Post roots; move funds; touch the active root |
-| Creator | Fund; reclaim leftovers after `end + claim_window` | Cancel or edit; reclaim during the window |
+| Creator | Fund; choose the claim window; reclaim leftovers from `end + claim_window` | Cancel or edit; reclaim during the window; stop a holder claiming before the reclaim lands |
 | Holder / keeper | Claim (for themselves or anyone) | Choose the recipient or the amount |
 
 **Disputes, v1:** a watcher (`flpcr` in replay mode, run by anyone) recomputes each pending root from
@@ -362,12 +375,13 @@ A **🔥 Campaigns** tab in forge-ui, or on whichever site this lands, with four
    left, and a "provide liquidity" deep link into the existing add flow.
 2. **Create.** Pick a target (pool search or CAT asset id), the reward asset, the deposit, the duration
    (with the date shown, at about 18.75 s per block) and the weighting slider (time ↔ fees, `LP_HOLD`
-   only). Advanced: min balance and the lists. The preview shows the **3% fee**, the resulting budget,
-   per-day emission, an estimated APR at current TVL, and the claim-window date after which leftovers
-   return. Signing is one Sage offer: give `amount`, request nothing. The responder builds the `create`
+   only), and the **claim window** (presets 24 h, 7 days, 30 days, or custom). Advanced: min balance and
+   the lists. The preview shows the **3% fee**, the resulting budget, per-day emission, an estimated APR
+   at current TVL, and the date from which leftovers can be reclaimed. Signing is one Sage offer: give `amount`, request nothing. The responder builds the `create`
    spend around it, the same keyless pattern as Forge's offer lane (`forge_v14_offer.py`).
 3. **My rewards.** Per campaign: earned (engine, not yet posted), claimable (active root − claimed),
-   pending (in a dispute window), claimed, and the claim deadline. **Claim** and **Claim all** build one
+   pending (in a dispute window), claimed, and the date from which the creator may reclaim (shown as
+   "claim before …"; past it, the button stays live with a warning until the campaign is reclaimed). **Claim** and **Claim all** build one
    bundle; the holder's offer pays the network fee.
 4. **My campaigns** (creators). Emitted, claimed, unclaimed, and a **Reclaim** button that unlocks at
    `end + claim_window`.
@@ -383,7 +397,7 @@ Spellbook / agent API: `flpcr.quote`, `flpcr.create`, `flpcr.rewards`, `flpcr.cl
 |---|---|---|
 | **0 (this repo)** | Spec; engine (`model`, `engine`, `merkle`, `manifest`, CLI); reference distributor model; tests | 35 tests green; hashing cross-checked against `clvm` |
 | **1: engine on real data** | Live `Source` for testnet11 (coinset or full node + `forge_v14_resync`); run against the 32 V14 pools; publish manifests | Replaying a week of testnet from scratch twice gives identical roots |
-| **2: distributor puzzles** | `contracts/flpcr/` rue project: 7 leaves, claim slots, registry, pins; driver; suites in the V14 style (integrity, before/after, mutation with UNREACHED reporting) that also run every scenario in `tests/test_distributor.py` against the puzzles | `clvmPuzzleAudit.md` pass; every refusal in the reference model reproduced by a puzzle refusal |
+| **2: distributor puzzles** | `contracts/` rue project in this repo: 7 leaves, claim slots, registry, pins; driver; suites in the V14 style (integrity, before/after, mutation with UNREACHED reporting) that also run every scenario in `tests/test_distributor.py` against the puzzles | `clvmPuzzleAudit.md` pass; every refusal in the reference model reproduced by a puzzle refusal |
 | **3: testnet lane** | Operator bot, watcher, API, forge-ui tab | One campaign end to end on testnet11: create → roots → claims at several points → reclaim of leftovers |
 | **4: hardening** | Public dispute leaf, guardian as a Forge multisig safe, external review | No mainnet before external review |
 
@@ -393,8 +407,9 @@ Spellbook / agent API: `flpcr.quote`, `flpcr.create`, `flpcr.rewards`, `flpcr.cl
 
 1. **Reward assets allowed.** Any CAT, or an allowlist? Merkl keeps a min-amount-per-hour list per
    token. Proposal: any CAT, plus a minimum rate per distributor fixed at launch.
-2. **Claim window length.** 30 days proposed. Per distributor (one rule for every campaign, simpler
-   to explain) or chosen per campaign by the creator within bounds?
+2. **Claim window bounds.** Decided: the creator chooses the window. Open: are 12 h minimum and 365 days
+   maximum the right bounds?
 3. **Operator decentralization.** One operator key in v1. Later: M-of-N operator messages, or several
    engines that must post the same root.
-4. **Puzzle location.** In `forge-puzzles` (one audit surface) or here under `contracts/`.
+4. **Puzzle location.** Decided: in this repo under `contracts/`. `forge-puzzles` stays specific to the
+   n-asset AMM, and this repo is the whole audit surface for campaigns.

@@ -40,7 +40,7 @@ def campaign_from_json(d: dict) -> Campaign:
             forward=p.get("forward", True),
         ),
         nonce=d.get("nonce", 0),
-        **({"fee_bps": d["fee_bps"]} if "fee_bps" in d else {}),
+        **{k: d[k] for k in ("fee_bps", "claim_window") if k in d},
     )
 
 
