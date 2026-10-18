@@ -17,18 +17,18 @@ POOL = b"\xb0" * 32
 LP = b"\x1b" * 32
 REWARD = b"\xca" * 32
 ALICE, BOB = b"\xa1" * 32, b"\xb2" * 32
-CREATOR, TREASURY, GUARDIAN, ENGINE, STRANGER = (bytes([x]) * 32 for x in (0xCC, 0x7E, 0x6A, 0xE6, 0x55))
+CREATOR, TREASURY, GUARDIAN, ENGINE, ROUTER, STRANGER = (bytes([x]) * 32 for x in (0xCC, 0x7E, 0x6A, 0xE6, 0x80, 0x55))
 
 DISPUTE = 10
 WINDOW = 1000
 
 
 def setup(deposit=1_000_000, start=100, end=200):
-    cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, dispute_blocks=DISPUTE, min_claim_window=2 * DISPUTE)
+    cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, ROUTER, dispute_blocks=DISPUTE, min_claim_window=2 * DISPUTE)
     d = Distributor(cfg, ENGINE)
     c = Campaign(DIST, CREATOR, REWARD, deposit, start, end, Kind.LP_HOLD, POOL, claim_window=WINDOW)
     src = FixtureSource(lp_assets={POOL: LP}, events={LP: [HolderEvent(0, ALICE, 3), HolderEvent(0, BOB, 1)]})
-    d.create(50, c, deposit)
+    d.create(50, ROUTER, c, deposit)
     return d, c, src
 
 
@@ -89,21 +89,39 @@ class TestLifecycle(unittest.TestCase):
         self.assertEqual(c.reclaim_from, 200 + WINDOW)
         short = Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL, nonce=1, claim_window=2 * DISPUTE - 1)
         with self.assertRaises(Refused):
-            d.create(50, short, 1000)
+            d.create(50, ROUTER, short, 1000)
         other = Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL, nonce=1, claim_window=WINDOW + 1)
         self.assertNotEqual(other.id, Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL, nonce=1, claim_window=WINDOW).id)
 
     def test_unearned_budget_also_goes_back(self):
         # Nobody holds LP for the first half: that half was never earned.
-        cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, fee_bps=0, dispute_blocks=DISPUTE, min_claim_window=2 * DISPUTE)
+        cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, ROUTER, fee_bps=0, dispute_blocks=DISPUTE, min_claim_window=2 * DISPUTE)
         d = Distributor(cfg, ENGINE)
         c = Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL, fee_bps=0, claim_window=WINDOW)
         src = FixtureSource(lp_assets={POOL: LP}, events={LP: [HolderEvent(150, ALICE, 1)]})
-        d.create(50, c, 1000)
+        d.create(50, ROUTER, c, 1000)
         _, r = run_epoch(EngineState(DIST, height=100), [c], src, 200)
         post(d, r, 200)
         self.assertEqual(claim(d, r, 210, ALICE, c), (ALICE, 500))
         self.assertEqual(d.reclaim(200 + WINDOW, c.id), (CREATOR, 500))
+
+
+class TestConfig(unittest.TestCase):
+    def test_testnet_allows_minute_scale_windows(self):
+        cfg = Config.testnet(DIST, REWARD, TREASURY, GUARDIAN, ROUTER)
+        self.assertEqual((cfg.dispute_blocks, cfg.min_claim_window), (8, 16))  # ~2.5 min, ~5 min
+        d = Distributor(cfg, ENGINE)
+        c = Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL, claim_window=16)
+        d.create(50, ROUTER, c, 1000)
+
+    def test_production_defaults(self):
+        cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, ROUTER)
+        self.assertEqual((cfg.fee_bps, cfg.dispute_blocks, cfg.min_claim_window), (300, 38, 77))
+        self.assertEqual(cfg.max_claim_window, 365 * 4608)
+
+    def test_dispute_must_fit_inside_the_minimum_window(self):
+        with self.assertRaises(ValueError):
+            Config(DIST, REWARD, TREASURY, GUARDIAN, ROUTER, dispute_blocks=40, min_claim_window=77)
 
 
 class TestRefusals(unittest.TestCase):
@@ -157,19 +175,21 @@ class TestRefusals(unittest.TestCase):
             d.claim(210, c.id, STRANGER, cl.cumulative, cl.proof)
 
     def test_create_rules(self):
-        cfg = Config(DIST, REWARD, TREASURY, GUARDIAN)
+        cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, ROUTER)
         d = Distributor(cfg, ENGINE)
         c = Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL)
         with self.assertRaises(Refused):
-            d.create(101, c, 1000)  # starts in the past
+            d.create(101, ROUTER, c, 1000)  # starts in the past
         with self.assertRaises(Refused):
-            d.create(50, c, 999)
+            d.create(50, ROUTER, c, 999)
         with self.assertRaises(Refused):
-            d.create(50, Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL, fee_bps=0), 1000)
-        d.create(50, c, 1005)  # slack is kept as fee
+            d.create(50, ROUTER, Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL, fee_bps=0), 1000)
+        with self.assertRaises(Refused):
+            d.create(50, STRANGER, c, 1000)  # not our router
+        d.create(50, ROUTER, c, 1005)  # slack is kept as fee
         self.assertEqual(d.fees_owed, 30 + 5)
         with self.assertRaises(Refused):
-            d.create(50, c, 1000)
+            d.create(50, ROUTER, c, 1000)
         d.check_invariant()
 
 

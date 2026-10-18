@@ -71,12 +71,15 @@ Returns:
 - `fee` (3%), `budget`, the per-day emission and `reclaim_from`;
 - the **offer to make**: give `amount` of `reward_asset`, request nothing.
 
-Validation errors follow the same rules as the `create` leaf, so a quote that passes builds.
+Validation errors follow the same rules as the `create` leaf, so a quote that passes builds. The quote
+also applies the router's rules (`flpcr/router.py`): the reward asset, and a `CAT_HOLD` target, must
+trade in a Forge registry pool (or be XCH), and an `LP_HOLD` target must be a registered pool.
 
 ### `POST /campaigns/create`
 
 Body: `{ quote_id, offer }`. The responder uses the offer's settlement coin as the `create` leaf's input,
-takes the network fee from the offer, pushes the bundle and returns its id.
+adds the **router's message** (signed by our router key, the only key our distributors accept), takes
+the network fee from the offer, pushes the bundle and returns its id.
 
 ### `POST /claims/build`
 

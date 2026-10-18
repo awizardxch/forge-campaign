@@ -42,8 +42,9 @@ claim slot  = slot(distributor_launcher, nonce 1)(sha256tree(slot_value))
 | `treasury_ph` | the protocol treasury |
 | `fee_bps` | **300** (3%). The registry pins it, so every registered distributor charges the same |
 | `guardian_ph` | intended: a Forge multisig safe's puzzle hash |
-| `dispute_blocks` | default 1,152 (≈ 6 h); `>= MIN_DISPUTE_BLOCKS` (384) |
-| `min_claim_window`, `max_claim_window` | bounds on the creator's choice; default 2,304 (≈ 12 h) and 365 days. The floor must be `>= 2 * dispute_blocks` |
+| `router_ph` | the operator's router key; `create` requires its message |
+| `dispute_blocks` | production 38 (≈ 12 min), testnet 8; `> 0` |
+| `min_claim_window`, `max_claim_window` | bounds on the creator's choice: production 77 (≈ 24 min), testnet 16 (≈ 5 min); max 365 days. The floor must be `>= 2 * dispute_blocks` |
 | `max_campaigns` | e.g. 32; bounds the state hashed every spend |
 | `max_duration` | e.g. 4,608 × 365 blocks |
 
@@ -79,6 +80,8 @@ them.
 
 ### `create` `[h, campaign_fields, params, settle_parent, settle_amount]`
 
+0. `RECEIVE_MESSAGE` mode 23 from a coin at `router_ph`, with content
+   `sha256tree(["flpcr-create", distributor_id, id])`, where `id` is the id derived in step 1.
 1. Rebuild `params_hash = sha256tree(params)` and
    `id = sha256tree(["flpcr-campaign-v1", distributor_id, creator, reward_asset, amount, start, end, kind, target, params_hash, nonce, fee_bps, claim_window])`.
    `fee_bps` comes from config, not the solution.
@@ -156,11 +159,12 @@ them.
 
 ## Registry
 
-Copy `forge_registry_{common,init,register}` with key = `reward_asset`, one distributor per asset.
+Copy `forge_registry_{common,init,register}` with key = `sha256tree((reward_asset . router_ph))`, one
+distributor per asset per operator.
 `register` rebuilds the distributor's full puzzle hash from config, so a registry entry **is** a known-good
 config. `RegistryConstants` pins:
 - `fee_bps = 300`;
-- the `dispute_blocks` floor and the claim-window bounds;
+- `dispute_blocks > 0` and `min_claim_window >= 2 * dispute_blocks`, and the 365-day ceiling;
 - `treasury_ph`.
 
 The launcher creates the 0-mojo reserve and the two claim-slot sentinels. `register` proves both, which

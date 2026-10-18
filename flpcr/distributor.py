@@ -34,14 +34,35 @@ class Config:
     reward_asset: bytes
     treasury_ph: bytes
     guardian_ph: bytes
+    # Only campaigns this router authorizes can be created here. Each operator
+    # (us now, others later) runs its own distributor, router key, engine and
+    # front end; a campaign never sits in a distributor nobody scores.
+    router_ph: bytes
     fee_bps: int = DEFAULT_FEE_BPS
-    dispute_blocks: int = 1152  # ~6 h
+    # Production defaults. A 24 min minimum window needs the dispute window
+    # well inside it, so the guardian's watcher must answer within ~12 min.
+    dispute_blocks: int = 38  # ~12 min
     # Bounds on the creator's claim window. The floor leaves room for the root
     # covering `end` to be posted and clear its dispute window before a
     # reclaim can open.
-    min_claim_window: int = 2304  # ~12 h, twice the default dispute window
+    min_claim_window: int = 77  # ~24 min
     max_claim_window: int = 365 * BLOCKS_PER_DAY
     max_campaigns: int = 32
+
+    def __post_init__(self) -> None:
+        if self.dispute_blocks <= 0:
+            raise ValueError("dispute_blocks must be positive")
+        if self.min_claim_window < 2 * self.dispute_blocks:
+            raise ValueError("min_claim_window must be at least twice dispute_blocks")
+        if self.max_claim_window < self.min_claim_window:
+            raise ValueError("max_claim_window below min_claim_window")
+
+    @classmethod
+    def testnet(cls, *args, **kwargs) -> "Config":
+        """Short clocks for testing: ~2.5 min disputes, claim windows from ~5 min."""
+        kwargs.setdefault("dispute_blocks", 8)
+        kwargs.setdefault("min_claim_window", 16)
+        return cls(*args, **kwargs)
 
 
 @dataclass
@@ -89,9 +110,13 @@ class Distributor:
 
     # -- leaves ------------------------------------------------------------------
 
-    def create(self, h: int, campaign: Campaign, deposit: int) -> bytes:
+    def create(self, h: int, sender: bytes, campaign: Campaign, deposit: int) -> bytes:
+        """`sender` is the puzzle hash of the coin sending the router's
+        mode-23 message; on chain the message content is the campaign id."""
         self._settle(h)
         c = self.config
+        if sender != c.router_ph:
+            raise Refused("only the distributor's router may create campaigns")
         if campaign.distributor_id != c.distributor_id or campaign.reward_asset != c.reward_asset:
             raise Refused("campaign is for another distributor")
         if campaign.fee_bps != c.fee_bps:

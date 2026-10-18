@@ -18,6 +18,9 @@
 | Claims | **Pull, cumulative, at any time**, as Merkl does. Each root lists what a holder has earned so far; a claim pays the difference from what they already claimed |
 | Claim window | **Set by the creator at creation** and committed in the campaign id, so the terms are complete up front. It opens reclaiming; it does not close claiming |
 | Leftovers | From `end + claim_window`, the **creator may reclaim** everything not claimed: budget nobody earned plus earnings nobody claimed. **Holders can claim until the reclaim lands**: a 24 h window with no reclaim after 48 h still pays a late claimer |
+| Window bounds | Per distributor. **Testnet: from ~5 min** (16 blocks, 8-block disputes). **Production: likely 24 min** (77 blocks, 38-block ≈ 12 min disputes). Maximum **365 days**; both can change for a future distributor |
+| Assets | **Any CAT that trades in a Forge registry pool**, plus XCH, for the reward asset and for a `CAT_HOLD` target. The pool's oracle gives every such asset an on-chain price. An `LP_HOLD` target must be a registered pool |
+| Who runs it | The puzzle is on chain and permissionless to read and claim from. **Creation needs the distributor's router key**: ours now, so we only score and monitor campaigns our router created. Later, anyone can launch their own distributor with their own router, engine and front end |
 
 ---
 
@@ -137,8 +140,16 @@ The full `params` value sits in the `create` solution, so it is on chain and rec
 `singleton(action_layer(reserve_finalizer, leaves_root, state))` with **one** reserve. That is the
 upstream CHIP-0050 reserve finalizer **unmodified**. Forge needed a multi-reserve finalizer; this
 doesn't, which keeps it out of the audit scope. Every campaign paying in, say, wUSDC goes to the
-wUSDC distributor. A registry like Forge's (key = reward asset id, sorted slots, one distributor
-per asset) lets wallets and the API find a distributor cold.
+wUSDC distributor. A registry like Forge's (key = `(reward asset id, router_ph)`, sorted slots, one
+distributor per asset per router) lets wallets and the API find a distributor cold.
+
+**One router per distributor.** `create` needs a mode-23 message from a coin at the distributor's
+curried `router_ph`, whose content is the campaign id. So a distributor only ever holds campaigns
+its operator has agreed to score, and nobody can fund a campaign that no engine watches. Today there
+is one operator (us): our router, engine and front end. Running a second operator later means
+launching another set of distributors with a different `router_ph`, `engine_ph` and `guardian_ph`,
+with no change to the puzzles. Claims and reclaims never involve the router; they work even if the
+operator disappears (§7).
 
 ---
 
@@ -152,7 +163,7 @@ pushed through in `tests/test_distributor.py`.
 ### 5.1 Config (curried, so the leaf root commits to it) and state
 
 ```
-Config  = { distributor_id, reward_asset, treasury_ph, fee_bps = 300, guardian_ph,
+Config  = { distributor_id, reward_asset, treasury_ph, fee_bps = 300, guardian_ph, router_ph,
             dispute_blocks, min_claim_window, max_claim_window, max_campaigns, max_duration }
 State   = { engine_ph, campaigns: List<Campaign>, active: Root?, pending: Root?,
             fees_owed, reserve_total }
@@ -169,7 +180,7 @@ leaf's job (the Forge rule, `chip0050ActionLayer.md`).
 
 | Leaf | Who | Does |
 |---|---|---|
-| `create` | anyone | Binds a settlement of at least `amount` (V14 `settlement_binding`: parent + amount + `ASSERT_CONCURRENT_SPEND`); validates the struct; appends the campaign with `claimed = 0`; accrues `fee` + any slack to `fees_owed`. Refuses a duplicate id or a full list |
+| `create` | router (mode-23 message from a coin at `router_ph`, content = campaign id) | Binds a settlement of at least `amount` (V14 `settlement_binding`: parent + amount + `ASSERT_CONCURRENT_SPEND`); validates the struct; appends the campaign with `claimed = 0`; accrues `fee` + any slack to `fees_owed`. Refuses a duplicate id or a full list |
 | `post_root` | operator (mode-23 message from a coin at `engine_ph`) | Sets `pending`. Checks §5.3. `activates_at = h + dispute_blocks` |
 | `veto` | guardian (mode-23 message from `guardian_ph`) | Clears `pending` while it is still in its dispute window |
 | `claim` | anyone | Against the **active** root, for any campaign not yet reclaimed (no deadline): verifies `(campaign, ph, cumulative)`, pays `cumulative − claimed` from the reserve to `ph` (hinted), and records `cumulative` in the claim slot |
@@ -242,8 +253,19 @@ guaranteed to have after the end. For each campaign:
   lands first wins, and the other is rebuilt against the new state (the late claim then finds the
   campaign gone; the late reclaim pays out less).
 
-The distributor bounds the window (`min_claim_window`, default 2,304 blocks ≈ 12 h, so the root covering
-`end` can be posted and clear its dispute window before reclaiming opens; `max_claim_window`, 365 days).
+The distributor bounds the window. `min_claim_window` must be at least twice `dispute_blocks`, so the
+root covering `end` can be posted and clear its dispute window before reclaiming opens.
+`max_claim_window` is 365 days.
+
+| Preset (`Config` in `distributor.py`) | `dispute_blocks` | `min_claim_window` |
+|---|---|---|
+| `Config.testnet(...)` | 8 (≈ 2.5 min) | 16 (≈ 5 min) |
+| `Config(...)`, production | 38 (≈ 12 min) | 77 (≈ 24 min) |
+
+A 24-minute window is short, and the operator's posting cadence has to fit it. The engine must post
+the root covering `end` within a few blocks of `end`, and the guardian's watcher must veto within the
+dispute window. Both are bots, not people. A 12-minute dispute window is too short for a human
+guardian to react to; the automated watcher is what makes it safe.
 
 `budget − claimed` covers both kinds of leftover: budget **nobody earned** (stretches with no eligible
 holder, floor dust) and earnings **nobody claimed**. The operator's duty is to post the root covering
@@ -348,11 +370,17 @@ create form should show creators that trade-off next to the `fees_bps` slider.
 | Operator | Post a wrong split | Exceed any campaign's schedule; lower a total; post for the future; skip or repeat a window; make a root claimable before its dispute window ends |
 | Guardian | Veto a pending root; rotate the operator | Post roots; move funds; touch the active root |
 | Creator | Fund; choose the claim window; reclaim leftovers from `end + claim_window` | Cancel or edit; reclaim during the window; stop a holder claiming before the reclaim lands |
+| Router | Authorize which campaigns are created on its distributors (ours: only through our front end, only registry-priced assets) | Touch funds; claim; reclaim |
 | Holder / keeper | Claim (for themselves or anyone) | Choose the recipient or the amount |
 
+**If the operator disappears**, nothing is stranded: holders keep claiming against the last active
+root, and each creator reclaims from `end + claim_window` (and gets back everything any missing root
+would have allocated). The only loss is accrual after the last posted root, which returns to the
+creator instead of the holders.
+
 **Disputes, v1:** a watcher (`flpcr` in replay mode, run by anyone) recomputes each pending root from
-chain data. On a mismatch it alerts the guardian, which vetoes within `dispute_blocks` (default
-1,152 ≈ 6 h); the operator then posts the corrected root under the same id. **v2:** a public `dispute`
+chain data. On a mismatch the guardian's bot vetoes within `dispute_blocks` (production 38 blocks ≈
+12 min, testnet 8); the operator then posts the corrected root under the same id. **v2:** a public `dispute`
 leaf. Anyone posts a bond in the reward asset, which freezes activation until the guardian resolves it.
 The bond comes back on a valid dispute and is kept otherwise, like Merkl's `Disputer`.
 
@@ -373,9 +401,11 @@ A **🔥 Campaigns** tab in forge-ui, or on whichever site this lands, with four
 
 1. **Opportunities.** Every pool and CAT with a live campaign: APR (TWAP-valued), daily emission, time
    left, and a "provide liquidity" deep link into the existing add flow.
-2. **Create.** Pick a target (pool search or CAT asset id), the reward asset, the deposit, the duration
+2. **Create.** Pick a target (pool search, or a CAT from the Forge registry), the reward asset (any
+   registry CAT or XCH; anything else is refused at quote time by `flpcr/router.py`), the deposit, the duration
    (with the date shown, at about 18.75 s per block) and the weighting slider (time ↔ fees, `LP_HOLD`
-   only), and the **claim window** (presets 24 h, 7 days, 30 days, or custom). Advanced: min balance and
+   only), and the **claim window** (presets 24 min, 24 h, 7 days, 30 days, or custom; testnet allows
+   down to ~5 min). Advanced: min balance and
    the lists. The preview shows the **3% fee**, the resulting budget, per-day emission, an estimated APR
    at current TVL, and the date from which leftovers can be reclaimed. Signing is one Sage offer: give `amount`, request nothing. The responder builds the `create`
    spend around it, the same keyless pattern as Forge's offer lane (`forge_v14_offer.py`).
@@ -395,21 +425,23 @@ Spellbook / agent API: `flpcr.quote`, `flpcr.create`, `flpcr.rewards`, `flpcr.cl
 
 | Phase | Deliverable | Gate |
 |---|---|---|
-| **0 (this repo)** | Spec; engine (`model`, `engine`, `merkle`, `manifest`, CLI); reference distributor model; tests | 35 tests green; hashing cross-checked against `clvm` |
+| **0 (this repo)** | Spec; engine (`model`, `engine`, `merkle`, `manifest`, CLI); reference distributor model; router rules; tests | 44 tests green; hashing cross-checked against `clvm` |
 | **1: engine on real data** | Live `Source` for testnet11 (coinset or full node + `forge_v14_resync`); run against the 32 V14 pools; publish manifests | Replaying a week of testnet from scratch twice gives identical roots |
 | **2: distributor puzzles** | `contracts/` rue project in this repo: 7 leaves, claim slots, registry, pins; driver; suites in the V14 style (integrity, before/after, mutation with UNREACHED reporting) that also run every scenario in `tests/test_distributor.py` against the puzzles | `clvmPuzzleAudit.md` pass; every refusal in the reference model reproduced by a puzzle refusal |
-| **3: testnet lane** | Operator bot, watcher, API, forge-ui tab | One campaign end to end on testnet11: create → roots → claims at several points → reclaim of leftovers |
+| **3: testnet lane** | Router (quote + create, our key), operator bot, watcher, API, forge-ui tab, on `Config.testnet` distributors | One campaign end to end on testnet11: create → roots → claims at several points → reclaim of leftovers |
 | **4: hardening** | Public dispute leaf, guardian as a Forge multisig safe, external review | No mainnet before external review |
 
 ---
 
 ## 11. Open questions
 
-1. **Reward assets allowed.** Any CAT, or an allowlist? Merkl keeps a min-amount-per-hour list per
-   token. Proposal: any CAT, plus a minimum rate per distributor fixed at launch.
-2. **Claim window bounds.** Decided: the creator chooses the window. Open: are 12 h minimum and 365 days
-   maximum the right bounds?
-3. **Operator decentralization.** One operator key in v1. Later: M-of-N operator messages, or several
-   engines that must post the same root.
-4. **Puzzle location.** Decided: in this repo under `contracts/`. `forge-puzzles` stays specific to the
-   n-asset AMM, and this repo is the whole audit surface for campaigns.
+Decided so far: reward assets (any CAT in a Forge registry pool), window bounds (testnet ~5 min,
+production likely 24 min, max 365 days), who operates (our router key now, others' later), puzzle
+location (this repo, `contracts/`; `forge-puzzles` stays specific to the n-asset AMM).
+
+1. **Minimum reward rate.** Merkl refuses dust campaigns with a per-token minimum per hour. Do we
+   want one (checked by our router at quote time, so it needs no puzzle change)?
+2. **Registry admission for distributors.** Our router already refuses unpriced assets. Should the
+   FLPCR registry *also* refuse to register a distributor whose reward asset is not in a Forge pool,
+   which would mean proving a Forge registry slot on chain? Proposal: no. The router check is enough
+   while every distributor is ours; revisit when third-party operators arrive.

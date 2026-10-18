@@ -16,7 +16,7 @@ CHIP-0050 action layer that Forge V14 runs on. **Testnet only. Not audited.**
 | [`docs/SPEC.md`](docs/SPEC.md) | The whole design: the Merkl mapping, campaign kinds, distributor, scoring, trust model, phases |
 | [`docs/PUZZLES.md`](docs/PUZZLES.md) | Leaf-by-leaf build spec for the distributor (phase 2) |
 | [`docs/API.md`](docs/API.md) | HTTP API, read and write |
-| `flpcr/` | The engine (campaigns, exact time and fee weighting, forwarding, claim tree, manifests) and `distributor.py`, the executable reference for the on-chain rules |
+| `flpcr/` | The engine (campaigns, exact time and fee weighting, forwarding, claim tree, manifests), `distributor.py` (the executable reference for the on-chain rules) and `router.py` (which campaigns our router signs: Forge-registry-priced assets only) |
 | `tests/` | Engine and hashing tests; hashing is cross-checked against `clvm` when installed |
 
 ## Run
