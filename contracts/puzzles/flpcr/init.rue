@@ -21,7 +21,6 @@ fn main(
             ephemeral: pinned.ephemeral,
             state: State {
                 reserve: state.reserve,
-                fees_owed: state.fees_owed,
                 engine_ph: state.engine_ph,
                 initialized: 1,
                 campaigns: state.campaigns,

@@ -32,7 +32,7 @@ class Refused(Exception):
 class Config:
     distributor_id: bytes
     reward_asset: bytes
-    treasury_ph: bytes
+    dev_fee_ph: bytes  # receives the creation fee in the create spend itself
     guardian_ph: bytes
     # Only campaigns this router authorizes can be created here. Each operator
     # (us now, others later) runs its own distributor, router key, engine and
@@ -95,7 +95,7 @@ class Distributor:
     pending: Optional[PostedRoot] = None
     claimed: Dict[Tuple[bytes, bytes], int] = field(default_factory=dict)  # the claim slots
     delegations: set = field(default_factory=set)  # (holder, delegate): the delegation slots
-    fees_owed: int = 0
+    dev_fee_paid: int = 0  # total sent to dev_fee_ph; never held by the distributor
     reserve: int = 0  # mojos in the reserve coin
 
     # -- helpers ---------------------------------------------------------------
@@ -111,8 +111,8 @@ class Distributor:
 
     def check_invariant(self) -> None:
         owed = sum(r.campaign.budget - r.claimed for r in self.campaigns.values())
-        if self.reserve != owed + self.fees_owed:
-            raise AssertionError(f"reserve {self.reserve} != owed {owed} + fees {self.fees_owed}")
+        if self.reserve != owed:
+            raise AssertionError(f"reserve {self.reserve} != owed {owed}")
 
     # -- leaves ------------------------------------------------------------------
 
@@ -138,15 +138,17 @@ class Distributor:
         if len(self.campaigns) >= c.max_campaigns:
             raise Refused("distributor is full")
         # `deposit` is what the bundle supplies. On chain the reserve is
-        # recreated at exactly `reserve + amount`, so the bundle must supply at
+        # recreated at `reserve + budget` and the
+        # fee is paid out of it to the dev address, so the reserve takes in `amount`, so the bundle must supply at
         # least that (conservation is checked over the whole bundle, so who
         # supplies it is not the puzzle's concern) and anything over it is
         # ordinary bundle slack, i.e. network fee. It is never kept.
         if deposit < campaign.amount:
             raise Refused("deposit is short")
         self.campaigns[campaign.id] = CampaignRecord(campaign)
-        self.fees_owed += campaign.fee
-        self.reserve += campaign.amount
+        # The dev fee leaves in this spend; only the budget stays in the reserve.
+        self.dev_fee_paid += campaign.fee
+        self.reserve += campaign.budget
         return campaign.id
 
     def post_root(self, h: int, sender: bytes, root_id: int, start: int, end: int,
@@ -250,14 +252,6 @@ class Distributor:
         del self.campaigns[campaign_id]
         self.reserve -= amount
         return rec.campaign.creator, amount
-
-    def collect(self, h: int) -> Tuple[bytes, int]:
-        self._settle(h)
-        if self.fees_owed <= 0:
-            raise Refused("no fees owed")
-        amount, self.fees_owed = self.fees_owed, 0
-        self.reserve -= amount
-        return self.config.treasury_ph, amount
 
     def claimable(self, h: int, campaign_id: bytes, puzzle_hash: bytes, cumulative: int) -> int:
         """What a claim would pay now, without submitting it (for the API)."""

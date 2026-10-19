@@ -64,9 +64,10 @@ class TestLifecycle(ChainTest):
         w, c = self.w, self.camp
         self.created()
         st = w.d.read_state()
-        self.assertEqual((st["reserve"], st["fees_owed"]), (1_000_000, 30_000))
+        self.assertEqual(st["reserve"], 970_000)
         self.assertEqual(st["campaigns"][c.id]["budget"], 970_000)
-        self.assertEqual(w.reserve_on_chain(), 1_000_000)
+        self.assertEqual(w.reserve_on_chain(), 970_000)
+        self.assertEqual(w.balance("dev"), 30_000)  # the 3% dev fee, paid in the create spend
 
         state, r1 = self.root_at(EngineState(w.launcher_id, height=c.start), c.start + 20)
         w.post(r1)
@@ -83,7 +84,6 @@ class TestLifecycle(ChainTest):
         w.advance_to(c.end + WINDOW)
         self.assertEqual(w.reclaim(c.id), 242_500)  # Bob never claimed
         refused(self, w.claim, r2, c.id, "bob")  # reclaimed: nothing left to claim from
-        self.assertEqual(w.collect(), 30_000)
         self.assertEqual(w.d.read_state()["reserve"], 0)
         self.assertEqual(w.reserve_on_chain(), 0)
 
@@ -106,7 +106,7 @@ class TestLifecycle(ChainTest):
             w.claim(r1, c.id, holder)
             st = w.d.read_state()
             owed = sum(x["budget"] - x["claimed"] for x in st["campaigns"].values())
-            self.assertEqual(st["reserve"], owed + st["fees_owed"])
+            self.assertEqual(st["reserve"], owed)
             self.assertEqual(w.reserve_on_chain(), st["reserve"])
 
     def test_wizard_gated_and_boosted_campaign(self):
@@ -146,9 +146,12 @@ class TestLifecycle(ChainTest):
         self.active(r)
         action, updates = w.claim_action(r, c.id, self.alice)
         auth = w.holder_message("alice", c.id, self.alice, action.solution[3])
-        w.push([action, Action("collect", [w.h])], [auth], slot_updates=updates)
+        new_engine = w.keys.ph("engine2")
+        rotate = Action("rotate", [w.h, new_engine])
+        w.push([action, rotate], [auth, lambda: w.message_from("guardian", b"r" + new_engine)],
+               slot_updates=updates)
         self.assertEqual(w.balance("alice"), 727_500)
-        self.assertEqual(w.balance("treasury"), 30_000)
+        self.assertEqual(w.d.read_state()["engine_ph"], new_engine)
 
 
 class TestCreateRefusals(ChainTest):
@@ -160,7 +163,8 @@ class TestCreateRefusals(ChainTest):
         # full, by someone. With no slack in the bundle, one mojo short fails.
         refused(self, self.w.create, self.camp, "creator", deposit=self.camp.amount - 1)
         self.w.create(self.camp, "creator", deposit=self.camp.amount)
-        self.assertEqual(self.w.reserve_on_chain(), self.camp.amount)
+        self.assertEqual(self.w.reserve_on_chain(), self.camp.budget)
+        self.assertEqual(self.w.balance("dev"), self.camp.fee)
 
     def test_campaign_length_bounds(self):
         w = self.w

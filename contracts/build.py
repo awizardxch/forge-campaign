@@ -31,7 +31,7 @@ UPSTREAM = {
     "slot": "upstream/singleton/slot.rue",
     "p2_delegated_by_singleton": "upstream/singleton/p2_delegated_by_singleton.rue",
 }
-LEAVES = ["init", "create", "post_root", "veto", "claim", "reclaim", "collect", "rotate", "delegate"]
+LEAVES = ["init", "create", "post_root", "veto", "claim", "reclaim", "rotate", "delegate"]
 
 
 def sources() -> dict:

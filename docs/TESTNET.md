@@ -28,6 +28,7 @@ The engine alone (`flpcr/` minus `flpcr/chain/`) needs only the standard library
 
 | Piece | Simulator today | Testnet11 |
 |---|---|---|
+| Dev fee address | a test puzzle (`dev`) | The Speechless dev multisig's puzzle hash, curried as `dev_fee_ph` at launch (fixed for the distributor's life) |
 | Router, operator, guardian keys | anyone-can-spend test puzzles (`Keys` in `flpcr/chain/driver.py`) | Router and operator: a standard wallet key each, signing the `SEND_MESSAGE` coin (Sage or a script). Guardian: a Forge multisig safe (`forgeMultisig.md`) |
 | Pushing spends | `Simulator.spend_coins` | A full node RPC `push_tx`, or coinset.org. The driver already returns plain `CoinSpend`s. Only signing and pushing are new |
 | Chain data for the engine | `FixtureSource` | A live `Source` (`flpcr/sources.py` lists what it must return): hinted LP CAT coins and spends by asset id, and fee events from `forge_v14_resync` |

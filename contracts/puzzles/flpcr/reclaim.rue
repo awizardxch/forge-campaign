@@ -30,7 +30,6 @@ fn main(
     let new_state = with_campaigns(
         state,
         state.reserve - amount,
-        state.fees_owed,
         remove_campaign(state.campaigns, campaign_id),
     );
 

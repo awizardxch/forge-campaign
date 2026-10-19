@@ -1,9 +1,10 @@
 // create.rue: adds a campaign the distributor's router has authorized.
 //
-// The deposit is enforced by conservation, not by naming a coin: the state's
-// reserve grows by `amount`, the reserve finalizer recreates the reserve at
-// that size, and the bundle (for a CAT, the CAT ring) must supply the
-// difference or it is invalid.
+// The deposit is enforced by conservation, not by naming a coin: the reserve
+// grows by the campaign's budget and pays the dev fee out in the same spend,
+// so the reserve's input must rise by the whole `amount`. The bundle (for a
+// CAT, the CAT ring) must supply it or it is invalid. The fee goes straight to
+// `dev_fee_ph`; nothing is left in the distributor to collect later.
 
 import shared::*;
 
@@ -70,8 +71,7 @@ fn main(
             ephemeral: pinned.ephemeral,
             state: with_campaigns(
                 state,
-                state.reserve + amount,
-                state.fees_owed + fee,
+                state.reserve + budget,
                 [
                     Campaign {
                         id: id,
@@ -92,7 +92,11 @@ fn main(
                 message: "c" + id,
                 sender: [CONFIG.router_ph],
             },
-            ...conditions,
+            ...if fee > 0 {
+                [reserve_payment(CONFIG.dev_fee_ph, fee), ...conditions]
+            } else {
+                conditions
+            },
         ],
     )
 }

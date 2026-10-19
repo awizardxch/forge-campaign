@@ -45,7 +45,7 @@ class SimWorld:
         self.cfg = DistributorConfig(
             reward_asset=reward_asset,
             fee_bps=fee_bps,
-            treasury_ph=k.ph("treasury"),
+            dev_fee_ph=k.ph("dev"),
             guardian_ph=k.ph("guardian"),
             router_ph=k.ph("router"),
             engine_ph=k.ph("engine"),
@@ -283,10 +283,6 @@ class SimWorld:
             self.push([Action("reclaim", sol)], [lambda: self.message_from(label, b"k" + msg)])
         return self.balance(creator) - before
 
-    def collect(self):
-        before = self.balance("treasury")
-        self.push([Action("collect", [self.h])])
-        return self.balance("treasury") - before
 
     def reserve_on_chain(self) -> int:
         state = self.sim.coin_state(self.d.reserve_coin.coin_id())

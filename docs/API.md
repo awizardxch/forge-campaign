@@ -88,7 +88,7 @@ Optional `params.gates` and `params.boosts`:
 
 Returns:
 - the validated struct and `campaign_id`;
-- `fee` (3%), `budget`, the per-day emission and `reclaim_from`;
+- `fee` (3%, paid to the dev multisig in the create spend), `budget`, the per-day emission and `reclaim_from`;
 - the **offer to make**: give `amount` of `reward_asset`, request nothing.
 
 Validation errors follow the same rules as the `create` leaf, so a quote that passes builds. The quote

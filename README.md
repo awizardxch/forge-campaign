@@ -17,7 +17,7 @@ CHIP-0050 action layer that Forge V14 runs on. **Simulator-tested, not yet on te
 | [`docs/PUZZLES.md`](docs/PUZZLES.md) | The distributor puzzles as built: types, every leaf's rules, driver conventions |
 | [`docs/API.md`](docs/API.md) | HTTP API, read and write |
 | [`docs/TESTNET.md`](docs/TESTNET.md) | Local setup, and what is left before the first testnet11 campaign |
-| `contracts/` | Rue project: upstream CHIP-0050 puzzles (pinned), the nine FLPCR leaves, `build.py`, `pins.json` |
+| `contracts/` | Rue project: upstream CHIP-0050 puzzles (pinned), the eight FLPCR leaves, `build.py`, `pins.json` |
 | `flpcr/` | The engine (campaigns, exact time and fee weighting, forwarding, claim tree, manifests), `distributor.py` (the same rules as the puzzles, in Python), `router.py` (which campaigns our router signs) |
 | `flpcr/links.py` | Address links: a wallet's addresses grouped for gates and boosts, both sides signed (CHIP-0002) |
 | `flpcr/chain/` | Driver that builds distributor spends; `SimWorld`, a distributor on the chia-wallet-sdk simulator; `nfts.py`, NFT collections (by minter DID) and owners read from chain |

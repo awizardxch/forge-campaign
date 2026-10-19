@@ -7,7 +7,8 @@
 //     (Truth' . conditions)
 // Conditions tagged (-42 . condition) are spent from the reserve by the
 // upstream reserve finalizer; State.reserve is the first state field so the
-// finalizer's default amount program (f State) sizes the reserve.
+// finalizer's default amount program (f State) sizes the reserve. The reserve
+// holds exactly what campaigns still owe: the dev fee leaves at creation.
 
 import super::upstream::slot::*;
 
@@ -33,7 +34,7 @@ export struct Config {
     distributor_id: Bytes32,
     reward_asset: Bytes32,
     fee_bps: Int,
-    treasury_ph: Bytes32,
+    dev_fee_ph: Bytes32,  // paid the creation fee in the create spend itself
     guardian_ph: Bytes32,
     router_ph: Bytes32,
     dispute_blocks: Int,
@@ -65,7 +66,6 @@ export struct Root {
 
 export struct State {
     reserve: Int,
-    fees_owed: Int,
     engine_ph: Bytes32,
     initialized: Int,
     campaigns: List<Campaign>,
@@ -106,7 +106,6 @@ fn promote(state: State, h: Int) -> State {
         if h >= state.pending.activates_at {
             State {
                 reserve: state.reserve,
-                fees_owed: state.fees_owed,
                 engine_ph: state.engine_ph,
                 initialized: state.initialized,
                 campaigns: state.campaigns,
@@ -190,10 +189,9 @@ export fn total_for(totals: List<(Bytes32, Int)>, id: Bytes32) -> Int {
 
 // --- state updates -------------------------------------------------------------
 
-export fn with_campaigns(state: State, reserve: Int, fees_owed: Int, campaigns: List<Campaign>) -> State {
+export fn with_campaigns(state: State, reserve: Int, campaigns: List<Campaign>) -> State {
     State {
         reserve: reserve,
-        fees_owed: fees_owed,
         engine_ph: state.engine_ph,
         initialized: state.initialized,
         campaigns: campaigns,

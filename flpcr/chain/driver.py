@@ -46,7 +46,7 @@ from .values import to_bytes, to_int, to_list, to_program
 COMPILED = pathlib.Path(
     os.environ.get("FLPCR_COMPILED") or pathlib.Path(__file__).resolve().parents[2] / "contracts" / "compiled"
 )
-LEAVES = ["init", "create", "post_root", "veto", "claim", "reclaim", "collect", "rotate", "delegate"]
+LEAVES = ["init", "create", "post_root", "veto", "claim", "reclaim", "rotate", "delegate"]
 SLOT_NONCE = 1
 DELEGATION_SLOT_NONCE = 2
 RESERVE_NONCE = 0
@@ -82,7 +82,7 @@ class Puzzles:
 class DistributorConfig:
     reward_asset: bytes  # bytes(32) for XCH, else the CAT asset id
     fee_bps: int
-    treasury_ph: bytes
+    dev_fee_ph: bytes  # paid the creation fee in the create spend (the dev multisig)
     guardian_ph: bytes
     router_ph: bytes
     engine_ph: bytes
@@ -145,7 +145,7 @@ class Distributor:
             launcher_id,
             cfg.reward_asset,
             cfg.fee_bps,
-            cfg.treasury_ph,
+            cfg.dev_fee_ph,
             cfg.guardian_ph,
             cfg.router_ph,
             cfg.dispute_blocks,
@@ -173,7 +173,7 @@ class Distributor:
 
         # Live chain state, kept by `apply`.
         self.state: Program = to_program(
-            c, [0, 0, cfg.engine_ph, 0, None, None, None]
+            c, [0, cfg.engine_ph, 0, None, None, None]
         )
         self.coin: Optional[Coin] = None
         self.lineage: Optional[list] = None
@@ -381,7 +381,7 @@ class Distributor:
             }
 
         campaigns = {}
-        for camp in to_list(f[4]):
+        for camp in to_list(f[3]):
             v = to_list(camp)
             campaigns[to_bytes(v[0])] = {
                 "creator": to_bytes(v[1]),
@@ -393,12 +393,11 @@ class Distributor:
             }
         return {
             "reserve": to_int(f[0]),
-            "fees_owed": to_int(f[1]),
-            "engine_ph": to_bytes(f[2]),
-            "initialized": to_int(f[3]),
+            "engine_ph": to_bytes(f[1]),
+            "initialized": to_int(f[2]),
             "campaigns": campaigns,
-            "active": root(f[5]),
-            "pending": root(f[6]),
+            "active": root(f[4]),
+            "pending": root(f[5]),
         }
 
     # --- slot list helpers ------------------------------------------------------------------

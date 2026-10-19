@@ -106,7 +106,6 @@ fn main(
             state: with_campaigns(
                 state,
                 state.reserve - amount,
-                state.fees_owed,
                 replace_campaign(state.campaigns, updated),
             ),
         },

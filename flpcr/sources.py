@@ -50,7 +50,7 @@ class Source(Protocol):
     def excluded(self, asset_id: bytes) -> Set[bytes]:
         """Puzzle hashes that hold `asset_id` but are never anyone's position:
         pool reserves, OFFER_MOD settlement coins, the zero-hash burn (the
-        LOCKED_BURN floor), the protocol treasury."""
+        LOCKED_BURN floor), the dev fee address."""
 
     def forwarders(self, asset_id: bytes) -> Dict[bytes, bytes]:
         """Holders of `asset_id` that are wrappers, mapped to the asset that

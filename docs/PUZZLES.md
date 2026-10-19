@@ -26,7 +26,7 @@ contracts/
   puzzles/upstream/      verbatim from Yakuhito/slot-machine@2d37ba1: action, finalizer,
                          reserve_finalizer, slot, p2_delegated_by_singleton, merkle_utils,
                          common_types, slot helpers. Never edited; pinned by tree hash and sha256.
-  puzzles/flpcr/         shared.rue + nine leaves
+  puzzles/flpcr/         shared.rue + eight leaves
   compiled/*.hex         build output, committed
   pins.json              upstream hashes (published values), our leaf hashes, upstream source sha256s
 ```
@@ -38,8 +38,8 @@ distributor  = singleton_top_layer_v1_1( action_layer( reserve_finalizer, LEAVES
 reserve      = p2_delegated_by_singleton(SINGLETON_MOD_HASH, struct_hash, nonce 0)
                wrapped in CAT(reward_asset) for a CAT reward, bare for XCH
 claim slot   = slot(SingletonInfo, nonce 1)(sha256tree(slot_value))
-LEAVES_ROOT  = merkle root of the nine curried leaf hashes, in this order:
-               init, create, post_root, veto, claim, reclaim, collect, rotate, delegate
+LEAVES_ROOT  = merkle root of the eight curried leaf hashes, in this order:
+               init, create, post_root, veto, claim, reclaim, rotate, delegate
 delegation   = slot(SingletonInfo, nonce 2)(sha256tree((holder . delegate)))
 ```
 
@@ -54,10 +54,10 @@ that a distributor is genuine (Forge's M-4 lesson).
 ## Types (`shared.rue`)
 
 ```
-Config   [distributor_id, reward_asset, fee_bps, treasury_ph, guardian_ph, router_ph,
+Config   [distributor_id, reward_asset, fee_bps, dev_fee_ph, guardian_ph, router_ph,
           dispute_blocks, min_campaign_length, max_campaign_length, max_campaigns, slot_1st_curry_hash,
           delegation_slot_1st_curry_hash]
-State    [reserve, fees_owed, engine_ph, initialized, campaigns, active, pending]
+State    [reserve, engine_ph, initialized, campaigns, active, pending]
 Campaign [id, creator, budget, start, end, claim_window, claimed]
 Root     [root_id, start, end, root, totals, activates_at]      totals = ((id . total) ...), ascending ids
 Truth    (ephemeral . State)                                    ephemeral = nil or (h)
@@ -98,7 +98,8 @@ All messages are `RECEIVE_MESSAGE` mode 23 (sender puzzle hash → this coin).
    - `2 * dispute_blocks <= claim_window <= max_campaign_length`;
    - fewer than `max_campaigns` campaigns, and `id` is new.
 4. Receive `"c" + id` from `router_ph`.
-5. Update state: `reserve += amount`, `fees_owed += fee`, and prepend the campaign. The deposit is
+5. Update state: `reserve += budget`, and prepend the campaign. If `fee > 0`, pay it now:
+   `(-42 . (CREATE_COIN dev_fee_ph fee (dev_fee_ph)))`. The deposit is
    enforced by conservation (SPEC §5.2).
 
 ### `post_root` `[h, root_id, start, end, root, totals, manifest_hash]`
@@ -161,10 +162,6 @@ All messages are `RECEIVE_MESSAGE` mode 23 (sender puzzle hash → this coin).
    `grant == 0`, spend it (refused if it does not exist).
 4. State is unchanged.
 
-### `collect` `[h]`
-- `fees_owed > 0`.
-- Pay it to `treasury_ph`, then set `reserve -= fees_owed` and `fees_owed = 0`.
-
 ### `rotate` `[h, new_engine_ph]`
 - Receive `"r" + new_engine_ph` from `guardian_ph`.
 - Set `engine_ph = new_engine_ph`.
@@ -196,6 +193,6 @@ All messages are `RECEIVE_MESSAGE` mode 23 (sender puzzle hash → this coin).
 ## Still to build
 
 - **Registry.** Key `sha256tree((reward_asset . router_ph))`. Rebuilds `LEAVES_ROOT` from `Config` and
-  pins `fee_bps = 300`, the `dispute_blocks` floor and `treasury_ph`.
+  pins `fee_bps = 300`, the `dispute_blocks` floor and `dev_fee_ph`.
 - **Cost measurements.** State with `max_campaigns` entries, and many claims per spend.
 - **A `clvmPuzzleAudit.md` pass by a second reader.**

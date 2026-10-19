@@ -1,7 +1,7 @@
 """Random scenarios through the reference model and the puzzles side by side.
 
 Each step picks an operation (post a root, claim for some holder, reclaim,
-collect) and applies it to both `flpcr.distributor.Distributor` and the
+the dev fee is checked at creation) and applies it to both `flpcr.distributor.Distributor` and the
 simulator. Both must pay the same amount or both must refuse.
 """
 
@@ -29,7 +29,7 @@ class TestModelAndChainAgree(unittest.TestCase):
         w = SimWorld(reward_asset=b"\xa5" * 32 if seed % 2 else bytes(32))
         k = w.keys
         model = Distributor(
-            Config(w.launcher_id, w.cfg.reward_asset, w.cfg.treasury_ph, w.cfg.guardian_ph, w.cfg.router_ph,
+            Config(w.launcher_id, w.cfg.reward_asset, w.cfg.dev_fee_ph, w.cfg.guardian_ph, w.cfg.router_ph,
                    fee_bps=w.cfg.fee_bps, dispute_blocks=w.cfg.dispute_blocks,
                    min_campaign_length=w.cfg.min_campaign_length,
                    max_campaign_length=w.cfg.max_campaign_length),
@@ -46,6 +46,7 @@ class TestModelAndChainAgree(unittest.TestCase):
         for c, creator in zip(campaigns, ("c1", "c2")):
             model.create(w.h, w.cfg.router_ph, c, c.amount)
             w.create(c, creator)
+        self.assertEqual(w.balance("dev"), model.dev_fee_paid)  # paid at creation, nothing to collect
 
         events = {LP: [], CAT: []}
         for asset in (LP, CAT):
@@ -60,7 +61,7 @@ class TestModelAndChainAgree(unittest.TestCase):
 
         engine = EngineState(w.launcher_id, height=start)
         roots = []
-        self.stats = {"paid": 0, "refused": 0, "reclaimed": 0, "collected": 0}
+        self.stats = {"paid": 0, "refused": 0, "reclaimed": 0}
         last_post = 0
         end_of_all = max(c.end + c.claim_window for c in campaigns) + 20
         while w.h < end_of_all:
@@ -93,7 +94,7 @@ class TestModelAndChainAgree(unittest.TestCase):
                     got = None
                 self.assertEqual(got, expected, f"seed {seed} claim {hd} at {h}")
                 self.stats["paid" if got else "refused"] += 1
-            elif op < 0.9:
+            else:
                 c = rng.choice(campaigns)
                 try:
                     expected = model.reclaim(h, c.id, c.creator)[1]
@@ -105,17 +106,6 @@ class TestModelAndChainAgree(unittest.TestCase):
                     got = None
                 self.assertEqual(got, expected, f"seed {seed} reclaim at {h}")
                 self.stats["reclaimed"] += got is not None
-            else:
-                try:
-                    expected = model.collect(h)[1]
-                except Refused:
-                    expected = None
-                try:
-                    got = w.collect()
-                except ValueError:  # a refusal; any other error is a bug
-                    got = None
-                self.assertEqual(got, expected, f"seed {seed} collect at {h}")
-                self.stats["collected"] += got is not None
             st = w.d.read_state()
             self.assertEqual(st["reserve"], model.reserve)
             self.assertEqual(w.reserve_on_chain(), model.reserve)
@@ -123,7 +113,7 @@ class TestModelAndChainAgree(unittest.TestCase):
         return len(roots)
 
     def test_random_scenarios(self):
-        totals = {"roots": 0, "paid": 0, "refused": 0, "reclaimed": 0, "collected": 0}
+        totals = {"roots": 0, "paid": 0, "refused": 0, "reclaimed": 0}
         for seed in range(12):
             totals["roots"] += self.run_scenario(seed)
             for key, n in self.stats.items():

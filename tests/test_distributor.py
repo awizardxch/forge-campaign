@@ -17,14 +17,14 @@ POOL = b"\xb0" * 32
 LP = b"\x1b" * 32
 REWARD = b"\xca" * 32
 ALICE, BOB = b"\xa1" * 32, b"\xb2" * 32
-CREATOR, TREASURY, GUARDIAN, ENGINE, ROUTER, STRANGER = (bytes([x]) * 32 for x in (0xCC, 0x7E, 0x6A, 0xE6, 0x80, 0x55))
+CREATOR, DEV, GUARDIAN, ENGINE, ROUTER, STRANGER = (bytes([x]) * 32 for x in (0xCC, 0x7E, 0x6A, 0xE6, 0x80, 0x55))
 
 DISPUTE = 10
 WINDOW = 1000
 
 
 def setup(deposit=1_000_000, start=100, end=200):
-    cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, ROUTER, dispute_blocks=DISPUTE)
+    cfg = Config(DIST, REWARD, DEV, GUARDIAN, ROUTER, dispute_blocks=DISPUTE)
     d = Distributor(cfg, ENGINE)
     c = Campaign(DIST, CREATOR, REWARD, deposit, start, end, Kind.LP_HOLD, POOL, claim_window=WINDOW)
     src = FixtureSource(lp_assets={POOL: LP}, events={LP: [HolderEvent(0, ALICE, 3), HolderEvent(0, BOB, 1)]})
@@ -44,7 +44,7 @@ def claim(d, root, h, ph, campaign):
 class TestLifecycle(unittest.TestCase):
     def test_fee_claims_over_time_and_reclaim(self):
         d, c, src = setup()
-        self.assertEqual(d.fees_owed, 30_000)  # 3%
+        self.assertEqual((d.dev_fee_paid, d.reserve), (30_000, 970_000))  # 3%, paid at creation
         d.check_invariant()
 
         # Mid-campaign root: Alice claims what she has so far.
@@ -68,7 +68,6 @@ class TestLifecycle(unittest.TestCase):
         self.assertEqual(d.reclaim(200 + WINDOW, c.id, CREATOR), (CREATOR, 242_500))
         with self.assertRaises(Refused):
             claim(d, r2, 200 + WINDOW, BOB, c)  # reclaimed: nothing left to claim from
-        self.assertEqual(d.collect(200 + WINDOW), (TREASURY, 30_000))
         self.assertEqual(d.reserve, 0)
         d.check_invariant()
 
@@ -95,7 +94,7 @@ class TestLifecycle(unittest.TestCase):
 
     def test_unearned_budget_also_goes_back(self):
         # Nobody holds LP for the first half: that half was never earned.
-        cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, ROUTER, fee_bps=0, dispute_blocks=DISPUTE)
+        cfg = Config(DIST, REWARD, DEV, GUARDIAN, ROUTER, fee_bps=0, dispute_blocks=DISPUTE)
         d = Distributor(cfg, ENGINE)
         c = Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL, fee_bps=0, claim_window=WINDOW)
         src = FixtureSource(lp_assets={POOL: LP}, events={LP: [HolderEvent(150, ALICE, 1)]})
@@ -108,7 +107,7 @@ class TestLifecycle(unittest.TestCase):
 
 class TestConfig(unittest.TestCase):
     def test_testnet_allows_minute_scale_campaigns(self):
-        cfg = Config.testnet(DIST, REWARD, TREASURY, GUARDIAN, ROUTER)
+        cfg = Config.testnet(DIST, REWARD, DEV, GUARDIAN, ROUTER)
         self.assertEqual((cfg.dispute_blocks, cfg.min_campaign_length), (8, 16))  # ~2.5 min, ~5 min
         d = Distributor(cfg, ENGINE)
         d.create(50, ROUTER, Campaign(DIST, CREATOR, REWARD, 1000, 100, 116, Kind.LP_HOLD, POOL, claim_window=16), 1000)
@@ -116,7 +115,7 @@ class TestConfig(unittest.TestCase):
             d.create(50, ROUTER, Campaign(DIST, CREATOR, REWARD, 1000, 100, 115, Kind.LP_HOLD, POOL, claim_window=16), 1000)
 
     def test_production_defaults(self):
-        cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, ROUTER)
+        cfg = Config(DIST, REWARD, DEV, GUARDIAN, ROUTER)
         self.assertEqual((cfg.fee_bps, cfg.dispute_blocks, cfg.min_campaign_length), (300, 38, 77))
         self.assertEqual(cfg.max_campaign_length, 365 * 4608)
         self.assertEqual(cfg.min_claim_window, 76)
@@ -127,7 +126,7 @@ class TestConfig(unittest.TestCase):
 
     def test_claims_at_any_interval_within_the_campaign(self):
         # Roots every 10 blocks; Alice claims after each one, Bob only once at the end.
-        cfg = Config.testnet(DIST, REWARD, TREASURY, GUARDIAN, ROUTER, fee_bps=0)
+        cfg = Config.testnet(DIST, REWARD, DEV, GUARDIAN, ROUTER, fee_bps=0)
         d = Distributor(cfg, ENGINE)
         c = Campaign(DIST, CREATOR, REWARD, 1000, 100, 150, Kind.LP_HOLD, POOL, fee_bps=0, claim_window=16)
         src = FixtureSource(lp_assets={POOL: LP}, events={LP: [HolderEvent(0, ALICE, 1), HolderEvent(0, BOB, 1)]})
@@ -228,7 +227,7 @@ class TestRefusals(unittest.TestCase):
         self.assertEqual(d.reclaim(200 + WINDOW, c.id, HOT), (CREATOR, 970_000))
 
     def test_create_rules(self):
-        cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, ROUTER)
+        cfg = Config(DIST, REWARD, DEV, GUARDIAN, ROUTER)
         d = Distributor(cfg, ENGINE)
         c = Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL)
         with self.assertRaises(Refused):
@@ -240,7 +239,7 @@ class TestRefusals(unittest.TestCase):
         with self.assertRaises(Refused):
             d.create(50, STRANGER, c, 1000)  # not our router
         d.create(50, ROUTER, c, 1005)  # slack is network fee, as on chain
-        self.assertEqual((d.fees_owed, d.reserve), (30, 1000))
+        self.assertEqual((d.dev_fee_paid, d.reserve), (30, 970))
         with self.assertRaises(Refused):
             d.create(50, ROUTER, c, 1000)
         d.check_invariant()
