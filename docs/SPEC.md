@@ -106,7 +106,7 @@ campaign = ["flpcr-campaign-v1", distributor_id, creator_ph, reward_asset, amoun
             start, end, kind, target, params_hash, nonce, fee_bps, claim_window]
 campaign_id = sha256tree(campaign)
 params = [time_bps, fees_bps, min_balance, sorted(blacklist), sorted(whitelist), forward,
-          gates, boosts, boost_cap_bps]
+          gates, boosts, boost_cap_bps, fee_window]
           gates  = ([holding, asset, min_count] ...)            holding: 1 = NFT, 2 = CAT
           boosts = ([holding, asset, min_count, bps] ...)
 params_hash = sha256tree(params)
@@ -128,6 +128,8 @@ by both `model.py` and the `create` leaf, are:
   otherwise picks freely.
 
 The full `params` value sits in the `create` solution, so it is on chain and recoverable from the hash.
+The leaf reads only `time_bps` and `fees_bps`; `model.py` alone checks the rest, including
+`fee_window >= 1` (blocks, default 4608 = one day; §6.3).
 
 ---
 
@@ -370,14 +372,19 @@ arithmetic is exact rational; the only rounding is a floor of a holder's cumulat
   protocol (V16 = 17; V15 and V14 pools stay live). Resolve each action's leaf through its selector, not
   `zip(puzzles, solutions)` (`forge_v16_resync.py`; first written up in `forgePuzzleV14.md` §5). Each
   `swap` action yields `(h, weight)`, where weight is the LP fee it paid, valued in XCH at the pool's
-  **pre-spend** spot price (the price the oracle accumulates in the prologue).
+  **pre-spend** spot price (the price the oracle accumulates in the prologue). The valuation is an
+  **exact rational**: the fee in mojos times the spot price as the ratio the pool's integer reserves
+  (and weights) define, `Fraction(...)`, never a float, so every replay gets the same weight. A fee paid
+  in XCH is its mojos. The `Source` boundary accepts an `int` or a `Fraction` and refuses a float
+  (`flpcr.sources.fee_weight`); in JSON a weight is an integer or `[numerator, denominator]`.
+- **Address links** for gates and boosts: the operator's append-only link log (§6.8).
 - **Forwarders:** Forge vault pools whose reserves include this pool's LP, mapped to the vault's own LP
   asset.
 
 ### 6.2 Time weighting (variable rate)
 
-Take the root's window `[a, b)` clipped to the campaign and cut it at every balance change into segments
-`[s, t)`. With `E(h) = campaign.emittable(h)` and eligible balances `B_u`:
+Take the root's window `[a, b)` clipped to the campaign and cut it at every balance, gate, boost or link
+change into segments `[s, t)`. With `E(h) = campaign.emittable(h)` and eligible balances `B_u`:
 
 ```
 budget(s,t) = (E(t) − E(s)) · time_bps / 10000
@@ -386,27 +393,47 @@ credit_u   += budget(s,t) · B_u / Σ B
 
 Each block's emission is split by share of eligible supply, the same as Merkl's variable rate and
 MasterChef. A segment with no eligible holder credits no one, and its budget comes back to the creator
-at reclaim.
+at reclaim. Splitting a segment in two splits its budget exactly (`E` telescopes), so time credit does
+not depend on where roots are cut.
 
 ### 6.3 Fee weighting (`LP_HOLD` only)
 
+The fee share is settled per **fee bucket**, a fixed, campaign-relative stretch of `W = fee_window`
+blocks (a campaign param, default 4608 = one day): bucket `k` is
+`[start + k·W, min(start + (k+1)·W, end))`. Each event's LP share is averaged over the `W` blocks that
+end at the event (`[h_e − W + 1, h_e]`, clipped at height 0, reaching back before the campaign's start):
+
 ```
-fee_budget  = (E(b) − E(a)) · fees_bps / 10000
-credit_u   += fee_budget · Σ_e w_e · B_u(h_e)/ΣB(h_e)  /  Σ_e w_e
+share_u(h)  = Σ_{x in (h−W, h]} B_u(x)/ΣB(x)  /  (number of those blocks with ΣB(x) > 0)
+budget(k)   = (E(be) − E(bs)) · fees_bps / 10000              for bucket k = [bs, be)
+credit_u   += budget(k) · Σ_e w_e · share_u(h_e)  /  Σ_e w_e   over events e in bucket k
 ```
 
-This runs over fee events `e` in the window that have at least one eligible holder. If the window has
-**no** such event, the fee share is spent on time weighting, so a quiet pool doesn't strand the budget.
-This is the fungible-LP form of Merkl's `propFees`: an LP's fee share in a block *is* their LP share, so
-weighting by fees moves rewards toward the blocks where the liquidity was used. Because the fallback is
-decided per window, root boundaries are part of the result. They are posted on chain (`start`, `end`),
-so a replay uses the same ones.
+`B` is the eligible weight of §6.2 (gates, boosts, links, lists and minimum applied), and each event `e`
+counts only if its `share` is non-empty. A bucket with **no** such event spends its fee share on time
+weighting over that bucket (§6.2 with `fees_bps` in place of `time_bps`), so a quiet pool doesn't
+strand the budget. This is the fungible-LP form of Merkl's `propFees`: an LP's fee share in a block *is*
+their LP share, so weighting by fees moves rewards toward the days when the liquidity was used.
+
+- **A bucket is credited once it has closed:** a root `[a, b)` adds the fee share of every bucket whose
+  end lies in `(a, b]`, and the time share of every block in `[a, b)`. So the exact accrual at a height
+  depends on the chain alone; any set of root boundaries gives the same cumulatives at the heights they
+  share. Root boundaries are still posted on chain (`start`, `end`), but they no longer move value.
+- **Why average shares, not balances:** each block contributes at most `1/W` of a share, whatever the
+  size of the balance in it. A deposit held for one block (the attack in review FLPCR-01: add LP, swap
+  dust, leave) earns one block's share of the fee weight, not its LP share of the whole fee budget.
+- **Why one day:** the lookback must be long next to a single block, so a flash deposit is worth about
+  `1/W` of a swap (`1/4608`); a creator who wants fee weighting to follow activity more closely can pick
+  a shorter `fee_window`. The bucket shares the length so one number describes the rule, and so the fee
+  half of the budget is never more than a day behind the time half.
 
 ### 6.4 Forwarding
 
 A wrapper's balance `W` at height `h` is credited to its share holders `p` as `W · S_p / ΣS`, with the
 share asset's own exclusions applied. Forwarding is one level deep: a wrapper of a wrapper is credited
-to the inner wrapper's puzzle hash. A campaign disables it with `forward = 0`.
+to the inner wrapper's puzzle hash. A campaign disables it with `forward = 0`. A wrapper on the
+campaign's blacklist is not forwarded: its balance stays with the wrapper, which the blacklist keeps from
+earning, so blacklisting a vault excludes its LP rather than passing it to the vault's holders.
 
 ### 6.5 Accrual and the claim tree
 
@@ -423,9 +450,15 @@ sha256tree(["flpcr-claim-v1", distributor_id, campaign_id, puzzle_hash, cumulati
 ```
 
 It is a Chia `merkle_utils` tree (leaf prefix `0x01`, node `0x02`, midpoint split, proof
-`(path, hashes)`), which `simplify_merkle_proof` verifies on chain. A window in which nothing accrued is
-not posted, and the next run covers the longer window, so posted roots tile the timeline. A campaign
-that has been reclaimed is left out of the engine's input and drops out of later trees.
+`(path, hashes)`), which `simplify_merkle_proof` verifies on chain. A window in which nothing claimable
+changed is not posted (`run_epoch` returns no root), and the next run covers the longer window, so posted
+roots tile the timeline. A campaign that has been reclaimed is left out of the engine's input and drops
+out of later trees.
+
+Each root manifest also commits the address link log the root used (§6.8): `links.count`, the number
+of log entries with heights below `end`, and `links.sha256`, sha256 of that prefix's canonical JSON. The
+engine state carries the same pair, and the engine refuses to build the next root if the log no longer
+starts with that prefix or gains an entry dated before the last root's `end`.
 
 ### 6.6 Valuation (display only in v1)
 
@@ -436,10 +469,13 @@ campaigns would make price load-bearing, and must use the TWAP only.
 
 ### 6.7 Anti-gaming
 
-Time weighting per block makes a flash deposit worth one block's share. The minimum balance and the
-blacklist apply. Self-trading to farm fee weight costs the trader the full pool fee for a share of a
-**fixed** budget, so it pays only when the fee weight per mojo of fee is worth more than the fee. The
-create form should show creators that trade-off next to the `fees_bps` slider.
+Time weighting per block makes a flash deposit worth one block's share. Fee weighting does the same
+through the lookback (§6.3): a one-block deposit counts for one block out of `fee_window`, so pairing it
+with a dust swap no longer takes the fee half of a bucket. The minimum balance and the blacklist apply.
+Self-trading to farm fee weight costs the trader the full pool fee for a share of a **fixed** budget, and
+the extra weight goes to the LPs of the trailing day in proportion to their averaged shares, so it pays
+only to someone who already held a large share for most of that day. The create form should show
+creators that trade-off next to the `fees_bps` slider.
 
 ### 6.8 Token gates and boosts
 
@@ -476,18 +512,31 @@ that cannot be forged is the **minter DID**: each NFT in the collection has its 
 the DID's owner can mint into it. So a campaign's NFT `asset` is the minter DID's launcher id.
 
 *Built: `flpcr/chain/nfts.py`, tested on the simulator (`tests/test_nfts.py`).* A collection is found by
-walking **the DID's own spends** and taking every NFT launcher a DID spend created (directly, or through
-an intermediate launcher). Nothing but the DID's owner can make a DID coin spend, so the walk cannot be
-fooled. The reader deliberately ignores two weaker signals:
+walking **the DID's own spends**. Nothing but the DID's owner can make a DID coin spend, so an NFT counts
+only on evidence from one:
+- **Created by a DID spend:** its launcher is a child of a DID spend, or the child of a coin the DID
+  spend created that was spent as the standard NFT intermediate launcher (`nft_intermediate_launcher`,
+  checked by its revealed mod and the launcher hash curried into it). Any other coin a DID spend creates
+  (a payment, a memo or notification coin) belongs to someone else, who could launch anything from it,
+  so the walk never follows it.
+- **Announced by a DID spend at mint:** a DID spend announced the NFT's launcher id (a 32-byte puzzle
+  announcement) and, in the same block, the NFT's eve spend set that DID as its owner. This is the
+  reference wallet's DID-authorized mint, whose launcher's parent is an ordinary XCH coin. An NFT minted
+  elsewhere that the DID takes ownership of later does not count: its eve was not in the DID's block.
+
+The reader deliberately ignores two weaker signals:
 - **The metadata collection id**, which can be copied.
-- **The NFT's owner-DID field.** An NFT minted elsewhere can later be transferred to the DID, so the
-  field does not prove minting.
+- **The NFT's owner-DID field on its own.** An NFT minted elsewhere can later be transferred to the DID,
+  so the field does not prove minting.
 
 Each NFT is then followed spend by spend. Its owner is the p2 puzzle hash, which is also its hint, and
-each change of owner becomes `−1` for the old owner and `+1` for the new, like a CAT balance. NFTs sitting
-in an offer's settlement puzzle are nobody's holding. The tests mint Wizards from one DID and a look-alike
-from another, transfer one, and check that the gate counts exactly the Wizards, at the right owners, from
-the right height. Two alternatives, for when that does not fit:
+each change of owner becomes `−1` for the old owner and `+1` for the new, like a CAT balance. An NFT
+spent into something that does not parse as its next generation (a melt, or a spend the reader cannot
+follow) ends there: its last owner gets a final `−1` at the spend height. NFTs sitting in an offer's
+settlement puzzle are nobody's holding. The tests mint Wizards from one DID and a look-alike from
+another, transfer one, and check that the gate counts exactly the Wizards, at the right owners, from the
+right height; they also check that a launcher under a DID's payment to a third party is refused and that
+a DID-authorized mint from an XCH coin is counted. Two alternatives, for when that does not fit:
 - **A fixed list.** For a collection minted without a DID, or a curated subset (e.g. only certain
   Wizards), `asset` is the root of a published list of NFT launcher ids. The list is part of the
   campaign's published terms. *(Not built; the engine's source interface takes it without change.)*
@@ -499,18 +548,34 @@ with real BLS keys.* Sage spreads a wallet across many addresses (puzzle hashes)
 sits at one address and LP at another would not match, because requirements are checked per address.
 A **link** joins addresses into one holder for gates and boosts only:
 
-- **Both addresses sign** the same message, `flpcr-link-v1:<primary>:<member>`, in Chia's
+- **Both addresses sign** the same message,
+  `flpcr-link-v2:<distributor_id>:<primary>:<member>:<seq>` (hex ids, decimal `seq`), in Chia's
   `signMessageByAddress` format (CHIP-0002, UTF-8: the synthetic key signs
   `sha256tree(("Chia Signed Message", message))`). A one-sided link would let anyone attach their LP to
-  someone else's Wizard, so the primary must consent too.
-- **Verification** is two checks per side: the signature against the published public key, and
-  `standard_puzzle_hash(public key) == address`. Anyone can redo both from the published link.
+  someone else's Wizard, so the primary must consent too. The distributor id scopes the signature to
+  one distributor.
+- **Either address can unlink** with one signature over
+  `flpcr-unlink-v2:<distributor_id>:<primary>:<member>:<seq>`. It takes the member out of that primary's
+  group, and does nothing if the member has moved elsewhere.
+- **`seq`** is a counter per pair of addresses (in either role), shared by links and unlinks, starting
+  at one. An entry counts only if its `seq` is above every earlier signed entry for the pair, so re-recording
+  an old link cannot undo a later unlink; linking again needs fresh signatures with a higher `seq`. A
+  signed entry that breaks a shape rule still uses up its `seq`.
+- **Verification** is two checks per signing side: the signature against the published public key, and
+  `standard_puzzle_hash(public key) == address` (the identity key never counts). Anyone can redo both
+  from the published log.
 - **Requirement holdings are summed across the group**, and every address in it is judged by the sum.
   Two Wizards at one address and one at another make 3, enough for a 3-Wizard tier. **Rewards still go
   to the address that holds the LP.**
-- **Over time:** a link counts from the height the operator recorded it (published with the manifests)
-  until it is replaced. Linking an address again moves it; an unlink (member == primary, signed by that
-  address alone) takes it out of its group. Link changes cut segments like any other change.
+- **The log, and what a height is bound to.** The operator keeps one append-only log per distributor and
+  records each entry at the peak height when it arrives; entries apply in log order from their recorded
+  `height` until replaced or unlinked. The height is not signed, so the log binds it: heights never
+  decrease along the log, each root manifest commits sha256 of the prefix below its `end` (§6.5), and
+  the engine refuses a log that rewrites a committed prefix or adds an entry dated before the last
+  root's `end`. A link can therefore never reach back into a window a posted root has settled. Inside
+  the open window the recorded height is the operator's word, bounded by the last root's `end` and the
+  peak at recording, and visible in the published log (`flpcr.links.log_to_json`, written next to the
+  manifest). Link changes cut segments like any other change.
 - **Shape:** groups are one level deep (a primary cannot be a member, a primary with members cannot
   become one), with at most 16 members per group. Anything that breaks a rule or fails verification is
   ignored, not an error.

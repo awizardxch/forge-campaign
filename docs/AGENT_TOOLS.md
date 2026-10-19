@@ -35,7 +35,7 @@ Validates a campaign and prices it. Nothing is signed.
   - `kind` (`LP_HOLD` or `CAT_HOLD`), `target` (pool launcher id or CAT asset id);
   - `start`, `end` (heights) or `length`, and `claim_window` (blocks);
   - optional `params`: `time_bps` / `fees_bps`, `min_balance`, lists, `gates`, `boosts`,
-    `boost_cap_bps`.
+    `boost_cap_bps`, `fee_window` (blocks, default 4608; SPEC §6.3).
 - **Checks:**
   - `flpcr.router.check_campaign`: the reward asset and any CAT target trade in a Forge registry pool;
     an LP target is a registered pool.
@@ -114,12 +114,15 @@ Returns a campaign's leftovers to its creator.
 
 Joins two of a holder's addresses for gates and boosts.
 
-- **In:** `primary`, `member` (both the user's addresses).
-- **Signs:** **both addresses**, `signMessageByAddress` over `flpcr-link-v1:<primary>:<member>`.
-  Unlink: `member == primary`, one signature.
-- **Check:** `flpcr.links.verify(link)` before submitting.
-- **Out:** the link, recorded at the current height and published with the next manifest.
-- **Code:** `flpcr.links` (`sign`, `verify`, `link_to_json`, `LinkBook`).
+- **In:** `distributor`, `primary`, `member` (both the user's addresses), `seq` (one above the pair's
+  last signed entry, from `GET /links`), and `unlink` to undo a link.
+- **Signs:** a link, **both addresses**, `signMessageByAddress` over
+  `flpcr-link-v2:<distributor_id>:<primary>:<member>:<seq>`. An unlink, **either address** alone, over
+  `flpcr-unlink-v2:<distributor_id>:<primary>:<member>:<seq>`.
+- **Check:** `flpcr.links.verify(link)` before submitting, and a `seq` above the pair's last.
+- **Out:** the entry, appended to the distributor's link log at the current height. Each root manifest
+  commits the log prefix it used, and the log is published beside it.
+- **Code:** `flpcr.links` (`sign`, `verify`, `link_to_json`, `log_to_json`, `log_hash`, `LinkBook`).
 
 ## Operator tools (our keys, never user-facing)
 
@@ -128,10 +131,14 @@ Joins two of a holder's addresses for gates and boosts.
 Computes the next root. Nothing is signed.
 
 - **In:** a distributor, its live campaigns (not yet reclaimed), and `end ≤ peak`.
-- **Out:** a root manifest (`flpcr/manifest.py`) with `root`, `totals` and every proof. Skip posting if
-  `root` is `None`.
-- **Check:** the engine's own ceiling assertion. A failure there is a bug: stop, don't post.
-- **Code:** `flpcr.engine.run_epoch`, `manifest.root_to_json`.
+- **Out:** a root manifest (`flpcr/manifest.py`) with `root`, `totals`, every proof and the link log
+  commitment (`links.count`, `links.sha256`), plus the committed log prefix to publish beside it. If
+  `run_epoch` returns no root, nothing claimable changed: skip posting, and the next run covers the
+  longer window.
+- **Check:** the engine's own ceiling assertion, and the link log check (a log that rewrites what an
+  earlier root committed, or backdates an entry before its `end`, raises). Either failure is a bug or
+  tampering: stop, don't post.
+- **Code:** `flpcr.engine.run_epoch`, `manifest.root_to_json`, `links.log_to_json`.
 
 ### `flpcr.post_root`
 
@@ -149,7 +156,8 @@ Posts a root.
 
 Checks each pending root.
 
-- **Does:** recompute the pending root from chain data with the engine; on any mismatch, alert and request
+- **Does:** recompute the pending root from chain data and the published link log with the engine
+  (checking the log against `links.sha256` in the manifest); on any mismatch, alert and request
   a guardian veto inside `dispute_blocks` (testnet 8, production 38). This must be automated; a human
   cannot react in 12 minutes.
 - **Signs (veto):** **the guardian** (a Forge multisig safe), message `"v" + sha256tree(root_id)`.
