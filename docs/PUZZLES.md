@@ -26,7 +26,7 @@ contracts/
   puzzles/upstream/      verbatim from Yakuhito/slot-machine@2d37ba1: action, finalizer,
                          reserve_finalizer, slot, p2_delegated_by_singleton, merkle_utils,
                          common_types, slot helpers. Never edited; pinned by tree hash and sha256.
-  puzzles/flpcr/         shared.rue + eight leaves
+  puzzles/flpcr/         shared.rue + nine leaves
   compiled/*.hex         build output, committed
   pins.json              upstream hashes (published values), our leaf hashes, upstream source sha256s
 ```
@@ -38,8 +38,9 @@ distributor  = singleton_top_layer_v1_1( action_layer( reserve_finalizer, LEAVES
 reserve      = p2_delegated_by_singleton(SINGLETON_MOD_HASH, struct_hash, nonce 0)
                wrapped in CAT(reward_asset) for a CAT reward, bare for XCH
 claim slot   = slot(SingletonInfo, nonce 1)(sha256tree(slot_value))
-LEAVES_ROOT  = merkle root of the eight curried leaf hashes, in this order:
-               init, create, post_root, veto, claim, reclaim, collect, rotate
+LEAVES_ROOT  = merkle root of the nine curried leaf hashes, in this order:
+               init, create, post_root, veto, claim, reclaim, collect, rotate, delegate
+delegation   = slot(SingletonInfo, nonce 2)(sha256tree((holder . delegate)))
 ```
 
 The reserve finalizer is curried with `(ACTION_LAYER_MOD_HASH, RESERVE_FULL_PH, RESERVE_INNER_PH, 2,
@@ -54,7 +55,8 @@ that a distributor is genuine (Forge's M-4 lesson).
 
 ```
 Config   [distributor_id, reward_asset, fee_bps, treasury_ph, guardian_ph, router_ph,
-          dispute_blocks, min_campaign_length, max_campaign_length, max_campaigns, slot_1st_curry_hash]
+          dispute_blocks, min_campaign_length, max_campaign_length, max_campaigns, slot_1st_curry_hash,
+          delegation_slot_1st_curry_hash]
 State    [reserve, fees_owed, engine_ph, initialized, campaigns, active, pending]
 Campaign [id, creator, budget, start, end, claim_window, claimed]
 Root     [root_id, start, end, root, totals, activates_at]      totals = ((id . total) ...), ascending ids
@@ -124,11 +126,14 @@ All messages are `RECEIVE_MESSAGE` mode 23 (sender puzzle hash → this coin).
 1. There is an active root, and the campaign is live (there is no height check).
 2. `simplify_merkle_proof(leaf, proof) == active.root`, where
    `leaf = sha256tree(["flpcr-claim-v1", distributor_id, campaign_id, puzzle_hash, cumulative])`.
-   **Only the holder can claim:**
+   **Only the holder or their delegate can claim** (`authorize` in `shared.rue`):
    - `auth == 0`: `auth_data` is a synthetic public key. Assert
      `curry_tree_hash(STANDARD_MOD_HASH, [tree_hash_atom(key)]) == puzzle_hash` and emit
      `AGG_SIG_ME(key, leaf)`.
    - `auth == 1`: emit `RECEIVE_MESSAGE` mode 23 of `"k" + leaf` from `puzzle_hash`.
+   - `auth == 2`: `auth_data = (delegate . (mode . data))`. Spend and recreate the delegation slot
+     `(puzzle_hash . delegate)`, then `authorize(delegate, mode, data, leaf)`, which accepts only modes
+     0 and 1, so a delegate cannot delegate.
    - Any other value is refused.
 3. Let `key = sha256tree((campaign_id . puzzle_hash))`.
    - **`insert == 0`**: `slot_info = (claimed . (left . right))`. Spend the key's slot and recreate it
@@ -144,6 +149,14 @@ All messages are `RECEIVE_MESSAGE` mode 23 (sender puzzle hash → this coin).
 - The campaign is live and `h >= end + claim_window`.
 - If `budget − claimed > 0`, pay it to the creator.
 - Remove the campaign and set `reserve -= that`.
+
+### `delegate` `[h, holder, delegate, grant, auth, auth_data]`
+1. `grant ∈ {0, 1}`.
+2. `authorize(holder, auth, auth_data, sha256tree(["flpcr-delegate-v1", distributor_id, holder, delegate, grant]))`.
+   The holder, never the delegate.
+3. If `grant == 1`, create the delegation slot `(holder . delegate)`, hinted with the holder. If
+   `grant == 0`, spend it (refused if it does not exist).
+4. State is unchanged.
 
 ### `collect` `[h]`
 - `fees_owed > 0`.

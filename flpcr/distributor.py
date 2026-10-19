@@ -94,6 +94,7 @@ class Distributor:
     active: Optional[PostedRoot] = None
     pending: Optional[PostedRoot] = None
     claimed: Dict[Tuple[bytes, bytes], int] = field(default_factory=dict)  # the claim slots
+    delegations: set = field(default_factory=set)  # (holder, delegate): the delegation slots
     fees_owed: int = 0
     reserve: int = 0  # mojos in the reserve coin
 
@@ -192,13 +193,12 @@ class Distributor:
 
     def claim(self, h: int, campaign_id: bytes, puzzle_hash: bytes, cumulative: int,
               proof: Proof, authorized_by: bytes) -> Tuple[bytes, int]:
-        """Only the holder can claim: `authorized_by` is the address whose
-        signature or message authorizes the claim (on chain, an AGG_SIG_ME
-        from the key of `puzzle_hash`, or a message from a coin at it). The
-        payment always goes to `puzzle_hash`."""
+        """Only the holder, or a delegate the holder granted, can claim:
+        `authorized_by` is the address whose signature or message authorizes
+        the claim. The payment always goes to `puzzle_hash`."""
         self._settle(h)
-        if authorized_by != puzzle_hash:
-            raise Refused("only the holder can claim their rewards")
+        if authorized_by != puzzle_hash and (puzzle_hash, authorized_by) not in self.delegations:
+            raise Refused("only the holder or their delegate can claim")
         rec = self.campaigns.get(campaign_id)
         if rec is None:
             raise Refused("campaign has been reclaimed")
@@ -219,6 +219,18 @@ class Distributor:
         rec.claimed += amount
         self.reserve -= amount
         return puzzle_hash, amount
+
+    def set_delegate(self, h: int, holder: bytes, delegate: bytes, grant: bool, authorized_by: bytes) -> None:
+        """The holder grants or revokes a delegate that may claim for them."""
+        self._settle(h)
+        if authorized_by != holder:
+            raise Refused("only the holder can grant or revoke a delegate")
+        if grant:
+            self.delegations.add((holder, delegate))
+        elif (holder, delegate) in self.delegations:
+            self.delegations.remove((holder, delegate))
+        else:
+            raise Refused("no such delegate")
 
     def reclaim(self, h: int, campaign_id: bytes) -> Tuple[bytes, int]:
         """Once the campaign's claim window has passed, the creator gets back

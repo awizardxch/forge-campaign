@@ -1,12 +1,16 @@
 // claim.rue: pays a holder `cumulative - claimed` for one campaign, against
-// the active root. Only the holder can claim: the spend must carry the
-// holder's authorization, either
+// the active root. Only the holder, or a delegate the holder granted, can
+// claim. The spend must carry an authorization of the claim leaf:
 //   AUTH_SIGNATURE: auth_data is the holder's synthetic public key; it must be
 //     the key of the holder's standard address, and it signs the claim leaf
 //     with AGG_SIG_ME (bound to this singleton coin, so it cannot be replayed);
 //   AUTH_MESSAGE: a coin at the holder's puzzle hash sends "k" + leaf to this
 //     coin (for holders whose address is a vault, a multisig or any other
-//     puzzle).
+//     puzzle);
+//   AUTH_DELEGATE: auth_data is (delegate . (mode . data)). The holder's
+//     delegation slot for that delegate is spent and recreated (proving the
+//     grant exists), and the delegate authorizes the leaf by signature or
+//     message. One hop only: a delegate cannot delegate.
 // The payment always goes to the leaf's puzzle hash. There is no deadline: a
 // claim works until the campaign has been reclaimed.
 //
@@ -21,6 +25,12 @@ struct OwnSlot {
     claimed: Int,
     left: Bytes32,
     ...right: Bytes32,
+}
+
+struct Delegated {
+    delegate: Bytes32,
+    auth: Int,
+    ...data: Any,
 }
 
 struct Neighbours {
@@ -53,13 +63,15 @@ fn main(
     let leaf = tree_hash(["flpcr-claim-v1", CONFIG.distributor_id, campaign_id, puzzle_hash, cumulative]);
     assert simplify_merkle_proof(leaf, proof) == state.active.root;
 
-    let authorization: Condition = if auth == AUTH_SIGNATURE {
-        let public_key = unchecked_cast::<PublicKey>(auth_data);
-        assert curry_tree_hash(STANDARD_MOD_HASH, [tree_hash_atom(unchecked_cast::<Bytes>(public_key))]) == puzzle_hash;
-        AggSigMe { public_key: public_key, message: leaf }
+    let authorization: List<Condition> = if auth == AUTH_DELEGATE {
+        let d = unchecked_cast::<Delegated>(auth_data);
+        [
+            spend_delegation(CONFIG, puzzle_hash, d.delegate),
+            create_delegation(CONFIG, puzzle_hash, d.delegate),
+            authorize(d.delegate, d.auth, d.data, leaf),
+        ]
     } else {
-        assert auth == AUTH_MESSAGE;
-        ReceiveMessage { mode: MODE_PUZZLE_TO_COIN, message: "k" + leaf, sender: [puzzle_hash] }
+        [authorize(puzzle_hash, auth, auth_data, leaf)]
     };
 
     let key = tree_hash((campaign_id, puzzle_hash));
@@ -115,8 +127,7 @@ fn main(
         },
         [
             reserve_payment(puzzle_hash, amount),
-            authorization,
-            ...merge_list(slot_conditions, conditions),
+            ...merge_list(authorization, merge_list(slot_conditions, conditions)),
         ],
     )
 }

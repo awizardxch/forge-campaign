@@ -111,7 +111,19 @@ can claim:
 - **Vault or other puzzle:** the response includes the `"k" + leaf` message the holder's own puzzle must
   send; their wallet (e.g. the multisig safe) builds and signs that spend.
 
-A bundle without the holder's authorization is refused on chain.
+- **Delegate (hot wallet for a cold wallet, cloud wallet, vault signer):** pass `delegate` with the
+  delegate's address. The claim names the delegate; the delegate signs (or its puzzle sends the message).
+  The payout still goes to `address`.
+
+A bundle without the holder's or a granted delegate's authorization is refused on chain.
+
+### `POST /delegates/build` and `GET /delegates?holder=`
+
+Body: `{ holder, delegate, grant: true | false }`. Returns the `delegate` spend and what the **holder**
+must authorize: a signature over `sha256tree(["flpcr-delegate-v1", distributor_id, holder, delegate,
+grant])` for a standard address, or that message (prefixed `"k"`) for a vault or multisig to send. A
+grant is per distributor, i.e. per reward asset. `GET` lists a holder's live delegates (their slots are
+hinted with the holder).
 
 ### `POST /reclaims/build`
 

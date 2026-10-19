@@ -17,6 +17,7 @@ from ..engine import Root
 from ..merkle import claim_leaf
 from ..model import Campaign
 from .driver import (
+    AUTH_DELEGATE,
     AUTH_MESSAGE,
     AUTH_SIGNATURE,
     HIGH,
@@ -83,12 +84,12 @@ class SimWorld:
         return [self.keys.spend(coin, label, [send_message_condition(message, self.d.coin.coin_id()), [51, change, 1]])]
 
     def push(self, actions: Sequence[Action], extra_builders=(), slot_updates: Optional[Dict] = None,
-             cat_spends=(), secret_keys=()):
+             cat_spends=(), secret_keys=(), delegation_updates: Optional[Dict] = None):
         spends, new_state, per_action = self.d.spend(actions, cat_spends)
         for build in extra_builders:
             spends.extend(build())
         self.sim.spend_coins(spends, list(secret_keys))
-        self.d.apply(new_state, slot_updates or {})
+        self.d.apply(new_state, slot_updates or {}, delegation_updates)
         return per_action
 
     def mint_cat(self, label: str, amount: int) -> Cat:
@@ -206,6 +207,49 @@ class SimWorld:
         self.push([action], [self.holder_message(sender or holder, campaign_id, ph, cumulative)],
                   slot_updates=updates)
         return self.balance(ph) - before
+
+    # --- delegation: a cold wallet lets a hot wallet claim for it ----------------------
+
+    def delegation_message(self, holder_ph: bytes, delegate_ph: bytes, grant: int) -> bytes:
+        return sha256tree(["flpcr-delegate-v1", self.launcher_id, holder_ph, delegate_ph, grant])
+
+    def set_delegate(self, holder, delegate_ph: bytes, grant: int = 1, signer=None):
+        """`holder` grants (or with grant=0 revokes) `delegate_ph`. A str holder
+        authorizes by message from its address; a `sim.bls` wallet by its key.
+        `signer` overrides who authorizes, for refusal probes."""
+        signer = signer or holder
+        if isinstance(holder, str):
+            holder_ph = self.keys.ph(holder)
+            sol = [self.h, holder_ph, delegate_ph, grant, AUTH_MESSAGE, None]
+            msg = self.delegation_message(holder_ph, delegate_ph, grant)
+            builders = [lambda: self.message_from(signer, b"k" + msg)]
+            keys = []
+        else:
+            holder_ph = holder.puzzle_hash
+            sol = [self.h, holder_ph, delegate_ph, grant, AUTH_SIGNATURE, signer.pk.to_bytes()]
+            builders, keys = [], [signer.sk]
+        self.push([Action("delegate", sol)], builders, secret_keys=keys,
+                  delegation_updates={(holder_ph, delegate_ph): bool(grant)})
+
+    def claim_delegated(self, root: Root, campaign_id: bytes, holder_ph: bytes, delegate, **kw):
+        """`delegate` (a `sim.bls` hot wallet, or a str label authorizing by
+        message) claims `holder_ph`'s rewards. They are paid to the holder."""
+        before = self.balance(holder_ph)
+        if isinstance(delegate, str):
+            delegate_ph = self.keys.ph(delegate)
+            data = (delegate_ph, (AUTH_MESSAGE, None))
+            keys = []
+        else:
+            delegate_ph = delegate.puzzle_hash
+            data = (delegate_ph, (AUTH_SIGNATURE, delegate.pk.to_bytes()))
+            keys = [delegate.sk]
+        action, updates = self.claim_action(root, campaign_id, holder_ph, auth=AUTH_DELEGATE, auth_data=data, **kw)
+        builders = []
+        if isinstance(delegate, str):
+            builders = [self.holder_message(delegate, campaign_id, holder_ph, action.solution[3])]
+        self.push([action], builders, slot_updates=updates, secret_keys=keys,
+                  delegation_updates={(holder_ph, delegate_ph): True})
+        return self.balance(holder_ph) - before
 
     def claim_signed(self, root: Root, campaign_id: bytes, holder, signer=None, **kw):
         """`holder` (a `sim.bls` wallet) claims with its key's AGG_SIG_ME.

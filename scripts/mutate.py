@@ -38,7 +38,7 @@ def build(project: pathlib.Path, out: pathlib.Path) -> bool:
         "slot": "upstream/singleton/slot.rue",
         "p2_delegated_by_singleton": "upstream/singleton/p2_delegated_by_singleton.rue",
     }
-    for leaf in ["init", "create", "post_root", "veto", "claim", "reclaim", "collect", "rotate"]:
+    for leaf in ["init", "create", "post_root", "veto", "claim", "reclaim", "collect", "rotate", "delegate"]:
         names[leaf] = f"flpcr/{leaf}.rue"
     for name, rel in names.items():
         r = subprocess.run(["rue", "build", "--hex", str(project / "puzzles" / rel)], cwd=project,

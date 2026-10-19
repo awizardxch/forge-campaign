@@ -12,10 +12,11 @@
     "create": "534db5bc8601861bd130adc0d512dcb9c8156b2b0997cb010e63e5235a367dcd",
     "post_root": "620d84a8c3ac5f89e94af0482f143bb4e96110ae83bd5cfb3b5cb688f6f66b5e",
     "veto": "582191a1d26a3ed309c118c2b94e83657b025a1ac6f45c6c6e14d41e351125ce",
-    "claim": "4301ebeb8b4f0c957414e20e6b2a8aca28652e32a7189aab2fe3b373af3ccbde",
+    "claim": "3b3d36a89a4c33a81a4a80a7bccc0be650c5f5d6c8830992049f1be7da2ec5d6",
     "reclaim": "cff40872111ffade08f9b720cdba9207a0aee40c5fec9318647262a440dd2da1",
     "collect": "4827fba2fed14434ade86fea00ff50e1be87c30d4e356a5a4d0f337311de2292",
-    "rotate": "41dea284abd653111d137659f951108c9a8a996f5fdcd71a6a190206bf8096e8"
+    "rotate": "41dea284abd653111d137659f951108c9a8a996f5fdcd71a6a190206bf8096e8",
+    "delegate": "d4a5351f0225cb4a2100c55b9ddc6fbc8891eaf22d998fbeb13616ddbff330e8"
   },
   "upstream_sources_sha256": {
     "upstream/common_types.rue": "9abe900c733d03c711e07b537687dd25fbc35fd94950c35d002db566c558f122",

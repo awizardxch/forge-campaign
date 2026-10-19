@@ -23,9 +23,11 @@ export const MODE_PUZZLE_TO_COIN: Int = 23;
 // p2_delegated_puzzle_or_hidden_puzzle, the standard wallet puzzle. An address
 // belongs to a synthetic key when it is this mod curried with that key.
 export const STANDARD_MOD_HASH: Bytes32 = 0xe9aaa49f45bad5c889b86ee3341550c155cfdd10c3a6757de618d20612fffd52;
-// How a claim proves the holder authorized it.
+// How a holder (or their delegate) authorizes an action.
 export const AUTH_SIGNATURE: Int = 0;
 export const AUTH_MESSAGE: Int = 1;
+// Claim only: a delegate the holder granted authorizes it (see delegate.rue).
+export const AUTH_DELEGATE: Int = 2;
 
 export struct Config {
     distributor_id: Bytes32,
@@ -39,6 +41,7 @@ export struct Config {
     max_campaign_length: Int,
     max_campaigns: Int,
     slot_1st_curry_hash: Bytes32,
+    delegation_slot_1st_curry_hash: Bytes32,
 }
 
 export struct Campaign {
@@ -210,6 +213,40 @@ export fn reserve_payment(puzzle_hash: Bytes32, amount: Int) -> Condition {
             memos: Memos { value: [puzzle_hash] },
         },
     ))
+}
+
+// --- authorization -----------------------------------------------------------------
+
+// `address` authorizes `message`:
+//   AUTH_SIGNATURE: `data` is a synthetic public key whose standard puzzle hash
+//     is `address`; it signs `message` with AGG_SIG_ME (bound to this coin).
+//   AUTH_MESSAGE: a coin at `address` sends "k" + message to this coin.
+// Anything else is refused.
+export fn authorize(address: Bytes32, auth: Int, data: Any, message: Bytes32) -> Condition {
+    if auth == AUTH_SIGNATURE {
+        let public_key = unchecked_cast::<PublicKey>(data);
+        assert curry_tree_hash(STANDARD_MOD_HASH, [tree_hash_atom(unchecked_cast::<Bytes>(public_key))]) == address;
+        AggSigMe { public_key: public_key, message: message }
+    } else {
+        assert auth == AUTH_MESSAGE;
+        ReceiveMessage { mode: MODE_PUZZLE_TO_COIN, message: "k" + message, sender: [address] }
+    }
+}
+
+// --- delegation slots ----------------------------------------------------------------
+
+// A slot of its own type (nonce 2) whose existence means: `delegate` may
+// authorize claims for `holder`. Hinted with the holder.
+export inline fn delegation_value_hash(holder: Bytes32, delegate: Bytes32) -> Bytes32 {
+    tree_hash((holder, delegate))
+}
+
+export fn spend_delegation(config: Config, holder: Bytes32, delegate: Bytes32) -> Condition {
+    spend_slot(config.delegation_slot_1st_curry_hash, delegation_value_hash(holder, delegate))
+}
+
+export fn create_delegation(config: Config, holder: Bytes32, delegate: Bytes32) -> Condition {
+    create_slot_with_hint(config.delegation_slot_1st_curry_hash, delegation_value_hash(holder, delegate), holder)
 }
 
 // --- claim slots -----------------------------------------------------------------

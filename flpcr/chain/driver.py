@@ -46,13 +46,15 @@ from .values import to_bytes, to_int, to_list, to_program
 COMPILED = pathlib.Path(
     os.environ.get("FLPCR_COMPILED") or pathlib.Path(__file__).resolve().parents[2] / "contracts" / "compiled"
 )
-LEAVES = ["init", "create", "post_root", "veto", "claim", "reclaim", "collect", "rotate"]
+LEAVES = ["init", "create", "post_root", "veto", "claim", "reclaim", "collect", "rotate", "delegate"]
 SLOT_NONCE = 1
+DELEGATION_SLOT_NONCE = 2
 RESERVE_NONCE = 0
 RESERVE_TAG = -42
 MODE_PUZZLE_TO_COIN = 23
 AUTH_SIGNATURE = 0  # claim authorized by the holder's AGG_SIG_ME
 AUTH_MESSAGE = 1  # claim authorized by a message from a coin at the holder's address
+AUTH_DELEGATE = 2  # claim authorized by a delegate the holder granted (delegate leaf)
 LOW = bytes(32)
 HIGH = b"\xff" * 32
 MAX_COST = 11_000_000_000
@@ -134,6 +136,10 @@ class Distributor:
             [to_program(c, (Constants.singleton_top_layer_v1_1_hash(), self.struct_hash)), to_program(c, SLOT_NONCE)]
         )
         self.slot_1st_hash = self.slot_1st.tree_hash()
+        self.delegation_1st = puzzles.mods["slot"].curry(
+            [to_program(c, (Constants.singleton_top_layer_v1_1_hash(), self.struct_hash)),
+             to_program(c, DELEGATION_SLOT_NONCE)]
+        )
 
         self.config_value = [
             launcher_id,
@@ -147,6 +153,7 @@ class Distributor:
             cfg.max_campaign_length,
             cfg.max_campaigns,
             self.slot_1st_hash,
+            self.delegation_1st.tree_hash(),
         ]
         config_program = to_program(c, self.config_value)
         self.leaves = {name: puzzles.mods[name].curry([config_program]) for name in LEAVES}
@@ -173,6 +180,9 @@ class Distributor:
         self.reserve_coin: Optional[Coin] = None  # the full coin, XCH or CAT
         self.reserve_cat: Optional[Cat] = None  # set for a CAT reserve
         self.slots: Dict[bytes, SlotRecord] = {}
+        # (holder, delegate) -> the singleton generation that created the
+        # delegation slot: (its parent id, its inner puzzle hash).
+        self.delegations: Dict[Tuple[bytes, bytes], Tuple[bytes, bytes]] = {}
 
     # --- puzzles -------------------------------------------------------------------
 
@@ -290,7 +300,14 @@ class Distributor:
             spends.append(CoinSpend(self.reserve_coin, self.reserve_puzzle.serialize(), reserve_solution.serialize()))
 
         # Slots the leaves spend: every SEND_MESSAGE mode 18 to a slot puzzle hash.
-        by_ph = {self.slot_ph(rec.value(key)): (key, rec) for key, rec in self.slots.items()}
+        # Claim slots and delegation slots are different puzzles (nonces 1, 2).
+        by_ph = {}
+        for key, rec in self.slots.items():
+            puzzle = self.slot_puzzle(rec.value(key))
+            by_ph[puzzle.tree_hash()] = (puzzle, rec.creator_parent, rec.creator_inner_ph)
+        for (holder, delegate), (parent, creator_inner) in self.delegations.items():
+            puzzle = self.delegation_puzzle(holder, delegate)
+            by_ph[puzzle.tree_hash()] = (puzzle, parent, creator_inner)
         for conditions in per_action:
             for cond in conditions:
                 items = to_list(cond) if cond.is_pair() else []
@@ -301,23 +318,34 @@ class Distributor:
                         # message then has no receiver and consensus refuses it,
                         # which is the refusal a test should observe.
                         continue
-                    key, rec = by_ph[target]
+                    puzzle, creator_parent, creator_inner = by_ph[target]
                     slot_coin = Coin(
-                        Coin(rec.creator_parent, self.full_puzzle_hash_for_inner(rec.creator_inner_ph), 1).coin_id(),
+                        Coin(creator_parent, self.full_puzzle_hash_for_inner(creator_inner), 1).coin_id(),
                         target,
                         0,
                     )
-                    slot_solution = to_program(c, ((rec.creator_parent, (rec.creator_inner_ph, 1)), inner_ph))
-                    spends.append(CoinSpend(slot_coin, self.slot_puzzle(rec.value(key)).serialize(), slot_solution.serialize()))
+                    slot_solution = to_program(c, ((creator_parent, (creator_inner, 1)), inner_ph))
+                    spends.append(CoinSpend(slot_coin, puzzle.serialize(), slot_solution.serialize()))
         return spends, new_state, per_action
 
     def full_puzzle_hash_for_inner(self, inner_ph: bytes) -> bytes:
         return curry_tree_hash(Constants.singleton_top_layer_v1_1_hash(), [self.singleton_struct.tree_hash(), inner_ph])
 
-    def apply(self, new_state: Program, slot_updates: Dict[bytes, Optional[Tuple[int, bytes, bytes]]]) -> None:
-        """Advance to the generation `spend` produced, once it has confirmed."""
+    def delegation_puzzle(self, holder: bytes, delegate: bytes) -> Program:
+        return self.delegation_1st.curry([self.clvm.atom(sha256tree((holder, delegate)))])
+
+    def apply(self, new_state: Program, slot_updates: Dict[bytes, Optional[Tuple[int, bytes, bytes]]],
+              delegation_updates: Optional[Dict[Tuple[bytes, bytes], bool]] = None) -> None:
+        """Advance to the generation `spend` produced, once it has confirmed.
+        `delegation_updates`: (holder, delegate) -> True if this spend created or
+        recreated the delegation slot, False if it spent it for good."""
         old_coin = self.coin
         old_inner_ph = self.inner_puzzle(self.state).tree_hash()
+        for pair, present in (delegation_updates or {}).items():
+            if present:
+                self.delegations[pair] = (old_coin.parent_coin_info, old_inner_ph)
+            else:
+                self.delegations.pop(pair, None)
         for key, value in slot_updates.items():
             if value is None:
                 self.slots.pop(key, None)

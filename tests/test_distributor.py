@@ -201,6 +201,22 @@ class TestRefusals(unittest.TestCase):
             d.claim(210, c.id, BOB, cl.cumulative, cl.proof, STRANGER)  # a keeper, or anyone else
         self.assertEqual(d.claim(210, c.id, BOB, cl.cumulative, cl.proof, BOB), (BOB, 242_500))
 
+    def test_delegate_claims_for_holder(self):
+        HOT = b"\x40" * 32
+        d, c, src = setup()
+        _, r = run_epoch(EngineState(DIST, height=100), [c], src, 200)
+        post(d, r, 200)
+        cl = r.claim_for(c.id, BOB)
+        with self.assertRaises(Refused):
+            d.claim(210, c.id, BOB, cl.cumulative, cl.proof, HOT)
+        with self.assertRaises(Refused):
+            d.set_delegate(210, BOB, HOT, True, HOT)  # the delegate cannot grant itself
+        d.set_delegate(210, BOB, HOT, True, BOB)
+        self.assertEqual(d.claim(210, c.id, BOB, cl.cumulative, cl.proof, HOT), (BOB, 242_500))
+        d.set_delegate(211, BOB, HOT, False, BOB)
+        with self.assertRaises(Refused):
+            d.set_delegate(211, BOB, HOT, False, BOB)
+
     def test_create_rules(self):
         cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, ROUTER)
         d = Distributor(cfg, ENGINE)

@@ -472,9 +472,103 @@ class TestOnlyTheHolderClaims(ChainTest):
 
     def test_unknown_auth_mode_is_refused(self):
         w, c = self.w, self.camp
-        action, updates = w.claim_action(self.r, c.id, self.bob, auth=2)
+        action, updates = w.claim_action(self.r, c.id, self.bob, auth=3)
         refused(self, w.push, [action], [w.holder_message("bob", c.id, self.bob, action.solution[3])],
                 slot_updates=updates)
+
+
+class TestDelegatedClaims(ChainTest):
+    """A cold wallet grants a hot wallet (a cloud wallet, a vault's signer) the
+    right to claim for it. Rewards still go to the cold wallet."""
+
+    def setUp(self):
+        super().setUp()
+        w = self.w
+        self.cold = w.sim.bls(1)
+        self.hot = w.sim.bls(1)
+        self.thief = w.sim.bls(1)
+        self.src = FixtureSource(
+            lp_assets={POOL: LP},
+            events={LP: [HolderEvent(0, self.cold.puzzle_hash, 1), HolderEvent(0, self.bob, 1)]},
+        )
+        self.created()
+        _, self.r = self.root_at(EngineState(w.launcher_id, height=self.camp.start), self.camp.end)
+        self.active(self.r)
+
+    def test_hot_wallet_claims_for_cold_wallet(self):
+        w, c = self.w, self.camp
+        refused(self, w.claim_delegated, self.r, c.id, self.cold.puzzle_hash, self.hot)  # not granted yet
+        w.set_delegate(self.cold, self.hot.puzzle_hash)
+        hot_before = w.balance(self.hot.puzzle_hash)
+        self.assertEqual(w.claim_delegated(self.r, c.id, self.cold.puzzle_hash, self.hot), 485_000)
+        self.assertEqual(w.balance(self.hot.puzzle_hash), hot_before)  # paid to the cold wallet, never the hot one
+
+    def test_one_grant_serves_every_later_claim(self):
+        """Granted once, mid-campaign; the hot wallet claims after two roots and
+        the delegation slot is recreated each time."""
+        w = SimWorld(reward_asset=self.ASSET)
+        w.advance_to(w.h + 3)
+        c = w.campaign("creator", 1_000_000, w.h + 2, w.h + 42, Kind.LP_HOLD, POOL, claim_window=WINDOW)
+        w.create(c, "creator")
+        w.set_delegate(self.cold, self.hot.puzzle_hash)
+        w.advance_to(c.start + 21)
+        st, r1 = run_epoch(EngineState(w.launcher_id, height=c.start), [c], self.src, c.start + 20)
+        w.post(r1)
+        w.advance_to(w.h + w.cfg.dispute_blocks)
+        first = w.claim_delegated(r1, c.id, self.cold.puzzle_hash, self.hot)
+        refused(self, w.claim_delegated, r1, c.id, self.cold.puzzle_hash, self.hot)  # nothing new
+        w.advance_to(c.end + 1)
+        _, r2 = run_epoch(st, [c], self.src, c.end)
+        w.post(r2)
+        w.advance_to(w.h + w.cfg.dispute_blocks)
+        second = w.claim_delegated(r2, c.id, self.cold.puzzle_hash, self.hot)
+        self.assertEqual((first, first + second), (242_500, 485_000))
+
+    def test_only_the_granted_delegate(self):
+        w, c = self.w, self.camp
+        w.set_delegate(self.cold, self.hot.puzzle_hash)
+        refused(self, w.claim_delegated, self.r, c.id, self.cold.puzzle_hash, self.thief)
+
+    def test_only_the_holder_grants(self):
+        w = self.w
+        # The thief tries to grant itself the cold wallet's claims.
+        refused(self, w.set_delegate, self.cold, self.thief.puzzle_hash, signer=self.thief)
+        # And by message from a stranger's address on behalf of an address holder.
+        refused(self, w.set_delegate, "bob", self.thief.puzzle_hash, signer="stranger")
+
+    def test_revoke(self):
+        w, c = self.w, self.camp
+        w.set_delegate(self.cold, self.hot.puzzle_hash)
+        refused(self, w.set_delegate, self.cold, self.hot.puzzle_hash, grant=0, signer=self.thief)
+        w.set_delegate(self.cold, self.hot.puzzle_hash, grant=0)
+        refused(self, w.claim_delegated, self.r, c.id, self.cold.puzzle_hash, self.hot)
+        self.assertEqual(w.claim_signed(self.r, c.id, self.cold), 485_000)  # the cold wallet still can
+
+    def test_grant_is_zero_or_one(self):
+        w = self.w
+        w.set_delegate(self.cold, self.hot.puzzle_hash)
+        refused(self, w.set_delegate, self.cold, self.hot.puzzle_hash, grant=2)  # signed by the holder, still refused
+
+    def test_vault_holder_grants_by_message_and_hot_wallet_signs(self):
+        """A holder whose address is not a standard wallet (here an
+        anyone-can-spend stand-in for a vault) grants once by message; the hot
+        wallet then signs claims."""
+        w, c = self.w, self.camp
+        w.set_delegate("bob", self.hot.puzzle_hash)
+        self.assertEqual(w.claim_delegated(self.r, c.id, self.bob, self.hot), 485_000)
+
+    def test_delegate_cannot_delegate(self):
+        w, c = self.w, self.camp
+        w.set_delegate(self.cold, self.hot.puzzle_hash)
+        action, updates = w.claim_action(
+            self.r, c.id, self.cold.puzzle_hash, auth=2,
+            auth_data=(self.hot.puzzle_hash, (2, (self.thief.puzzle_hash, (0, self.thief.pk.to_bytes())))),
+        )
+        refused(self, w.push, [action], slot_updates=updates, secret_keys=[self.thief.sk])
+
+
+class TestDelegatedClaimsCat(TestDelegatedClaims):
+    ASSET = CAT_ASSET
 
 
 class TestOnlyTheHolderClaimsCat(TestOnlyTheHolderClaims):

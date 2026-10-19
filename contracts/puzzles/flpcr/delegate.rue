@@ -1,0 +1,38 @@
+// delegate.rue: a holder grants or revokes a delegate that may claim for them.
+//
+// For a cold wallet that wants a hot wallet (a cloud wallet, a vault's
+// signer) to approve its claims. Rewards still go to the holder; the delegate
+// only decides when. The holder authorizes the grant or revoke itself, by
+// signature or by a message from its own address (so a vault or multisig can
+// grant once and never sign a claim again). A grant creates a delegation slot;
+// a revoke spends it, after which the delegate's claims are refused.
+
+import shared::*;
+
+fn main(
+    CONFIG: Config,
+    truth: Truth,
+    h: Int,
+    holder: Bytes32,
+    delegate: Bytes32,
+    grant: Int,
+    auth: Int,
+    auth_data: Any,
+) -> (Truth, List<Condition>) {
+    let (pinned, conditions) = prologue(truth, h);
+    assert (grant == 0) | (grant == 1);
+    let message = tree_hash(["flpcr-delegate-v1", CONFIG.distributor_id, holder, delegate, grant]);
+
+    (
+        pinned,
+        [
+            authorize(holder, auth, auth_data, message),
+            if grant == 1 {
+                create_delegation(CONFIG, holder, delegate)
+            } else {
+                spend_delegation(CONFIG, holder, delegate)
+            },
+            ...conditions,
+        ],
+    )
+}
