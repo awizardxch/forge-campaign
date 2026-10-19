@@ -84,7 +84,7 @@ class TestModelAndChainAgree(unittest.TestCase):
                     continue
                 cl = root.claim_for(c.id, k.ph(hd))
                 try:
-                    expected = model.claim(h, c.id, k.ph(hd), cl.cumulative, cl.proof)[1]
+                    expected = model.claim(h, c.id, k.ph(hd), cl.cumulative, cl.proof, k.ph(hd))[1]
                 except Refused:
                     expected = None
                 try:

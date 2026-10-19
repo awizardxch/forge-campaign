@@ -9,7 +9,7 @@ import unittest
 
 try:
     from flpcr.chain.sim import SimWorld
-    from flpcr.chain.driver import Action, Distributor
+    from flpcr.chain.driver import AUTH_MESSAGE, AUTH_SIGNATURE, Action, Distributor
 
     HAVE_CHAIN = True
 except (ImportError, FileNotFoundError):  # pragma: no cover
@@ -145,7 +145,8 @@ class TestLifecycle(ChainTest):
         _, r = self.root_at(EngineState(w.launcher_id, height=c.start), c.end)
         self.active(r)
         action, updates = w.claim_action(r, c.id, self.alice)
-        w.push([action, Action("collect", [w.h])], slot_updates=updates)
+        auth = w.holder_message("alice", c.id, self.alice, action.solution[3])
+        w.push([action, Action("collect", [w.h])], [auth], slot_updates=updates)
         self.assertEqual(w.balance("alice"), 727_500)
         self.assertEqual(w.balance("treasury"), 30_000)
 
@@ -245,7 +246,9 @@ class TestClaimRefusals(ChainTest):
         stranger = w.keys.ph("stranger")
         action, updates = w.claim_action(self.r, c.id, self.bob)
         action.solution[2] = stranger  # Bob's proof, paid to someone else
-        refused(self, w.push, [action], slot_updates=updates)
+        # The stranger authorizes it properly, so only the proof can refuse it.
+        auth = w.holder_message("stranger", c.id, stranger, action.solution[3])
+        refused(self, w.push, [action], [auth], slot_updates=updates)
 
     def test_first_claim_cannot_insert_a_second_slot(self):
         w, c = self.w, self.camp
@@ -322,8 +325,9 @@ class TestAssertionProbes(ChainTest):
         _, r = self.root_at(EngineState(w.launcher_id, height=c.start), c.end)
         self.active(r)
         action, updates = w.claim_action(r, c.id, self.bob)
+        auth = w.holder_message("bob", c.id, self.bob, action.solution[3])
         early = Action("reclaim", [w.h + c.claim_window + 100, c.id])  # a later action claiming a later height
-        refused(self, w.push, [action, early], slot_updates=updates)
+        refused(self, w.push, [action, early], [auth], slot_updates=updates)
 
     # --- post_root ---
 
@@ -422,9 +426,59 @@ class TestAssertionProbes(ChainTest):
             sides.add("left" if rk < alice_key else "right")
             L, R = d.slots[lk], d.slots[rk]
             info = [lk, L.claimed, L.left, rk, R.claimed, R.right]
-            sol = [w.h, c.id, self.alice, cl.cumulative, cl.proof, 1, info]
-            refused(self, w.push, [Action("claim", sol)])
+            sol = [w.h, c.id, self.alice, cl.cumulative, cl.proof, 1, info, AUTH_MESSAGE, None]
+            auth = w.holder_message("alice", c.id, self.alice, cl.cumulative)
+            refused(self, w.push, [Action("claim", sol)], [auth])
         self.assertEqual(sides, {"left", "right"})
+
+
+class TestOnlyTheHolderClaims(ChainTest):
+    """Rewards are claimed by the holder and nobody else: by the key of the
+    holder's standard address (AGG_SIG_ME), or by a message from a coin at the
+    holder's address (vaults, multisig, other puzzles)."""
+
+    def setUp(self):
+        super().setUp()
+        w = self.w
+        self.bls_holder = w.sim.bls(1)
+        self.other_wallet = w.sim.bls(1)
+        self.src = FixtureSource(
+            lp_assets={POOL: LP},
+            events={LP: [HolderEvent(0, self.alice, 3), HolderEvent(0, self.bob, 1),
+                         HolderEvent(0, self.bls_holder.puzzle_hash, 4)]},
+        )
+        self.created()
+        _, self.r = self.root_at(EngineState(w.launcher_id, height=self.camp.start), self.camp.end)
+        self.active(self.r)
+
+    def test_no_authorization_is_refused(self):
+        """What a keeper would do: claim for Bob without Bob."""
+        w, c = self.w, self.camp
+        action, updates = w.claim_action(self.r, c.id, self.bob)
+        refused(self, w.push, [action], slot_updates=updates)
+
+    def test_someone_elses_message_is_refused(self):
+        refused(self, self.w.claim, self.r, self.camp.id, "bob", sender="stranger")
+        self.assertGreater(self.w.claim(self.r, self.camp.id, "bob"), 0)
+
+    def test_holder_signature(self):
+        w, c = self.w, self.camp
+        self.assertEqual(w.claim_signed(self.r, c.id, self.bls_holder), 485_000)
+
+    def test_someone_elses_key_is_refused(self):
+        w, c = self.w, self.camp
+        refused(self, w.claim_signed, self.r, c.id, self.bls_holder, signer=self.other_wallet)
+        self.assertEqual(w.claim_signed(self.r, c.id, self.bls_holder), 485_000)
+
+    def test_unknown_auth_mode_is_refused(self):
+        w, c = self.w, self.camp
+        action, updates = w.claim_action(self.r, c.id, self.bob, auth=2)
+        refused(self, w.push, [action], [w.holder_message("bob", c.id, self.bob, action.solution[3])],
+                slot_updates=updates)
+
+
+class TestOnlyTheHolderClaimsCat(TestOnlyTheHolderClaims):
+    ASSET = CAT_ASSET
 
 
 class TestLifecycleCat(TestLifecycle):

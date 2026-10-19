@@ -104,9 +104,14 @@ the network fee from the offer, pushes the bundle and returns its id.
 ### `POST /claims/build`
 
 Body: `{ address, campaigns?: [...] }`. With no `campaigns`, the build covers every claimable campaign.
-Returns a bundle with the claim actions and slot spends, and the offer the holder must make to pay the
-network fee (give `fee` XCH, request nothing). Anyone may submit for anyone; payouts always go to the
-holder.
+Returns the unsigned bundle (claim actions, slot spends) and what the holder must sign. Only the holder
+can claim:
+- **Standard address:** the claim names the address's synthetic public key; the holder signs the
+  `AGG_SIG_ME` with `chip0002_signCoinSpends` and pays the network fee from any of their coins.
+- **Vault or other puzzle:** the response includes the `"k" + leaf` message the holder's own puzzle must
+  send; their wallet (e.g. the multisig safe) builds and signs that spend.
+
+A bundle without the holder's authorization is refused on chain.
 
 ### `POST /reclaims/build`
 

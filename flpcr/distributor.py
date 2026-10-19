@@ -191,9 +191,14 @@ class Distributor:
         self.engine_ph = new_engine_ph
 
     def claim(self, h: int, campaign_id: bytes, puzzle_hash: bytes, cumulative: int,
-              proof: Proof) -> Tuple[bytes, int]:
-        """Anyone may submit; the payment always goes to `puzzle_hash`."""
+              proof: Proof, authorized_by: bytes) -> Tuple[bytes, int]:
+        """Only the holder can claim: `authorized_by` is the address whose
+        signature or message authorizes the claim (on chain, an AGG_SIG_ME
+        from the key of `puzzle_hash`, or a message from a coin at it). The
+        payment always goes to `puzzle_hash`."""
         self._settle(h)
+        if authorized_by != puzzle_hash:
+            raise Refused("only the holder can claim their rewards")
         rec = self.campaigns.get(campaign_id)
         if rec is None:
             raise Refused("campaign has been reclaimed")

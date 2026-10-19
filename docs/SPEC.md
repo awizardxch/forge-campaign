@@ -17,7 +17,7 @@
 | | |
 |---|---|
 | Creation fee | **3%**, taken out of the deposit, as Merkl does. A 1,000 deposit funds a 970 budget |
-| Claims | **Pull, cumulative, at any time**, as Merkl does. Each root lists what a holder has earned so far; a claim pays the difference from what they already claimed |
+| Claims | **Pull, cumulative, at any time**, as Merkl does. Each root lists what a holder has earned so far; a claim pays the difference from what they already claimed. **Only the holder can claim**, by their own signature or a message from their own address (§5.4) |
 | Claim window | **Set by the creator at creation** and committed in the campaign id, so the terms are complete up front. It opens reclaiming; it does not close claiming |
 | Leftovers | From `end + claim_window`, the **creator may reclaim** everything not claimed: budget nobody earned plus earnings nobody claimed. **Holders can claim until the reclaim lands**: a 24 h window with no reclaim after 48 h still pays a late claimer |
 | Campaign length | Per distributor. **Testnet: from ~5 min** (16 blocks, 8-block disputes). **Production: likely from 24 min** (77 blocks, 38-block ≈ 12 min disputes). Maximum **365 days**. Any of these can change for a future distributor |
@@ -39,7 +39,7 @@ the incentive layer most EVM DEXs use.
 | `DistributionCreator.createCampaign(CampaignParameters)` | `{creator, rewardToken, amount, campaignType, startTimestamp, duration, campaignData}`; fee deducted from `amount` (3%); min amount per hour per token | `create` leaf on a **distributor singleton**; the campaign struct is hashed into a campaign id; **3% of the deposit** goes to the treasury; campaigns are scheduled by block height |
 | Off-chain engine | Every few hours, scores positions (time-weighted liquidity; for CLAMMs, fees/token0/token1 weights, in-range only, boosts, blacklists, forwarders for ALMs) and builds a tree of **cumulative** `(user, token, amount)` | Same model, deterministic and exact (§6). The tree is **cumulative per (campaign, holder)**. It scores LP and CAT holders from chain data, using the Forge replay that already exists |
 | `Distributor.updateTree(root)` + dispute | An updater posts a root; it becomes claimable after a dispute period; a bonded disputer can freeze it; governance resolves or revokes | `post_root` leaf, then a **dispute window in blocks** before it becomes active; a guardian can `veto`. The same leaf enforces each campaign's **emission ceiling** on chain (§5.3), which Merkl does not have |
-| `Distributor.claim(users, tokens, amounts, proofs)` | Leaf `keccak(user, token, cumulative)`; pays `cumulative − claimed[user][token]`; operators may claim for users | `claim` leaf. Leaf `(campaign, holder, cumulative)`; pays `cumulative − claimed`, with `claimed` kept in a **slot** per (campaign, holder). **Anyone** may submit a claim, but it only ever pays the holder's puzzle hash |
+| `Distributor.claim(users, tokens, amounts, proofs)` | Leaf `keccak(user, token, cumulative)`; pays `cumulative − claimed[user][token]`; operators may claim for users | `claim` leaf. Leaf `(campaign, holder, cumulative)`; pays `cumulative − claimed`, with `claimed` kept in a **slot** per (campaign, holder). **Only the holder can claim** (signature or message from their address); there is no operator claiming on a holder's behalf |
 | Unclaimed rewards | Stay claimable forever; governance can reallocate | Claimable until the creator reclaims, which they may do from `end + claim_window` (`reclaim` leaf) |
 | API `api.merkl.xyz/v4` (`/opportunities`, `/campaigns`, `/users/{addr}/rewards`) | Read side for apps and wallets | `/v1/...` with the same three resources (§8) |
 
@@ -195,7 +195,7 @@ leaf's job (the Forge rule, `chip0050ActionLayer.md`).
 | `create` | router (mode-23 message `"c" + campaign_id` from a coin at `router_ph`) | Validates the struct and derives the id; appends the campaign with `claimed = 0`; `reserve += amount`, `fees_owed += fee`. The deposit is enforced by **conservation**, not by naming a coin: the reserve is recreated at the new size, so the bundle (for a CAT, the reserve's CAT ring) must supply `amount` or it is invalid. Who supplies it is not the puzzle's concern; any excess is ordinary bundle slack (network fee) |
 | `post_root` | operator (mode-23 message `"p" + sha256tree([root_id, start, end, root, totals, manifest_hash])` from `engine_ph`) | Sets `pending`. Checks §5.3. `activates_at = h + dispute_blocks` |
 | `veto` | guardian (mode-23 message `"v" + sha256tree(root_id)` from `guardian_ph`) | Clears `pending` while it is still in its dispute window |
-| `claim` | anyone | Against the **active** root, for any campaign not yet reclaimed (no deadline): verifies `(campaign, ph, cumulative)`, pays `cumulative − claimed` from the reserve to `ph` (hinted), and records `cumulative` in the claim slot |
+| `claim` | **the holder only** (`AGG_SIG_ME` from the key of `ph`, or a mode-23 message `"k" + leaf` from a coin at `ph`) | Against the **active** root, for any campaign not yet reclaimed (no deadline): verifies `(campaign, ph, cumulative)`, pays `cumulative − claimed` from the reserve to `ph` (hinted), and records `cumulative` in the claim slot |
 | `reclaim` | anyone, from the campaign's `end + claim_window` | Pays `budget − claimed` to `creator_ph` (hinted) and removes the campaign |
 | `collect` | anyone | Pays `fees_owed` to `treasury_ph` |
 | `rotate` | guardian (message `"r" + new_engine_ph`) | Replaces `engine_ph` |
@@ -259,11 +259,23 @@ singleton anyway (each one pays from the reserve), so neighbour contention costs
 Several claims, for several holders and campaigns, batch into one singleton spend, as long as no two
 of them touch the same slot.
 
-**Wallet experience.** The interface (and any keeper) builds the claim bundle and the holder signs
-nothing but the network fee, through a Sage offer that pays it. Because the payout always goes to the
-holder's puzzle hash, a third party can claim *for* a holder (Merkl's operator role) without being
-able to redirect anything. A holder's rewards can therefore be auto-claimed by a keeper if they opt
-in.
+**Only the holder can claim their own rewards.** A claim must carry the holder's authorization, in
+one of two forms, and the puzzle refuses it otherwise:
+
+| `auth` | Who it suits | What the puzzle checks |
+|---|---|---|
+| `0` signature | every standard wallet address (Sage's normal addresses) | `auth_data` is a synthetic public key with `standard_puzzle_hash(key) == ph` (the puzzle recomputes the curried standard puzzle hash), and the spend carries `AGG_SIG_ME(key, leaf)`. `AGG_SIG_ME` binds the signature to this singleton coin and the network, so it cannot be replayed on a later generation |
+| `1` message | an address that is not a standard wallet: a vault, a Forge multisig safe, any other puzzle | `RECEIVE_MESSAGE` mode 23 of `"k" + leaf` from a coin whose puzzle hash is `ph`. Only whoever controls that puzzle can make that coin spend |
+
+The authorized message is the claim leaf itself, `sha256tree(["flpcr-claim-v1", distributor_id,
+campaign_id, ph, cumulative])`, so an authorization names exactly one claim. Merkl lets an approved
+operator claim for a user; FLPCR has no such role. The payout still always goes to `ph`, so even a
+wrong authorization could never redirect funds. The rule is about who decides when rewards move.
+
+**Wallet experience.** The interface builds the claim bundle; the holder approves it in Sage. For a
+standard address that is one signing request (`chip0002_signCoinSpends`, which signs the `AGG_SIG_ME`
+for the address's key) plus the network fee. The fee can come from any of the holder's coins, at any
+address, because only the authorization has to come from the rewarded address.
 
 ### 5.5 Leftovers go back to the creator
 
@@ -488,7 +500,8 @@ with the address holding the Wizards, and the API records the link.
 | Guardian | Veto a pending root; rotate the operator | Post roots; move funds; touch the active root |
 | Creator | Fund; choose the claim window; reclaim leftovers from `end + claim_window` | Cancel or edit; reclaim during the window; stop a holder claiming before the reclaim lands |
 | Router | Authorize which campaigns are created on its distributors (ours: only through our front end, only registry-priced assets) | Touch funds; claim; reclaim |
-| Holder / keeper | Claim (for themselves or anyone) | Choose the recipient or the amount |
+| Holder | Claim their own rewards, whenever they like | Claim anyone else's; choose the recipient or the amount |
+| Anyone else | Submit a reclaim (it always pays the creator) and a fee collection (it always pays the treasury) | Claim a holder's rewards for them |
 
 **If the operator disappears**, nothing is stranded: holders keep claiming against the last active
 root, and each creator reclaims from `end + claim_window` (and gets back everything any missing root
@@ -569,14 +582,14 @@ location (this repo, `contracts/`; `forge-puzzles` stays specific to the n-asset
 
 ## 12. What the simulator proves, and what it does not
 
-Run everything with `python -m pytest -q` (129 tests, about 4 s) after `python contracts/build.py`.
+Run everything with `python -m pytest -q` (140 tests, about 3 s) after `python contracts/build.py`.
 
 | Suite | Proves |
 |---|---|
 | `contracts/build.py` | Every puzzle compiles with rue 0.8.4; the five upstream puzzles reproduce slot-machine@2d37ba1's published hashes; our eight leaves match `pins.json` |
-| `tests/test_chain.py` | On the simulator, for XCH **and** a CAT reward: the full lifecycle (3% fee, claims at several points, late claim past the window, leftovers to the creator, fee collection), the reserve coin equal to state after every step, several actions in one spend, and a refusal probe per rule (router, deposit, lengths, claim window, duplicates, operator, ceiling, sequence, tiling, totals, veto, rotate, forged claims, slot inserts, double claims, height pin) |
+| `tests/test_chain.py` | On the simulator, for XCH **and** a CAT reward: only the holder can claim (no authorization, someone else's message, someone else's key and an unknown mode are all refused; the holder's signature and message both pay), the full lifecycle (3% fee, claims at several points, late claim past the window, leftovers to the creator, fee collection), the reserve coin equal to state after every step, several actions in one spend, and a refusal probe per rule (router, deposit, lengths, claim window, duplicates, operator, ceiling, sequence, tiling, totals, veto, rotate, forged claims, slot inserts, double claims, height pin) |
 | `tests/test_differential.py` | Twelve random scenarios (alternating XCH and CAT) through the reference model and the puzzles side by side: 48 roots, 80 paid claims, 45 refused claims, reclaims and collects. Every payout and every refusal agrees, and the reserve matches after each step |
-| `scripts/mutate.py` | Deleting any single assertion in our leaves makes a test fail (35 of 42), or does not compile (5, enforced by rue's type narrowing), or is argued in `scripts/mutation-arguments.json` (2: `amount > 0` and `budget > 0` imply each other while the fee is below 100%) |
+| `scripts/mutate.py` | Deleting any single assertion in our leaves makes a test fail (37 of 44), or does not compile (5, enforced by rue's type narrowing), or is argued in `scripts/mutation-arguments.json` (2: `amount > 0` and `budget > 0` imply each other while the fee is below 100%) |
 
 A refusal counts only if the leaf raised (`clvm raise`) or consensus rejected the bundle (`Simulator
 error`). A Python error in a test or the driver is a bug and fails the test.

@@ -120,9 +120,16 @@ All messages are `RECEIVE_MESSAGE` mode 23 (sender puzzle hash → this coin).
 - Receive `"v" + sha256tree(root_id)` from `guardian_ph`.
 - Set `pending = nil`.
 
-### `claim` `[h, campaign_id, puzzle_hash, cumulative, proof, insert, slot_info]`
+### `claim` `[h, campaign_id, puzzle_hash, cumulative, proof, insert, slot_info, auth, auth_data]`
 1. There is an active root, and the campaign is live (there is no height check).
-2. `simplify_merkle_proof(sha256tree(["flpcr-claim-v1", distributor_id, campaign_id, puzzle_hash, cumulative]), proof) == active.root`.
+2. `simplify_merkle_proof(leaf, proof) == active.root`, where
+   `leaf = sha256tree(["flpcr-claim-v1", distributor_id, campaign_id, puzzle_hash, cumulative])`.
+   **Only the holder can claim:**
+   - `auth == 0`: `auth_data` is a synthetic public key. Assert
+     `curry_tree_hash(STANDARD_MOD_HASH, [tree_hash_atom(key)]) == puzzle_hash` and emit
+     `AGG_SIG_ME(key, leaf)`.
+   - `auth == 1`: emit `RECEIVE_MESSAGE` mode 23 of `"k" + leaf` from `puzzle_hash`.
+   - Any other value is refused.
 3. Let `key = sha256tree((campaign_id . puzzle_hash))`.
    - **`insert == 0`**: `slot_info = (claimed . (left . right))`. Spend the key's slot and recreate it
      with `claimed = cumulative`.

@@ -18,7 +18,7 @@ python -m venv .venv
 .venv/bin/pip install chia-wallet-sdk==0.36.0 pytest clvm   # Windows: .venv\Scripts\pip
 
 python contracts/build.py          # compiles, checks every pin
-python -m pytest -q                # 129 tests, ~4 s
+python -m pytest -q                # 140 tests, ~4 s
 python scripts/mutate.py           # optional, ~3 min: every assertion is load-bearing
 ```
 

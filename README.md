@@ -30,7 +30,7 @@ CHIP-0050 action layer that Forge V14 runs on. **Simulator-tested, not yet on te
 cargo install rue-cli --version 0.8.4 --locked
 python -m pip install chia-wallet-sdk==0.36.0 pytest clvm
 python contracts/build.py      # compile and check pins
-python -m pytest -q            # 129 tests
+python -m pytest -q            # 140 tests
 python scripts/mutate.py       # optional, ~3 min
 
 python -m flpcr fixtures/demo.json --end 2000 --state /tmp/flpcr-state.json   # engine: root 1

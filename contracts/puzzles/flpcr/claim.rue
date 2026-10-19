@@ -1,7 +1,14 @@
 // claim.rue: pays a holder `cumulative - claimed` for one campaign, against
-// the active root. Anyone may submit; the payment always goes to the leaf's
-// puzzle hash. There is no deadline: a claim works until the campaign has
-// been reclaimed.
+// the active root. Only the holder can claim: the spend must carry the
+// holder's authorization, either
+//   AUTH_SIGNATURE: auth_data is the holder's synthetic public key; it must be
+//     the key of the holder's standard address, and it signs the claim leaf
+//     with AGG_SIG_ME (bound to this singleton coin, so it cannot be replayed);
+//   AUTH_MESSAGE: a coin at the holder's puzzle hash sends "k" + leaf to this
+//     coin (for holders whose address is a vault, a multisig or any other
+//     puzzle).
+// The payment always goes to the leaf's puzzle hash. There is no deadline: a
+// claim works until the campaign has been reclaimed.
 //
 // `claimed` lives in a claim slot. The first claim for a key inserts a slot
 // between its neighbours (whose values name each other, so adjacency is
@@ -35,6 +42,8 @@ fn main(
     proof: MerkleProof,
     insert: Int,
     slot_info: Any,
+    auth: Int,
+    auth_data: Any,
 ) -> (Truth, List<Condition>) {
     let (pinned, conditions) = prologue(truth, h);
     let state = pinned.state;
@@ -43,6 +52,15 @@ fn main(
 
     let leaf = tree_hash(["flpcr-claim-v1", CONFIG.distributor_id, campaign_id, puzzle_hash, cumulative]);
     assert simplify_merkle_proof(leaf, proof) == state.active.root;
+
+    let authorization: Condition = if auth == AUTH_SIGNATURE {
+        let public_key = unchecked_cast::<PublicKey>(auth_data);
+        assert curry_tree_hash(STANDARD_MOD_HASH, [tree_hash_atom(unchecked_cast::<Bytes>(public_key))]) == puzzle_hash;
+        AggSigMe { public_key: public_key, message: leaf }
+    } else {
+        assert auth == AUTH_MESSAGE;
+        ReceiveMessage { mode: MODE_PUZZLE_TO_COIN, message: "k" + leaf, sender: [puzzle_hash] }
+    };
 
     let key = tree_hash((campaign_id, puzzle_hash));
 
@@ -97,6 +115,7 @@ fn main(
         },
         [
             reserve_payment(puzzle_hash, amount),
+            authorization,
             ...merge_list(slot_conditions, conditions),
         ],
     )

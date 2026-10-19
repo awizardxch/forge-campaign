@@ -20,6 +20,12 @@ export const RESERVE_TAG: Int = -42;
 // coin id. The receiver here is always this singleton coin, so a message
 // cannot be replayed against a later generation.
 export const MODE_PUZZLE_TO_COIN: Int = 23;
+// p2_delegated_puzzle_or_hidden_puzzle, the standard wallet puzzle. An address
+// belongs to a synthetic key when it is this mod curried with that key.
+export const STANDARD_MOD_HASH: Bytes32 = 0xe9aaa49f45bad5c889b86ee3341550c155cfdd10c3a6757de618d20612fffd52;
+// How a claim proves the holder authorized it.
+export const AUTH_SIGNATURE: Int = 0;
+export const AUTH_MESSAGE: Int = 1;
 
 export struct Config {
     distributor_id: Bytes32,

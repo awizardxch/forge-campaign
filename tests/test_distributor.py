@@ -38,7 +38,7 @@ def post(d, root, h):
 
 def claim(d, root, h, ph, campaign):
     cl = root.claim_for(campaign.id, ph)
-    return d.claim(h, campaign.id, ph, cl.cumulative, cl.proof)
+    return d.claim(h, campaign.id, ph, cl.cumulative, cl.proof, ph)
 
 
 class TestLifecycle(unittest.TestCase):
@@ -188,9 +188,18 @@ class TestRefusals(unittest.TestCase):
         post(d, r, 200)
         cl = r.claim_for(c.id, BOB)
         with self.assertRaises(Refused):
-            d.claim(210, c.id, BOB, cl.cumulative + 1, cl.proof)
+            d.claim(210, c.id, BOB, cl.cumulative + 1, cl.proof, BOB)
         with self.assertRaises(Refused):
-            d.claim(210, c.id, STRANGER, cl.cumulative, cl.proof)
+            d.claim(210, c.id, STRANGER, cl.cumulative, cl.proof, STRANGER)
+
+    def test_only_the_holder_claims(self):
+        d, c, src = setup()
+        _, r = run_epoch(EngineState(DIST, height=100), [c], src, 200)
+        post(d, r, 200)
+        cl = r.claim_for(c.id, BOB)
+        with self.assertRaises(Refused):
+            d.claim(210, c.id, BOB, cl.cumulative, cl.proof, STRANGER)  # a keeper, or anyone else
+        self.assertEqual(d.claim(210, c.id, BOB, cl.cumulative, cl.proof, BOB), (BOB, 242_500))
 
     def test_create_rules(self):
         cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, ROUTER)

@@ -14,8 +14,11 @@ from chia_wallet_sdk import Cat, CatInfo, CatSpend, Clvm, Coin, Constants, Linea
 
 from ..clvm import sha256tree
 from ..engine import Root
+from ..merkle import claim_leaf
 from ..model import Campaign
 from .driver import (
+    AUTH_MESSAGE,
+    AUTH_SIGNATURE,
     HIGH,
     LOW,
     Action,
@@ -72,16 +75,19 @@ class SimWorld:
     def message_from(self, label: str, message: bytes) -> list:
         # The sender recreates its own mojo, so the bundle carries no slack and
         # a short deposit is refused instead of being covered by this coin.
+        # Its mojo goes to a separate change address so it never shows up in
+        # a holder's measured payout.
         ph = self.keys.ph(label)
         coin = self.sim.new_coin(ph, 1)
-        return [self.keys.spend(coin, label, [send_message_condition(message, self.d.coin.coin_id()), [51, ph, 1]])]
+        change = self.keys.ph("change")
+        return [self.keys.spend(coin, label, [send_message_condition(message, self.d.coin.coin_id()), [51, change, 1]])]
 
     def push(self, actions: Sequence[Action], extra_builders=(), slot_updates: Optional[Dict] = None,
-             cat_spends=()):
+             cat_spends=(), secret_keys=()):
         spends, new_state, per_action = self.d.spend(actions, cat_spends)
         for build in extra_builders:
             spends.extend(build())
-        self.sim.spend_coins(spends, [])
+        self.sim.spend_coins(spends, list(secret_keys))
         self.d.apply(new_state, slot_updates or {})
         return per_action
 
@@ -171,19 +177,45 @@ class SimWorld:
         )
 
     def claim_action(self, root: Root, campaign_id: bytes, ph: bytes, cumulative: Optional[int] = None,
-                     proof=None):
+                     proof=None, auth=AUTH_MESSAGE, auth_data=None):
+        """The claim action. `auth` is how the holder authorizes it:
+        AUTH_MESSAGE (a coin at the holder's address sends "k" + leaf; add
+        `holder_message`) or AUTH_SIGNATURE (auth_data = the holder's
+        synthetic public key; push with the holder's secret key)."""
         cl = root.claim_for(campaign_id, ph)
         cumulative = cl.cumulative if cumulative is None else cumulative
         key = Distributor.claim_key(campaign_id, ph)
         insert, info, updates = self.d.claim_slot_info(key, cumulative)
-        sol = [self.h, campaign_id, ph, cumulative, cl.proof if proof is None else proof, insert, info]
+        sol = [self.h, campaign_id, ph, cumulative, cl.proof if proof is None else proof, insert, info, auth,
+               auth_data]
         return Action("claim", sol), updates
 
-    def claim(self, root: Root, campaign_id: bytes, holder: str, **kw):
+    def holder_message(self, label: str, campaign_id: bytes, ph: bytes, cumulative: int):
+        """Builder for the AUTH_MESSAGE spend: `label`'s coin sends the claim
+        leaf. Only a coin at the holder's own puzzle hash satisfies the leaf."""
+        leaf = claim_leaf(self.launcher_id, campaign_id, ph, cumulative)
+        return lambda: self.message_from(label, b"k" + leaf)
+
+    def claim(self, root: Root, campaign_id: bytes, holder: str, sender: Optional[str] = None, **kw):
+        """`holder` claims with a message from its own address (`sender`
+        overrides who sends it, for refusal probes)."""
         ph = self.keys.ph(holder)
         before = self.balance(ph)
         action, updates = self.claim_action(root, campaign_id, ph, **kw)
-        self.push([action], slot_updates=updates)
+        cumulative = action.solution[3]
+        self.push([action], [self.holder_message(sender or holder, campaign_id, ph, cumulative)],
+                  slot_updates=updates)
+        return self.balance(ph) - before
+
+    def claim_signed(self, root: Root, campaign_id: bytes, holder, signer=None, **kw):
+        """`holder` (a `sim.bls` wallet) claims with its key's AGG_SIG_ME.
+        `signer` overrides whose key signs and is named, for refusal probes."""
+        signer = signer or holder
+        ph = holder.puzzle_hash
+        before = self.balance(ph)
+        action, updates = self.claim_action(root, campaign_id, ph, auth=AUTH_SIGNATURE,
+                                            auth_data=signer.pk.to_bytes(), **kw)
+        self.push([action], slot_updates=updates, secret_keys=[signer.sk])
         return self.balance(ph) - before
 
     def reclaim(self, campaign_id: bytes):
