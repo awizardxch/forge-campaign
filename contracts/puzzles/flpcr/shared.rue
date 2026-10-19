@@ -233,6 +233,30 @@ export fn authorize(address: Bytes32, auth: Int, data: Any, message: Bytes32) ->
     }
 }
 
+// `owner` authorizes `message` directly (AUTH_SIGNATURE, AUTH_MESSAGE), or a
+// delegate the owner granted does (AUTH_DELEGATE, data = (delegate . (mode .
+// data))): the owner's delegation slot for that delegate is spent and
+// recreated, proving the grant exists, and the delegate authorizes by
+// signature or message. One hop only: `authorize` refuses AUTH_DELEGATE.
+export struct Delegated {
+    delegate: Bytes32,
+    auth: Int,
+    ...data: Any,
+}
+
+export fn authorize_or_delegate(config: Config, owner: Bytes32, auth: Int, data: Any, message: Bytes32) -> List<Condition> {
+    if auth == AUTH_DELEGATE {
+        let d = unchecked_cast::<Delegated>(data);
+        [
+            spend_delegation(config, owner, d.delegate),
+            create_delegation(config, owner, d.delegate),
+            authorize(d.delegate, d.auth, d.data, message),
+        ]
+    } else {
+        [authorize(owner, auth, data, message)]
+    }
+}
+
 // --- delegation slots ----------------------------------------------------------------
 
 // A slot of its own type (nonce 2) whose existence means: `delegate` may

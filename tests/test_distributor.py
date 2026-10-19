@@ -64,8 +64,8 @@ class TestLifecycle(unittest.TestCase):
 
         # The creator gets Bob's unclaimed 242,500 back, but not before the window passes.
         with self.assertRaises(Refused):
-            d.reclaim(200 + WINDOW - 1, c.id)
-        self.assertEqual(d.reclaim(200 + WINDOW, c.id), (CREATOR, 242_500))
+            d.reclaim(200 + WINDOW - 1, c.id, CREATOR)
+        self.assertEqual(d.reclaim(200 + WINDOW, c.id, CREATOR), (CREATOR, 242_500))
         with self.assertRaises(Refused):
             claim(d, r2, 200 + WINDOW, BOB, c)  # reclaimed: nothing left to claim from
         self.assertEqual(d.collect(200 + WINDOW), (TREASURY, 30_000))
@@ -79,7 +79,7 @@ class TestLifecycle(unittest.TestCase):
         post(d, r, 200)
         late = 200 + 2 * WINDOW
         self.assertEqual(claim(d, r, late, BOB, c), (BOB, 242_500))
-        self.assertEqual(d.reclaim(late, c.id), (CREATOR, 727_500))  # only Alice's share was left
+        self.assertEqual(d.reclaim(late, c.id, CREATOR), (CREATOR, 727_500))  # only Alice's share was left
         with self.assertRaises(Refused):
             claim(d, r, late, ALICE, c)
         d.check_invariant()
@@ -103,7 +103,7 @@ class TestLifecycle(unittest.TestCase):
         _, r = run_epoch(EngineState(DIST, height=100), [c], src, 200)
         post(d, r, 200)
         self.assertEqual(claim(d, r, 210, ALICE, c), (ALICE, 500))
-        self.assertEqual(d.reclaim(200 + WINDOW, c.id), (CREATOR, 500))
+        self.assertEqual(d.reclaim(200 + WINDOW, c.id, CREATOR), (CREATOR, 500))
 
 
 class TestConfig(unittest.TestCase):
@@ -216,6 +216,16 @@ class TestRefusals(unittest.TestCase):
         d.set_delegate(211, BOB, HOT, False, BOB)
         with self.assertRaises(Refused):
             d.set_delegate(211, BOB, HOT, False, BOB)
+
+    def test_only_the_creator_reclaims(self):
+        d, c, src = setup()
+        HOT = b"\x40" * 32
+        with self.assertRaises(Refused):
+            d.reclaim(200 + WINDOW, c.id, STRANGER)
+        with self.assertRaises(Refused):
+            d.reclaim(200 + WINDOW, c.id, HOT)
+        d.set_delegate(150, CREATOR, HOT, True, CREATOR)
+        self.assertEqual(d.reclaim(200 + WINDOW, c.id, HOT), (CREATOR, 970_000))
 
     def test_create_rules(self):
         cfg = Config(DIST, REWARD, TREASURY, GUARDIAN, ROUTER)

@@ -141,7 +141,7 @@ The full `params` value sits in the `create` solution, so it is on chain and rec
             └──post_root (operator)─────▶ │  state: campaigns, roots     │
  guardian ──veto / rotate───────────────▶ │  claim slots (campaign,ph)   │
  holder / anyone ──claim(proofs)────────▶ └──────────┬───────────────────┘
- creator / anyone ──reclaim (after window)───────────▶│ CREATE_COIN, hinted
+ creator / their delegate ──reclaim (after window)──▶│ CREATE_COIN, hinted
                                                      ▼
                                           holder's or creator's wallet
 ```
@@ -196,7 +196,7 @@ leaf's job (the Forge rule, `chip0050ActionLayer.md`).
 | `post_root` | operator (mode-23 message `"p" + sha256tree([root_id, start, end, root, totals, manifest_hash])` from `engine_ph`) | Sets `pending`. Checks §5.3. `activates_at = h + dispute_blocks` |
 | `veto` | guardian (mode-23 message `"v" + sha256tree(root_id)` from `guardian_ph`) | Clears `pending` while it is still in its dispute window |
 | `claim` | **the holder** (`AGG_SIG_ME` from the key of `ph`, or a mode-23 message `"k" + leaf` from a coin at `ph`), **or a delegate the holder granted** (same two forms, from the delegate's key or address, plus the holder's delegation slot) | Against the **active** root, for any campaign not yet reclaimed (no deadline): verifies `(campaign, ph, cumulative)`, pays `cumulative − claimed` from the reserve to `ph` (hinted), and records `cumulative` in the claim slot |
-| `reclaim` | anyone, from the campaign's `end + claim_window` | Pays `budget − claimed` to `creator_ph` (hinted) and removes the campaign |
+| `reclaim` | **the creator only** (signature or message over `sha256tree(["flpcr-reclaim-v1", distributor_id, campaign_id])`, or a delegate the creator granted), from the campaign's `end + claim_window` | Pays `budget − claimed` to `creator_ph` (hinted) and removes the campaign |
 | `collect` | anyone | Pays `fees_owed` to `treasury_ph` |
 | `rotate` | guardian (message `"r" + new_engine_ph`) | Replaces `engine_ph` |
 | `delegate` | the holder (signature or message over `sha256tree(["flpcr-delegate-v1", distributor_id, holder, delegate, grant])`) | `grant = 1` creates a delegation slot `(holder . delegate)`, hinted with the holder; `grant = 0` spends it. State is unchanged |
@@ -310,7 +310,10 @@ The **creator sets `claim_window` when creating the campaign**. It is part of th
 anyone reading the campaign sees every term: budget, schedule, scoring, and how long holders are
 guaranteed to have after the end. For each campaign:
 
-- `reclaim` is refused before `end + claim_window`. From then on, anyone may submit it. It pays
+- `reclaim` is refused before `end + claim_window`. From then on **only the creator** can submit it,
+  in the same three forms a holder uses to claim: their signature, a message from their address (a vault
+  or multisig creator), or a delegate they granted with the same `delegate` leaf (a hot wallet for a
+  cold-wallet creator; a holder's delegate is not the creator's). It pays
   `budget − claimed` to the creator and removes the campaign (its claim slots stay as inert 0-mojo
   coins).
 - `claim` has **no deadline**. It works for as long as the campaign exists, so a holder who comes back
@@ -529,7 +532,7 @@ with the address holding the Wizards, and the API records the link.
 | Router | Authorize which campaigns are created on its distributors (ours: only through our front end, only registry-priced assets) | Touch funds; claim; reclaim |
 | Holder | Claim their own rewards, whenever they like; grant and revoke a delegate | Claim anyone else's; choose the recipient or the amount |
 | Holder's delegate | Claim the holder's rewards, paid to the holder, until revoked | Grant itself; delegate further; redirect a payout |
-| Anyone else | Submit a reclaim (it always pays the creator) and a fee collection (it always pays the treasury) | Claim a holder's rewards for them |
+| Anyone else | Submit a fee collection (it always pays the treasury) | Claim a holder's rewards; reclaim a creator's leftovers |
 
 **If the operator disappears**, nothing is stranded: holders keep claiming against the last active
 root, and each creator reclaims from `end + claim_window` (and gets back everything any missing root
@@ -610,12 +613,12 @@ location (this repo, `contracts/`; `forge-puzzles` stays specific to the n-asset
 
 ## 12. What the simulator proves, and what it does not
 
-Run everything with `python -m pytest -q` (157 tests, about 4 s) after `python contracts/build.py`.
+Run everything with `python -m pytest -q` (166 tests, about 7 s) after `python contracts/build.py`.
 
 | Suite | Proves |
 |---|---|
 | `contracts/build.py` | Every puzzle compiles with rue 0.8.4; the five upstream puzzles reproduce slot-machine@2d37ba1's published hashes; our eight leaves match `pins.json` |
-| `tests/test_chain.py` | On the simulator, for XCH **and** a CAT reward: only the holder or their delegate can claim (no authorization, someone else's message, someone else's key and an unknown mode are all refused; the holder's signature and message both pay; a hot wallet claims for a cold wallet and a vault after a grant, only the holder grants or revokes, revoked and ungranted delegates are refused, one hop only), the full lifecycle (3% fee, claims at several points, late claim past the window, leftovers to the creator, fee collection), the reserve coin equal to state after every step, several actions in one spend, and a refusal probe per rule (router, deposit, lengths, claim window, duplicates, operator, ceiling, sequence, tiling, totals, veto, rotate, forged claims, slot inserts, double claims, height pin) |
+| `tests/test_chain.py` | On the simulator, for XCH **and** a CAT reward: only the holder or their delegate can claim (no authorization, someone else's message, someone else's key and an unknown mode are all refused; the holder's signature and message both pay; a hot wallet claims for a cold wallet and a vault after a grant, only the holder grants or revokes, revoked and ungranted delegates are refused, one hop only; only the creator or the creator's delegate reclaims, and a holder's delegate is not the creator's), the full lifecycle (3% fee, claims at several points, late claim past the window, leftovers to the creator, fee collection), the reserve coin equal to state after every step, several actions in one spend, and a refusal probe per rule (router, deposit, lengths, claim window, duplicates, operator, ceiling, sequence, tiling, totals, veto, rotate, forged claims, slot inserts, double claims, height pin) |
 | `tests/test_differential.py` | Twelve random scenarios (alternating XCH and CAT) through the reference model and the puzzles side by side: 48 roots, 80 paid claims, 45 refused claims, reclaims and collects. Every payout and every refusal agrees, and the reserve matches after each step |
 | `scripts/mutate.py` | Deleting any single assertion in our leaves makes a test fail (38 of 45), or does not compile (5, enforced by rue's type narrowing), or is argued in `scripts/mutation-arguments.json` (2: `amount > 0` and `budget > 0` imply each other while the fee is below 100%) |
 

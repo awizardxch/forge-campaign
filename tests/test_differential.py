@@ -96,7 +96,7 @@ class TestModelAndChainAgree(unittest.TestCase):
             elif op < 0.9:
                 c = rng.choice(campaigns)
                 try:
-                    expected = model.reclaim(h, c.id)[1]
+                    expected = model.reclaim(h, c.id, c.creator)[1]
                 except Refused:
                     expected = None
                 try:

@@ -27,12 +27,6 @@ struct OwnSlot {
     ...right: Bytes32,
 }
 
-struct Delegated {
-    delegate: Bytes32,
-    auth: Int,
-    ...data: Any,
-}
-
 struct Neighbours {
     left_key: Bytes32,
     left_claimed: Int,
@@ -63,16 +57,7 @@ fn main(
     let leaf = tree_hash(["flpcr-claim-v1", CONFIG.distributor_id, campaign_id, puzzle_hash, cumulative]);
     assert simplify_merkle_proof(leaf, proof) == state.active.root;
 
-    let authorization: List<Condition> = if auth == AUTH_DELEGATE {
-        let d = unchecked_cast::<Delegated>(auth_data);
-        [
-            spend_delegation(CONFIG, puzzle_hash, d.delegate),
-            create_delegation(CONFIG, puzzle_hash, d.delegate),
-            authorize(d.delegate, d.auth, d.data, leaf),
-        ]
-    } else {
-        [authorize(puzzle_hash, auth, auth_data, leaf)]
-    };
+    let authorization = authorize_or_delegate(CONFIG, puzzle_hash, auth, auth_data, leaf);
 
     let key = tree_hash((campaign_id, puzzle_hash));
 

@@ -1,7 +1,12 @@
 // reclaim.rue: once a campaign's claim window has passed, its creator gets
 // back everything holders left (budget never earned plus earnings never
 // claimed) and the campaign is removed. Until this lands, holders can still
-// claim. Anyone may submit it; the payment always goes to the creator.
+// claim.
+//
+// Only the creator can reclaim: by signature or a message from the creator's
+// address, or through a delegate the creator granted (a hot wallet for a
+// cold-wallet creator), exactly as a holder authorizes a claim. The payment
+// always goes to the creator.
 
 import shared::*;
 
@@ -10,11 +15,16 @@ fn main(
     truth: Truth,
     h: Int,
     campaign_id: Bytes32,
+    auth: Int,
+    auth_data: Any,
 ) -> (Truth, List<Condition>) {
     let (pinned, conditions) = prologue(truth, h);
     let state = pinned.state;
     let campaign = get_campaign(state.campaigns, campaign_id);
     assert h >= campaign.end + campaign.claim_window;
+
+    let message = tree_hash(["flpcr-reclaim-v1", CONFIG.distributor_id, campaign_id]);
+    let authorization = authorize_or_delegate(CONFIG, campaign.creator, auth, auth_data, message);
 
     let amount = campaign.budget - campaign.claimed;
     let new_state = with_campaigns(
@@ -27,9 +37,9 @@ fn main(
     (
         Truth { ephemeral: pinned.ephemeral, state: new_state },
         if amount > 0 {
-            [reserve_payment(campaign.creator, amount), ...conditions]
+            [reserve_payment(campaign.creator, amount), ...merge_list(authorization, conditions)]
         } else {
-            conditions
+            merge_list(authorization, conditions)
         },
     )
 }

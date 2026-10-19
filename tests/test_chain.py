@@ -567,6 +567,45 @@ class TestDelegatedClaims(ChainTest):
         refused(self, w.push, [action], slot_updates=updates, secret_keys=[self.thief.sk])
 
 
+class TestOnlyTheCreatorReclaims(ChainTest):
+    """The leftovers go back to the creator, and only the creator (or a
+    delegate the creator granted) decides when."""
+
+    def setUp(self):
+        super().setUp()
+        w = self.w
+        self.hot = w.sim.bls(1)
+        self.created()
+        _, r = self.root_at(EngineState(w.launcher_id, height=self.camp.start), self.camp.end)
+        self.active(r)
+        w.advance_to(self.camp.end + WINDOW)
+
+    def test_stranger_cannot_reclaim(self):
+        refused(self, self.w.reclaim, self.camp.id, sender="stranger")
+        refused(self, self.w.reclaim, self.camp.id, sender="alice")  # a holder is not the creator
+        self.assertEqual(self.w.reclaim(self.camp.id), 970_000)
+
+    def test_unknown_auth_mode(self):
+        refused(self, self.w.reclaim, self.camp.id, auth=3)
+
+    def test_creators_delegate_reclaims_paid_to_creator(self):
+        w = self.w
+        refused(self, w.reclaim, self.camp.id, delegate=self.hot)  # not granted
+        w.set_delegate("creator", self.hot.puzzle_hash)
+        hot_before = w.balance(self.hot.puzzle_hash)
+        self.assertEqual(w.reclaim(self.camp.id, delegate=self.hot), 970_000)
+        self.assertEqual(w.balance(self.hot.puzzle_hash), hot_before)
+
+    def test_a_holders_delegate_is_not_the_creators(self):
+        w = self.w
+        w.set_delegate("alice", self.hot.puzzle_hash)
+        refused(self, w.reclaim, self.camp.id, delegate=self.hot)
+
+
+class TestOnlyTheCreatorReclaimsCat(TestOnlyTheCreatorReclaims):
+    ASSET = CAT_ASSET
+
+
 class TestDelegatedClaimsCat(TestDelegatedClaims):
     ASSET = CAT_ASSET
 

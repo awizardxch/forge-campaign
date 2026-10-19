@@ -262,10 +262,25 @@ class SimWorld:
         self.push([action], slot_updates=updates, secret_keys=[signer.sk])
         return self.balance(ph) - before
 
-    def reclaim(self, campaign_id: bytes):
+    def reclaim_message(self, campaign_id: bytes) -> bytes:
+        return sha256tree(["flpcr-reclaim-v1", self.launcher_id, campaign_id])
+
+    def reclaim(self, campaign_id: bytes, sender: Optional[str] = None, delegate=None, auth: Optional[int] = None):
+        """Only the creator reclaims. By default the creator's own address
+        sends the message; `sender` overrides that (refusal probes);
+        `delegate` (a `sim.bls` wallet) reclaims as the creator's delegate."""
         creator = self.d.read_state()["campaigns"][campaign_id]["creator"]
         before = self.balance(creator)
-        self.push([Action("reclaim", [self.h, campaign_id])])
+        msg = self.reclaim_message(campaign_id)
+        if delegate is not None:
+            sol = [self.h, campaign_id, AUTH_DELEGATE,
+                   (delegate.puzzle_hash, (AUTH_SIGNATURE, delegate.pk.to_bytes()))]
+            self.push([Action("reclaim", sol)], secret_keys=[delegate.sk],
+                      delegation_updates={(creator, delegate.puzzle_hash): True})
+        else:
+            label = sender or self.keys.label_of(creator)
+            sol = [self.h, campaign_id, AUTH_MESSAGE if auth is None else auth, None]
+            self.push([Action("reclaim", sol)], [lambda: self.message_from(label, b"k" + msg)])
         return self.balance(creator) - before
 
     def collect(self):

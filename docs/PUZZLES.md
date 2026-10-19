@@ -145,8 +145,11 @@ All messages are `RECEIVE_MESSAGE` mode 23 (sender puzzle hash → this coin).
 5. Pay `(-42 . (CREATE_COIN puzzle_hash amount (puzzle_hash)))`.
 6. Set `claimed_c += amount` and `reserve -= amount`.
 
-### `reclaim` `[h, campaign_id]`
+### `reclaim` `[h, campaign_id, auth, auth_data]`
 - The campaign is live and `h >= end + claim_window`.
+- **Only the creator:** `authorize_or_delegate(creator, auth, auth_data, sha256tree(["flpcr-reclaim-v1",
+  distributor_id, campaign_id]))`, the same helper `claim` uses. That means the creator's signature or
+  message, or a delegate the creator granted through `delegate`.
 - If `budget − claimed > 0`, pay it to the creator.
 - Remove the campaign and set `reserve -= that`.
 

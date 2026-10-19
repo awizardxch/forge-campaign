@@ -232,14 +232,18 @@ class Distributor:
         else:
             raise Refused("no such delegate")
 
-    def reclaim(self, h: int, campaign_id: bytes) -> Tuple[bytes, int]:
+    def reclaim(self, h: int, campaign_id: bytes, authorized_by: bytes) -> Tuple[bytes, int]:
         """Once the campaign's claim window has passed, the creator gets back
         whatever holders left: budget never earned plus earnings never claimed.
-        Anyone may submit; the payment always goes to the creator."""
+        Only the creator, or a delegate the creator granted, can reclaim; the
+        payment always goes to the creator."""
         self._settle(h)
         rec = self.campaigns.get(campaign_id)
         if rec is None:
             raise Refused("no such campaign")
+        creator = rec.campaign.creator
+        if authorized_by != creator and (creator, authorized_by) not in self.delegations:
+            raise Refused("only the creator or their delegate can reclaim")
         if h < rec.campaign.reclaim_from:
             raise Refused("claim window still open")
         amount = rec.campaign.budget - rec.claimed

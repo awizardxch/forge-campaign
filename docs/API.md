@@ -127,8 +127,10 @@ hinted with the holder).
 
 ### `POST /reclaims/build`
 
-Body: `{ campaign_id }`. This is refused before `reclaim_from`. Returns the bundle that pays the
-creator.
+Body: `{ campaign_id, delegate? }`. This is refused before `reclaim_from`. Returns the bundle that pays
+the creator and what the **creator** (or the creator's granted delegate) must authorize: a signature over
+`sha256tree(["flpcr-reclaim-v1", distributor_id, campaign_id])`, or that message for a vault or
+multisig to send. A bundle without it is refused on chain.
 
 ## Rate limits and keys
 

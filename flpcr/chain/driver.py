@@ -438,12 +438,18 @@ class Keys:
     def __init__(self, clvm: Clvm):
         self.clvm = clvm
         self.base = clvm.parse("(r 1)")
+        self.labels: Dict[bytes, str] = {}
 
     def puzzle(self, label: str) -> Program:
         return self.base.curry([self.clvm.atom(label.encode())])
 
     def ph(self, label: str) -> bytes:
-        return self.puzzle(label).tree_hash()
+        ph = self.puzzle(label).tree_hash()
+        self.labels[ph] = label
+        return ph
+
+    def label_of(self, ph: bytes) -> str:
+        return self.labels[ph]
 
     def spend(self, coin: Coin, label: str, conditions: list) -> CoinSpend:
         return CoinSpend(coin, self.puzzle(label).serialize(), to_program(self.clvm, conditions).serialize())
