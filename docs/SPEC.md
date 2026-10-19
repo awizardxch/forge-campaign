@@ -578,8 +578,10 @@ A **🔥 Campaigns** tab in forge-ui, or on whichever site this lands, with four
 4. **My campaigns** (creators). Emitted, claimed, unclaimed, and a **Reclaim** button that unlocks at
    `end + claim_window`.
 
-Spellbook / agent API: `flpcr.quote`, `flpcr.create`, `flpcr.rewards`, `flpcr.claim` and
-`flpcr.reclaim`, as tools beside the existing swap quote/build/settle.
+Spellbook / agent API: `flpcr.quote`, `flpcr.create`, `flpcr.rewards`, `flpcr.claim`, `flpcr.delegate`,
+`flpcr.reclaim` and `flpcr.link` for users, and `flpcr.engine.run`, `flpcr.post_root`, `flpcr.watch` and
+`flpcr.rotate` for the operator. These sit as tools beside the existing swap quote/build/settle. Inputs,
+outputs, who signs and the checks for each are in [`AGENT_TOOLS.md`](AGENT_TOOLS.md).
 
 ---
 

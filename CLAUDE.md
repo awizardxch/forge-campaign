@@ -1,7 +1,9 @@
 # FLPCR (forge-campaign): notes for agents
 
 Forge Liquidity Pool Campaign Rewards: Merkl-style incentive campaigns for Forge LP and Chia CATs.
-Start with `README.md`, then `docs/SPEC.md`. `docs/TESTNET.md` is the plan for testnet11.
+Start with `README.md`, then `docs/SPEC.md`. `docs/TESTNET.md` is the plan for testnet11;
+`docs/AGENT_TOOLS.md` is the contract for every `flpcr.*` tool (who signs what). The aWizard agent's skill
+for this project is `docs/skills/forgeCampaigns.md` in `awizardxch/aWizard-Familiar`.
 
 ## Build and test
 

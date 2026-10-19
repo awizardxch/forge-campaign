@@ -16,6 +16,7 @@ CHIP-0050 action layer that Forge V14 runs on. **Simulator-tested, not yet on te
 | [`docs/SPEC.md`](docs/SPEC.md) | The whole design: the Merkl mapping, campaign kinds, distributor, scoring, trust model, phases, and what the tests prove (§12) |
 | [`docs/PUZZLES.md`](docs/PUZZLES.md) | The distributor puzzles as built: types, every leaf's rules, driver conventions |
 | [`docs/API.md`](docs/API.md) | HTTP API, read and write |
+| [`docs/AGENT_TOOLS.md`](docs/AGENT_TOOLS.md) | The `flpcr.*` agent tools: inputs, outputs, who signs, checks, and the code behind each |
 | [`docs/TESTNET.md`](docs/TESTNET.md) | Local setup, and what is left before the first testnet11 campaign |
 | `contracts/` | Rue project: upstream CHIP-0050 puzzles (pinned), the eight FLPCR leaves, `build.py`, `pins.json` |
 | `flpcr/` | The engine (campaigns, exact time and fee weighting, forwarding, claim tree, manifests), `distributor.py` (the same rules as the puzzles, in Python), `router.py` (which campaigns our router signs) |
