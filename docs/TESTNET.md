@@ -18,7 +18,7 @@ python -m venv .venv
 .venv/bin/pip install chia-wallet-sdk==0.36.0 pytest clvm   # Windows: .venv\Scripts\pip
 
 python contracts/build.py          # compiles, checks every pin
-python -m pytest -q                # 100 tests, ~2 s
+python -m pytest -q                # 129 tests, ~4 s
 python scripts/mutate.py           # optional, ~3 min: every assertion is load-bearing
 ```
 
@@ -31,6 +31,8 @@ The engine alone (`flpcr/` minus `flpcr/chain/`) needs only the standard library
 | Router, operator, guardian keys | anyone-can-spend test puzzles (`Keys` in `flpcr/chain/driver.py`) | Router and operator: a standard wallet key each, signing the `SEND_MESSAGE` coin (Sage or a script). Guardian: a Forge multisig safe (`forgeMultisig.md`) |
 | Pushing spends | `Simulator.spend_coins` | A full node RPC `push_tx`, or coinset.org. The driver already returns plain `CoinSpend`s. Only signing and pushing are new |
 | Chain data for the engine | `FixtureSource` | A live `Source` (`flpcr/sources.py` lists what it must return): hinted LP CAT coins and spends by asset id, and fee events from `forge_v14_resync` |
+| NFT holdings for gates and boosts | `ChainNftSource` reads the simulator (`flpcr/chain/nfts.py`) | The same code against a node: it needs three calls, `coin_state`, `children`, `coin_spend`, which map to `get_coin_record_by_name`, `get_coin_records_by_parent_ids` and `get_puzzle_and_solution`. A thin adapter, then point it at the Wizard DID |
+| Address links | verified in tests with generated keys | Sage's `signMessageByAddress`. Check one real Sage signature against `flpcr.links.verify` first |
 | Finding the distributor again | the driver holds it in memory | Persist the launcher id plus the driver's state (state value, slot list, lineage). Or rebuild it by replaying the singleton's spends, the way `forge_v14_resync` rebuilds a pool |
 | Fees | none | The network fee comes from the offer or the operator's coin. The bundle already tolerates extra XCH (it goes to the fee) |
 | Clocks | `Config.testnet`-style: 8-block disputes, 16-block minimum campaign | Same numbers work on testnet11 (~2.5 min disputes, ~5 min campaigns); production 38 / 77 |

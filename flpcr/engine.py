@@ -132,6 +132,15 @@ class Requirements:
     def __init__(self, campaign: Campaign, source: Source, before: int):
         self.params = campaign.params
         self.timelines: Dict[Tuple[int, bytes], Timeline] = {}
+        # Address links group a holder's addresses for requirements. Only
+        # loaded (and their signatures checked) when the campaign has any.
+        self.links = None
+        if self.params.gates or self.params.boosts:
+            links = getattr(source, "links", lambda: [])()
+            if links:
+                from .links import LinkBook
+
+                self.links = LinkBook([l for l in links if l.height < before])
         for req in [*self.params.gates, *(b.requirement for b in self.params.boosts)]:
             key = (int(req.holding), req.asset)
             if key in self.timelines:
@@ -146,6 +155,8 @@ class Requirements:
         hs = set()
         for tl in self.timelines.values():
             hs.update(tl.changes(start, end))
+        if self.links is not None:
+            hs.update(self.links.changes(start, end))
         return sorted(hs)
 
     def at(self, height: int) -> Dict[Tuple[int, bytes], Dict[bytes, int]]:
@@ -158,7 +169,9 @@ class Requirements:
         held = self.at(height) if self.timelines else {}
 
         def meets(req: Requirement, ph: bytes) -> bool:
-            return held[(int(req.holding), req.asset)].get(ph, 0) >= req.min_count
+            counts = held[(int(req.holding), req.asset)]
+            group = self.links.group(ph, height) if self.links is not None else (ph,)
+            return sum(counts.get(x, 0) for x in group) >= req.min_count
 
         out: Balances = {}
         for ph, b in balances.items():

@@ -201,3 +201,51 @@ class SimWorld:
         state = self.sim.coin_state(self.d.reserve_coin.coin_id())
         assert state is not None and state.spent_height is None
         return state.coin.amount
+
+
+class NftKit:
+    """DIDs and NFTs on the simulator, owned by real BLS keys (`sim.bls`), for
+    tests of collection gating. Mirrors what a wallet does: the DID's own
+    spend creates the NFT launchers, and each NFT's eve spend sets the DID as
+    its owner."""
+
+    def __init__(self, sim, clvm):
+        self.sim, self.clvm = sim, clvm
+
+    def wallet(self, amount: int = 1000):
+        return self.sim.bls(amount)
+
+    def create_did(self, owner):
+        created = self.clvm.create_eve_did(owner.coin.coin_id(), owner.puzzle_hash)
+        self.clvm.spend_standard_coin(owner.coin, owner.pk, self.clvm.delegated_spend(created.parent_conditions))
+        self.sim.spend_coins(self.clvm.coin_spends(), [owner.sk])
+        return created.did
+
+    def mint(self, owner, did, count: int, to_ph: Optional[bytes] = None):
+        """Mint `count` NFTs from `did`, delivered to `to_ph` (default the owner).
+        Returns (nfts, next did)."""
+        from chia_wallet_sdk import NftMetadata, NftMint, TransferNft
+
+        c = self.clvm
+        to_ph = to_ph or owner.puzzle_hash
+        meta = c.nft_metadata(NftMetadata(1, 1, ["https://example.invalid/wizard.png"], None, [], None, [], None))
+        mints = [
+            NftMint(meta, Constants.nft_metadata_updater_default_hash(), to_ph, owner.puzzle_hash, 300,
+                    TransferNft(did.info.launcher_id, [], did.info.inner_puzzle_hash()))
+            for _ in range(count)
+        ]
+        minted = c.mint_nfts(did.coin.coin_id(), mints)
+        recreate = c.create_coin(did.info.inner_puzzle_hash(), 1, c.list([c.atom(owner.puzzle_hash)]))
+        nxt = c.spend_did(did, c.standard_spend(owner.pk, c.delegated_spend([recreate, *minted.parent_conditions])))
+        fund = self.sim.new_coin(owner.puzzle_hash, 2 * count + 1)
+        c.spend_standard_coin(fund, owner.pk, c.delegated_spend([]))
+        self.sim.spend_coins(c.coin_spends(), [owner.sk])
+        return list(minted.nfts), nxt
+
+    def transfer(self, owner, nft, to_ph: bytes):
+        c = self.clvm
+        moved = c.spend_nft(nft, c.standard_spend(owner.pk, c.delegated_spend(
+            [c.create_coin(to_ph, 1, c.list([c.atom(to_ph)]))]
+        )))
+        self.sim.spend_coins(c.coin_spends(), [owner.sk])
+        return moved

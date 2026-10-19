@@ -19,8 +19,9 @@ CHIP-0050 action layer that Forge V14 runs on. **Simulator-tested, not yet on te
 | [`docs/TESTNET.md`](docs/TESTNET.md) | Local setup, and what is left before the first testnet11 campaign |
 | `contracts/` | Rue project: upstream CHIP-0050 puzzles (pinned), the eight FLPCR leaves, `build.py`, `pins.json` |
 | `flpcr/` | The engine (campaigns, exact time and fee weighting, forwarding, claim tree, manifests), `distributor.py` (the same rules as the puzzles, in Python), `router.py` (which campaigns our router signs) |
-| `flpcr/chain/` | Driver that builds distributor spends, and `SimWorld`, a distributor on the chia-wallet-sdk simulator |
-| `tests/` | Engine, reference model, router, chain (XCH and CAT), differential (model vs puzzles) |
+| `flpcr/links.py` | Address links: a wallet's addresses grouped for gates and boosts, both sides signed (CHIP-0002) |
+| `flpcr/chain/` | Driver that builds distributor spends; `SimWorld`, a distributor on the chia-wallet-sdk simulator; `nfts.py`, NFT collections (by minter DID) and owners read from chain |
+| `tests/` | Engine, reference model, router, chain (XCH and CAT), differential (model vs puzzles), gates and boosts, NFT collections on the simulator, address links |
 | `scripts/mutate.py` | Mutation run: every leaf assertion must be pinned by a test or argued |
 
 ## Run
@@ -29,7 +30,7 @@ CHIP-0050 action layer that Forge V14 runs on. **Simulator-tested, not yet on te
 cargo install rue-cli --version 0.8.4 --locked
 python -m pip install chia-wallet-sdk==0.36.0 pytest clvm
 python contracts/build.py      # compile and check pins
-python -m pytest -q            # 100 tests
+python -m pytest -q            # 129 tests
 python scripts/mutate.py       # optional, ~3 min
 
 python -m flpcr fixtures/demo.json --end 2000 --state /tmp/flpcr-state.json   # engine: root 1

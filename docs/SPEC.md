@@ -430,27 +430,53 @@ and §6.3.
 
 **What "collection id" means on Chia.** The collection id marketplaces show (MintGarden, Dexie) comes
 from CHIP-0007 off-chain metadata, which anyone can copy into an unrelated NFT. The on-chain identifier
-that cannot be forged is the **minter DID**. An NFT minted by a DID carries that DID's launcher id from
-its eve spend, and only the DID's owner can mint as it. So a campaign's NFT `asset` is the minter DID's
-launcher id. Two alternatives, for when that does not fit:
+that cannot be forged is the **minter DID**: each NFT in the collection has its own launcher id, and only
+the DID's owner can mint into it. So a campaign's NFT `asset` is the minter DID's launcher id.
+
+*Built: `flpcr/chain/nfts.py`, tested on the simulator (`tests/test_nfts.py`).* A collection is found by
+walking **the DID's own spends** and taking every NFT launcher a DID spend created (directly, or through
+an intermediate launcher). Nothing but the DID's owner can make a DID coin spend, so the walk cannot be
+fooled. The reader deliberately ignores two weaker signals:
+- **The metadata collection id**, which can be copied.
+- **The NFT's owner-DID field.** An NFT minted elsewhere can later be transferred to the DID, so the
+  field does not prove minting.
+
+Each NFT is then followed spend by spend. Its owner is the p2 puzzle hash, which is also its hint, and
+each change of owner becomes `−1` for the old owner and `+1` for the new, like a CAT balance. NFTs sitting
+in an offer's settlement puzzle are nobody's holding. The tests mint Wizards from one DID and a look-alike
+from another, transfer one, and check that the gate counts exactly the Wizards, at the right owners, from
+the right height. Two alternatives, for when that does not fit:
 - **A fixed list.** For a collection minted without a DID, or a curated subset (e.g. only certain
   Wizards), `asset` is the root of a published list of NFT launcher ids. The list is part of the
   campaign's published terms. *(Not built; the engine's source interface takes it without change.)*
 - **Soulbound NFTs** (BOW rewards, `nftRewards.md`) work as is: they cannot be transferred, so the gate
   cannot be lent at all.
 
-The live `Source` finds a collection's NFTs by walking the minter DID's mints, follows each NFT's owner
-through its ownership layer (owner = the hinted inner puzzle hash) and emits `+1/−1` events per owner,
-like a CAT balance. NFTs held in an offer or settlement coin are excluded the same way LP is.
+**One wallet, many addresses: address links.** *Built: `flpcr/links.py`, tested in `tests/test_links.py`
+with real BLS keys.* Sage spreads a wallet across many addresses (puzzle hashes). A holder whose Wizard
+sits at one address and LP at another would not match, because requirements are checked per address.
+A **link** joins addresses into one holder for gates and boosts only:
 
-**One wallet, many addresses.** Sage spreads a wallet across many addresses (puzzle hashes). A holder
-whose Wizard sits at one address and LP at another would not match, because requirements are checked
-per puzzle hash. The fix is **address links**: the holder signs, with each address's key (CHIP-0002
-`signMessageByAddress`), a message naming their primary address. The engine treats linked addresses as
-one holder for gates and boosts only; payouts still go to the address that holds the LP. Links are
-published with the campaign's manifests and verified by anyone (signature against the address's synthetic
-key, then that key's standard puzzle hash against the address), so replays stay reproducible.
-*(Specified, not built.)*
+- **Both addresses sign** the same message, `flpcr-link-v1:<primary>:<member>`, in Chia's
+  `signMessageByAddress` format (CHIP-0002, UTF-8: the synthetic key signs
+  `sha256tree(("Chia Signed Message", message))`). A one-sided link would let anyone attach their LP to
+  someone else's Wizard, so the primary must consent too.
+- **Verification** is two checks per side: the signature against the published public key, and
+  `standard_puzzle_hash(public key) == address`. Anyone can redo both from the published link.
+- **Requirement holdings are summed across the group**, and every address in it is judged by the sum.
+  Two Wizards at one address and one at another make 3, enough for a 3-Wizard tier. **Rewards still go
+  to the address that holds the LP.**
+- **Over time:** a link counts from the height the operator recorded it (published with the manifests)
+  until it is replaced. Linking an address again moves it; an unlink (member == primary, signed by that
+  address alone) takes it out of its group. Link changes cut segments like any other change.
+- **Shape:** groups are one level deep (a primary cannot be a member, a primary with members cannot
+  become one), with at most 16 members per group. Anything that breaks a rule or fails verification is
+  ignored, not an error.
+- **What links cannot stop:** two people who both sign can pool holdings, so one Wizard can boost a
+  friend's address. That is consent, and it is public.
+
+The interface flow is one button, "link this address": Sage signs with the address holding the LP, then
+with the address holding the Wizards, and the API records the link.
 
 ---
 
@@ -543,7 +569,7 @@ location (this repo, `contracts/`; `forge-puzzles` stays specific to the n-asset
 
 ## 12. What the simulator proves, and what it does not
 
-Run everything with `python -m pytest -q` (100 tests, about 2 s) after `python contracts/build.py`.
+Run everything with `python -m pytest -q` (129 tests, about 4 s) after `python contracts/build.py`.
 
 | Suite | Proves |
 |---|---|

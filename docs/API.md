@@ -57,6 +57,14 @@ Returns the struct from SPEC §3.1 in full (params expanded), plus:
 The manifest exactly as pinned (see `flpcr/manifest.py`), with its `manifest_hash`, the `post_root`
 spend's coin id and height, and `activates_at`.
 
+### `GET /links?address=` and `POST /links`
+
+Address links (SPEC §6.8). `POST` body: `{ primary, member, member_pk, member_sig, primary_pk, primary_sig }`,
+the two `signMessageByAddress` results over `flpcr-link-v1:<primary>:<member>`. The API verifies both
+signatures and both addresses, records the link at the current peak height, and publishes it (the
+`flpcr.links.link_to_json` form) with the next root's manifest. An unlink is `primary == member` with one
+signature. `GET` returns an address's group and the links that formed it.
+
 ### `GET /distributors`
 
 The registry contents: per reward asset, the launcher, the config, and a summary of current state.

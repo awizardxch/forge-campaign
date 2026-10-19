@@ -43,6 +43,10 @@ class Source(Protocol):
         puzzle hash (the NFT ownership layer's inner puzzle, as hinted), -1 when
         it leaves. Collection = NFTs minted by the DID with this launcher id."""
 
+    def links(self) -> list:
+        """Published address links (flpcr.links.Link). Optional: a source
+        without this method has none."""
+
     def excluded(self, asset_id: bytes) -> Set[bytes]:
         """Puzzle hashes that hold `asset_id` but are never anyone's position:
         pool reserves, OFFER_MOD settlement coins, the zero-hash burn (the
@@ -61,6 +65,10 @@ class FixtureSource:
     exclusions: Dict[bytes, Set[bytes]] = field(default_factory=dict)
     wrappers: Dict[bytes, Dict[bytes, bytes]] = field(default_factory=dict)
     nfts: Dict[bytes, List[HolderEvent]] = field(default_factory=dict)
+    address_links: list = field(default_factory=list)
+
+    def links(self) -> list:
+        return list(self.address_links)
 
     def lp_asset(self, pool_launcher: bytes) -> bytes:
         return self.lp_assets[pool_launcher]
