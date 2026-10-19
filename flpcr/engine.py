@@ -58,7 +58,7 @@ class Root:
     root_id: int
     start: int  # accrual window this root added, [start, end)
     end: int
-    root: Optional[bytes]  # None when nothing accrued; not posted
+    root: bytes
     totals: Dict[bytes, int]  # campaign id -> sum of its cumulatives
     claims: List[Claim]
     link_count: int = 0  # the link log prefix (heights < end) this root used
@@ -328,11 +328,11 @@ def run_epoch(
     campaigns: Iterable[Campaign],
     source: Source,
     end: int,
-) -> Tuple[EngineState, Root]:
+) -> Tuple[EngineState, Optional[Root]]:
     """Accrue [state.height, end) and build root `state.root_id + 1`.
 
     Returns a new state and the root; `state` is not modified. If nothing
-    claimable changed in the window, the state comes back unchanged with a root whose `root` is None: nothing is to be
+    claimable changed in the window, returns `(state, None)`: nothing is to be
     posted, and the next run covers the longer window.
     """
     campaigns = [c for c in campaigns if c.distributor_id == state.distributor_id]
@@ -352,7 +352,7 @@ def run_epoch(
                 acc[ph] = acc.get(ph, Fraction(0)) + x
                 changed = True
     if not changed:
-        return state, Root(state.distributor_id, state.root_id + 1, start, end, None, {}, [])
+        return state, None
 
     # Only the campaigns passed in: a reclaimed campaign has left the
     # distributor, and a root naming it would be refused.
@@ -375,7 +375,7 @@ def run_epoch(
 
     if not rows:
         # Accrual so far is all sub-mojo; nothing claimable yet.
-        return state, Root(state.distributor_id, state.root_id + 1, start, end, None, {}, [])
+        return state, None
     leaves = [claim_leaf(state.distributor_id, cid, ph, amount) for cid, ph, amount in rows]
     root, proofs = build_tree(leaves)
     claims = [Claim(cid, ph, amount, leaf, proofs[leaf]) for (cid, ph, amount), leaf in zip(rows, leaves)]

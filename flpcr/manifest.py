@@ -28,7 +28,7 @@ def root_to_json(root: Root) -> dict:
         "root_id": root.root_id,
         "start": root.start,
         "end": root.end,
-        "root": root.root.hex() if root.root else None,
+        "root": root.root.hex(),
         "claim_count": len(root.claims),
         "totals": {cid.hex(): amt for cid, amt in sorted(root.totals.items())},
         "links": {"count": root.link_count, "sha256": root.links_hash.hex()},

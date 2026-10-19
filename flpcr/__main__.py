@@ -77,7 +77,7 @@ def main(argv=None) -> int:
         state = EngineState(distributor)
 
     state, root = run_epoch(state, campaigns, source, args.end)
-    if root.root is None:
+    if root is None:
         out = {"posted": False, "distributor_id": distributor.hex(), "end": args.end}
     else:
         out = root_to_json(root)

@@ -207,7 +207,7 @@ class TestRoots(unittest.TestCase):
         roots = []
         for end in cuts[1:]:
             state, root = run_epoch(state, campaigns, src, end)
-            if root.root is not None:
+            if root is not None:
                 roots.append(root)
         return state, roots
 
@@ -254,7 +254,7 @@ class TestRoots(unittest.TestCase):
         c = lp_campaign(start=500, end=600)
         state = fresh()
         same, root = run_epoch(state, [c], src, 200)
-        self.assertIsNone(root.root)
+        self.assertIsNone(root)
         self.assertIs(same, state)
 
     def test_reclaimed_campaign_leaves_the_tree(self):
@@ -356,7 +356,7 @@ class TestCutIndependence(unittest.TestCase):
         state, out = fresh(cuts[0]), {}
         for end in cuts[1:]:
             state, root = run_epoch(state, campaigns, src, end)
-            if root.root is not None:
+            if root is not None:
                 out[end] = (state.accrued, {(c.campaign_id, c.puzzle_hash): c.cumulative for c in root.claims})
         return state, out
 
