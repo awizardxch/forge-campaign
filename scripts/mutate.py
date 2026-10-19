@@ -10,7 +10,8 @@ is a SURVIVOR: an assertion no test pins. Each survivor needs a test that
 kills it or a written argument in scripts/mutation-arguments.json. A mutant
 that does not compile is reported and skipped.
 
-The method is Forge's (forgePuzzleV14.md section 4): "survived" is never
+The method is Forge's mutation rule, unchanged through V16 (first written up in
+forgePuzzleV14.md section 4): "survived" is never
 read as "redundant" without asking what else refused first.
 """
 

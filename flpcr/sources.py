@@ -4,9 +4,11 @@ The live adapter (not in this slice) reads a full node or coinset.org:
   * holder events: CAT coin creations and spends for one asset id, attributed to
     the inner puzzle hash by the CHIP-0020 hint. Forge LP coins are hinted; an
     unhinted coin is attributed when its spend reveals the inner puzzle.
-  * fee events: each Forge pool generation replayed with `forge_v14_resync`
-    (the same replay the browser uses), one event per `swap` action, weighted
-    by the fee it paid valued in XCH at the pool's own pre-spend spot price.
+  * fee events: each Forge pool generation replayed with `forge_resync`, which
+    picks the lane by protocol (17 = V16, the shipping revision; 16 = V15 and
+    15 = V14, whose pools stay live), the same replay the browser uses. One
+    event per `swap` action, weighted by the fee it paid valued in XCH at the
+    pool's own pre-spend spot price.
   * exclusions and forwarders: derived from the Forge registry, not configured
     by hand.
 

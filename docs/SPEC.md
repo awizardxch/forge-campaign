@@ -165,7 +165,7 @@ operator disappears (§7).
 
 ## 5. The distributor (on chain)
 
-Rue, CHIP-0050 action layer, upstream puzzles hash-pinned exactly as in `contracts/v14/pins.json`.
+Rue, CHIP-0050 action layer, upstream puzzles hash-pinned in `contracts/pins.json`, to the same hashes Forge V16 pins (`contracts/v16/pins.json` in forge-puzzles).
 Leaf-by-leaf detail is in [`PUZZLES.md`](PUZZLES.md). **`flpcr/distributor.py` is the same rules
 as running Python**: the reference the puzzles are tested against, and what the engine's output is
 pushed through in `tests/test_distributor.py`.
@@ -366,8 +366,9 @@ arithmetic is exact rational; the only rounding is a floor of a holder's cumulat
 - **Exclusions:** pool reserve puzzle hashes, OFFER_MOD settlement coins (transient, created and spent
   within a route), the zero hash (the `LOCKED_BURN` floor) and the dev fee address. They are derived
   from the Forge registry, never configured by hand.
-- **Fee events** for `LP_HOLD`: each pool generation is replayed with `forge_v14_resync`. Resolve each
-  action's leaf through its selector, not `zip(puzzles, solutions)` (`forgePuzzleV14.md` §5). Each
+- **Fee events** for `LP_HOLD`: each pool generation is replayed with `forge_resync`, which picks the lane by
+  protocol (V16 = 17; V15 and V14 pools stay live). Resolve each action's leaf through its selector, not
+  `zip(puzzles, solutions)` (`forge_v16_resync.py`; first written up in `forgePuzzleV14.md` §5). Each
   `swap` action yields `(h, weight)`, where weight is the LP fee it paid, valued in XCH at the pool's
   **pre-spend** spot price (the price the oracle accumulates in the prologue).
 - **Forwarders:** Forge vault pools whose reserves include this pool's LP, mapped to the vault's own LP
@@ -570,7 +571,7 @@ A **🔥 Campaigns** tab in forge-ui, or on whichever site this lands, with four
    with and without each requirement would get at current holdings. Advanced: min balance and
    the lists. The preview shows the **3% fee**, the resulting budget, per-day emission, an estimated APR
    at current TVL, and the date from which leftovers can be reclaimed. Signing is one Sage offer: give `amount`, request nothing. The responder builds the `create`
-   spend around it, the same keyless pattern as Forge's offer lane (`forge_v14_offer.py`).
+   spend around it, the same keyless pattern as Forge's offer lane (`forge_v16_offer.py`).
 3. **My rewards.** Per campaign: earned (engine, not yet posted), claimable (active root − claimed),
    pending (in a dispute window), claimed, and the date from which the creator may reclaim (shown as
    "claim before …"; past it, the button stays live with a warning until the campaign is reclaimed). **Claim** and **Claim all** build one
@@ -590,7 +591,7 @@ outputs, who signs and the checks for each are in [`AGENT_TOOLS.md`](AGENT_TOOLS
 | Phase | Deliverable | Gate |
 |---|---|---|
 | **0 ✅** | Spec; engine (`model`, `engine`, `merkle`, `manifest`, CLI); reference distributor model; router rules | Hashing cross-checked against `clvm` |
-| **1: engine on real data** (next) | Live `Source` for testnet11 (coinset or full node + `forge_v14_resync`); run against the 32 V14 pools; publish manifests | Replaying a week of testnet from scratch twice gives identical roots |
+| **1: engine on real data** (next) | Live `Source` for testnet11 (coinset or full node + `forge_resync`); run against every live V16, V15 and V14 pool; publish manifests | Replaying a week of testnet from scratch twice gives identical roots |
 | **2 ✅ (simulator)** | `contracts/`: 8 leaves, claim slots, pins, `build.py`; driver and `SimWorld`; chain, differential and mutation suites, XCH and CAT rewards (§12) | Done on the simulator. Still open: the distributor registry, a `clvmPuzzleAudit.md` pass by a second reader |
 | **3: testnet lane** | Router (quote + create, our key), operator bot, watcher, API, forge-ui tab, on `Config.testnet` distributors | One campaign end to end on testnet11: create → roots → claims at several points → reclaim of leftovers |
 | **4: hardening** | Public dispute leaf, guardian as a Forge multisig safe, external review | No mainnet before external review |

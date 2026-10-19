@@ -125,7 +125,7 @@ The attacker holds for 0.1% of the time and takes 49.5% of the rewards.
 
 #### 3. Testnet11 Verification Command
 
-This is engine-only, so no bundle is needed. Run a `fees_bps = 5000` campaign on a testnet V14 pool. From
+This is engine-only, so no bundle is needed. Run a `fees_bps = 5000` campaign on a testnet V16 pool. From
 a test wallet, add large LP, swap 1 mojo, and remove the LP in the next block. Then:
 
 ```bash

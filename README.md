@@ -9,7 +9,7 @@ unclaimed; holders can keep claiming until that reclaim actually lands. The puzz
 campaign at its emission schedule.
 
 The reference design is Merkl's EVM incentive layer, rebuilt for Chia's coin set model on the
-CHIP-0050 action layer that Forge V14 runs on. **Simulator-tested, not yet on testnet. Not audited.**
+CHIP-0050 action layer that Forge V16 runs on (the same pinned upstream puzzles). **Simulator-tested, not yet on testnet. Not audited.**
 
 | | |
 |---|---|
@@ -48,7 +48,7 @@ The engine on its own needs only the standard library (Python 3.10+). The chain 
 - **Phase 0 ✅:** spec, engine, reference model, router rules.
 - **Phase 2 ✅ on the simulator:** distributor puzzles, driver, chain, differential and mutation suites, for
   XCH and CAT rewards. Still open: the distributor registry, cost measurements, a second reader.
-- **Phase 1 (next):** live chain source for testnet11 (hinted LP CAT coins, `forge_v14_resync` for fee
-  events).
+- **Phase 1 (next):** live chain source for testnet11 (hinted LP CAT coins, `forge_resync` for fee
+  events, across the live V16, V15 and V14 pools).
 - **Phase 3:** deploy script with real keys, operator / watcher bots, API, interface tab. See
   [`docs/TESTNET.md`](docs/TESTNET.md).
