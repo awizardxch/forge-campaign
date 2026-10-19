@@ -1,0 +1,46 @@
+NO BUILD  claim:54: assert !(state.active is nil);
+killed    claim:58: assert simplify_merkle_proof(leaf, proof) == state.active.root;
+killed    claim:75: assert key > n.left_key;
+killed    claim:76: assert n.right_key > key;
+killed    claim:90: assert amount > 0;
+killed    claim:91: assert campaign.claimed + amount <= total_for(state.active.totals, campaign_id);
+SURVIVED  create:54: assert amount > 0;  [argued: Implied by `budget > 0` (and the reverse) while fee_bps < 10000: budget = amount - floor(amount * fee_bps / 10000) has the sign of amount. fee_bps is curried and pinned at 300 by the registry. Both kept; removing one alone is masked by the other.]
+SURVIVED  create:55: assert budget > 0;  [argued: See `amount > 0`: each implies the other while fee_bps < 10000.]
+killed    create:56: assert start >= h;
+killed    create:57: assert length >= CONFIG.min_campaign_length;
+killed    create:58: assert length <= CONFIG.max_campaign_length;
+killed    create:59: assert (kind == 1) | (kind == 2);
+killed    create:60: assert params.time_bps >= 0;
+killed    create:61: assert params.fees_bps >= 0;
+killed    create:62: assert params.time_bps + params.fees_bps == BPS;
+killed    create:63: assert (kind == 1) | (params.fees_bps == 0);
+killed    create:64: assert claim_window >= 2 * CONFIG.dispute_blocks;
+killed    create:65: assert claim_window <= CONFIG.max_campaign_length;
+killed    create:66: assert count(state.campaigns) < CONFIG.max_campaigns;
+killed    create:67: assert find_campaign(state.campaigns, id) is nil;
+killed    delegate:23: assert (grant == 0) | (grant == 1);
+killed    init:14: assert state.initialized == 0;
+killed    post_root:25: assert id > last_id;
+killed    post_root:26: assert total >= total_for(previous, id);
+killed    post_root:27: assert total <= emittable(campaign, end);
+killed    post_root:45: assert has_total(totals, id);
+killed    post_root:73: assert state.pending is nil;
+killed    post_root:74: assert start < end;
+killed    post_root:75: assert end <= h;
+killed    post_root:78: assert root_id == 1;
+killed    post_root:81: assert root_id == state.active.root_id + 1;
+killed    post_root:82: assert start == state.active.end;
+NO BUILD  post_root:86: assert check_totals(
+killed    post_root:93: assert check_kept(state.campaigns, previous, totals);
+killed    reclaim:24: assert h >= campaign.end + campaign.claim_window;
+killed    shared:88: assert h > 0;
+killed    shared:97: assert truth.ephemeral.first == h;
+killed    shared:137: assert !(found is nil);
+NO BUILD  shared:142: assert !(campaigns is nil);
+NO BUILD  shared:151: assert !(campaigns is nil);
+killed    shared:226: assert curry_tree_hash(STANDARD_MOD_HASH, [tree_hash_atom(unchecked_cast::<Bytes>(public_key))]) == address;
+killed    shared:229: assert auth == AUTH_MESSAGE;
+NO BUILD  veto:16: assert !(state.pending is nil);
+killed    veto:17: assert state.pending.root_id == root_id;
+
+37 killed, 0 unargued survivors, 5 did not build

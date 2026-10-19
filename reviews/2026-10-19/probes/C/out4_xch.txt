@@ -1,0 +1,6 @@
+[ACCEPTED] post root naming 32 campaigns -> [[<builtins.Program object at 0x7f978ff69e90>, <builtins.Program object at 0x7f978ff69e30>, <builtins.Program object at 0x7f978ff69e00>]]
+[ACCEPTED] claim in campaign 0 (last in list) -> 27714
+[ACCEPTED] claim in campaign 31 (first in list) -> 27714
+[ACCEPTED] reclaim campaign 0 -> 942286
+    invariant: state=30042286 owed=30042286 chain=30042286 OK
+    singleton puzzle cost: [('post_root', 5653055), ('claim', 5432456), ('claim', 5352155), ('reclaim', 3790837)]

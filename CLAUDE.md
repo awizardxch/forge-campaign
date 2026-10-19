@@ -5,6 +5,13 @@ Start with `README.md`, then `docs/SPEC.md`. `docs/TESTNET.md` is the plan for t
 `docs/AGENT_TOOLS.md` is the contract for every `flpcr.*` tool (who signs what). The aWizard agent's skill
 for this project is `docs/skills/forgeCampaigns.md` in `awizardxch/aWizard-Familiar`.
 
+## Open review
+
+`reviews/2026-10-19/FINDINGS.md` is the pre-testnet review of `dea1d7d`. Read it before changing a leaf or
+launching anything. Its probes are in `reviews/2026-10-19/probes/` (run from the repo root with
+`PYTHONPATH=.:reviews/2026-10-19/probes/<lane>`). No fix is applied yet; § Decisions needed lists what
+waits on the owner.
+
 ## Build and test
 
 ```bash

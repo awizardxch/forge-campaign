@@ -1,0 +1,60 @@
+=== asset CAT ===
+
+-- P1 max_campaigns exhaustion (amount=1, fee=0, start far future)
+    campaigns=32 reserve=32 dev_fee_paid=0
+[REFUSED ] honest create after 32 dust campaigns :: clvm raise
+[REFUSED ] griefer reclaim of dust (not before end+window) :: clvm raise
+[ACCEPTED] control honest create (fresh world) -> Campaign(distributor_id=b"Y\xfb\xc7\xd91\x02\xe5\xa5\xcd\xa3\x85\xdcy\xbc\xb7\x9eM\x1b)O\xc58'\x1f`\xfb\x03\x02j\xef\rq", creator=b'y\xd4\x1a\x97j\xa5L\xd0\xe5\x03\xb9Yz\x9eD\xb1\x1d\x84\x1b\x92q\xad\x1bW\xad\xc7s^X#\xe7\x92', reward_asset=b'\xa5\xa5
+
+-- P2 create arithmetic
+[REFUSED ] amount=0 :: clvm raise
+[REFUSED ] amount=-1000 deposit 0 :: clvm raise
+[ACCEPTED] amount=1 (fee floor 0, budget 1) -> [[<builtins.Program object at 0x7efd33744cc0>, <builtins.Program object at 0x7efd33745230>, <builtins.Program object at 0x7efd33745080>]]
+[ACCEPTED] amount=33 (fee 0) -> [[<builtins.Program object at 0x7efd33744c30>, <builtins.Program object at 0x7efd33744c60>, <builtins.Program object at 0x7efd337453b0>]]
+    dev balance after amount 1 and 33: 0
+[ACCEPTED] amount=34 (fee 1) -> [[<builtins.Program object at 0x7efd33745380>, <builtins.Program object at 0x7efd33745350>, <builtins.Program object at 0x7efd33745230>, <builtins.Program object at 0x7efd33745290>]]
+    dev balance: 1
+    invariant: state=67 owed=67 chain=67 OK
+[PYERR   ] amount=2**64 (reserve overflow) :: OverflowError: int too big to convert
+[ACCEPTED] amount=2**64-1 deposit short? (huge) -> [[<builtins.Program object at 0x7efd337451a0>, <builtins.Program object at 0x7efd33745350>, <builtins.Program object at 0x7efd33745380>, <builtins.Program object at 0x7efd33745080>]]
+[REFUSED ] start=h-1 (past) :: clvm raise
+[REFUSED ] end<start :: clvm raise
+[REFUSED ] claim_window negative :: clvm raise
+[REFUSED ] deposit=amount-1 :: Simulator error: Validation error: MintingCoin
+    invariant: state=8946670875749132601 owed=8946670875749132601 chain=8946670875749132601 OK
+
+-- P3 duplicate outputs
+[ACCEPTED] control: two creates, different fees (1000, 2000) -> [[<builtins.Program object at 0x7efd337462b0>, <builtins.Program object at 0x7efd337457d0>, <builtins.Program object at 0x7efd33746160>, <builtins.Program object at 0x7efd337455c0>], [<builtins.Program object at 0x7efd33746100>, <builti
+    invariant: state=2910 owed=2910 chain=2910 OK
+[REFUSED ] two creates same amount (1000,1000) one spend :: Simulator error: Validation error: DuplicateOutput
+    invariant: state=2910 owed=2910 chain=2910 OK
+
+-- P4 claims and multi-action
+    alice cumulative=727500 total=970000 budget=970000
+[REFUSED ] claim cumulative=0 (amount 0) :: clvm raise
+[REFUSED ] claim cumulative=-5 :: clvm raise
+[REFUSED ] claim cumulative != leaf (inflated) :: clvm raise
+[ACCEPTED] honest alice claim -> 727500
+    invariant: state=242500 owed=242500 chain=242500 OK
+[REFUSED ] alice reclaim-again (cumulative unchanged) :: clvm raise
+[REFUSED ] bob claim twice in one spend (same cumulative) :: clvm raise
+    invariant: state=242500 owed=242500 chain=242500 OK
+[ACCEPTED] claim(bob)+reclaim same spend -> [[<builtins.Program object at 0x7efd33744fc0>, <builtins.Program object at 0x7efd33745230>, <builtins.Program object at 0x7efd33744c60>, <builtins.Program object at 0x7efd33744b10>, <builtins.Program object at 0x7efd33744f90>, <builtins.Program object at 0
+    bob +242500, creator +0
+    invariant: state=0 owed=0 chain=0 OK
+[REFUSED ] reclaim then claim same spend :: clvm raise
+    invariant: state=970000 owed=970000 chain=970000 OK
+
+-- P5 cross-campaign drain
+[REFUSED ] A alice claim with A total=1 (leaf 727500) :: clvm raise
+[REFUSED ] A alice claim cumulative=1 against bogus proof :: clvm raise
+[ACCEPTED] B alice honest claim -> 709312
+    invariant: state=1230688 owed=1230688 chain=1230688 OK
+
+-- P6 post_root totals
+[REFUSED ] negative total first root :: clvm raise
+[REFUSED ] total = emittable+1 :: clvm raise
+[REFUSED ] end > h (future) :: clvm raise
+[REFUSED ] unknown campaign id :: clvm raise
+[ACCEPTED] honest post -> [[<builtins.Program object at 0x7efd33746130>, <builtins.Program object at 0x7efd33746460>, <builtins.Program object at 0x7efd337459e0>]]
+    invariant: state=970000 owed=970000 chain=970000 OK

@@ -43,6 +43,8 @@ The engine on its own needs only the standard library (Python 3.10+). The chain 
 
 ## Status
 
+- **Pre-testnet review (2026-10-19):** [`reviews/2026-10-19/FINDINGS.md`](reviews/2026-10-19/FINDINGS.md). It found five High
+  findings, none a drain, plus 12 more. No fixes are applied yet; fix those it gates on before testnet with real users.
 - **Phase 0 ✅:** spec, engine, reference model, router rules.
 - **Phase 2 ✅ on the simulator:** distributor puzzles, driver, chain, differential and mutation suites, for
   XCH and CAT rewards. Still open: the distributor registry, cost measurements, a second reader.

@@ -1,0 +1,28 @@
+
+=== part 2, CAT ===
+-- Q1 honest table fill: fully-claimed campaigns never leave unless the creator reclaims
+    c1 budget=970000 claimed=970000 (nothing left, still in table)
+[REFUSED ] third create with table full (c1 fully paid out) :: clvm raise
+[REFUSED ] third create long after c1's window :: clvm raise
+[REFUSED ] stranger frees c1 (message from 'stranger') :: Simulator error: Validation error: MessageNotSentOrReceived
+[ACCEPTED] creator reclaims 0 leftovers -> 0
+[ACCEPTED] third create after creator reclaim -> Campaign(distributor_id=b"Y\xfb\xc7\xd91\x02\xe5\xa5\xcd\xa3\x85\xdcy\xbc\xb7\x9eM\x1b)O\xc58'\x1f`\xfb\x03\x02j\xef\rq", creator=b'y\xd4\x1a\x97j\xa5L\xd0\xe5\x03\xb9Yz\x9eD\xb1\x1d\x84\x1b\x92q\xad\x1bW\xad\xc7s^X#\xe7\x92', reward_asset=b'\xa5\xa5\
+-- Q2 batched claims with equal (ph, amount)
+    alice cumulative A=727500 B=709312
+    keys adjacent in insertion? A<B=True
+[REFUSED ] alice claims A and B (equal amounts) in one spend :: Simulator error: Validation error: DoubleSpend
+[ACCEPTED] control: alice claims A alone -> 727500
+[ACCEPTED] control: alice claims B alone -> 709312
+    invariant: state=503188 owed=503188 chain=503188 OK
+-- Q3 reserve spends
+[REFUSED ] reserve spent alone, paying thief :: Simulator error: Validation error: MessageNotSentOrReceived
+[REFUSED ] rotate + reserve delegated puzzle paying thief :: Simulator error: Validation error: MessageNotSentOrReceived
+    invariant: state=970000 owed=970000 chain=970000 OK
+-- Q4 CAT ring
+[REFUSED ] create, deposit of another CAT asset in the ring :: Simulator error: Validation error: AssertCoinAnnouncementFailed
+    invariant: state=970000 owed=970000 chain=970000 OK
+[REFUSED ] claim + thief ring coin outputs +5000 :: Simulator error: Validation error: MintingCoin
+[ACCEPTED] control: claim + thief ring coin outputs exactly its own 10 -> [[<builtins.Program object at 0x7fb9dc9393e0>, <builtins.Program object at 0x7fb9dc93ac70>, <builtins.Program object at 0x7fb9dc93a580>, <builtins.Program object at 0x7fb9dc93a790>, <builtins.Program object at 0x7fb9dc93a430>,
+    invariant: state=242500 owed=242500 chain=242500 OK
+[REFUSED ] create with deposit amount+500 (excess in ring) :: Simulator error: Validation error: AssertCoinAnnouncementFailed
+    invariant: state=242500 owed=242500 chain=242500 OK

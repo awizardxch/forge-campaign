@@ -1,0 +1,18 @@
+from common import *
+w, A, src = setup(8, window=16, length=20)
+B = w.campaign("creator2", 1_000_000, w.h + 2, w.h + 202, Kind.LP_HOLD, POOL, claim_window=16, nonce=7)
+w.create(B, "creator2")
+w.advance_to(A.end + 1)
+st, r1 = run_epoch(EngineState(w.launcher_id, height=A.start), [A, B], src, A.end)
+post_h(w, r1, w.h); w.advance_to(w.h + 8)
+w.advance_to(A.end + 16 + 1)
+st, r2 = run_epoch(st, [A, B], src, w.h - 1)
+print("r2 totals include A:", A.id in r2.totals)
+post_h(w, r2, w.h)                      # pending root naming A
+print("reclaim A while r2 pending:", outcome(w.reclaim, A.id)[:9])
+w.advance_to(w.h + 8)
+print("claim B against r2 (promotes it):", outcome(w.claim, r2, B.id, "alice"))
+print("claim A against r2:", outcome(w.claim, r2, A.id, "bob"))
+w.advance_to(w.h + 10)
+st3, r3 = run_epoch(st, [B], src, w.h - 1)
+print("r3 omits dead A, keeps B:", outcome(post_h, w, r3, w.h)[:9])

@@ -1,0 +1,7 @@
+=== Q2b CAT ===
+    increments A=363750 B=363750
+[REFUSED ] alice batches A+B updates, equal increments :: Simulator error: Validation error: DuplicateOutput
+    invariant: state=1212500 owed=1212500 chain=1212500 OK
+[ACCEPTED] control: A alone -> 363750
+[ACCEPTED] control: B alone -> 363750
+    invariant: state=485000 owed=485000 chain=485000 OK
