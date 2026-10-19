@@ -528,7 +528,7 @@ with the address holding the Wizards, and the API records the link.
 |---|---|---|
 | Operator | Post a wrong split | Exceed any campaign's schedule; lower a total; post for the future; skip or repeat a window; make a root claimable before its dispute window ends |
 | Guardian | Veto a pending root; rotate the operator | Post roots; move funds; touch the active root |
-| Creator | Fund; choose the claim window; reclaim leftovers from `end + claim_window` | Cancel or edit; reclaim during the window; stop a holder claiming before the reclaim lands |
+| Creator | Fund; choose the claim window; reclaim leftovers from `end + claim_window` (only they, or their delegate); grant and revoke a delegate | Cancel or edit; reclaim during the window; stop a holder claiming before the reclaim lands |
 | Router | Authorize which campaigns are created on its distributors (ours: only through our front end, only registry-priced assets) | Touch funds; claim; reclaim |
 | Holder | Claim their own rewards, whenever they like; grant and revoke a delegate | Claim anyone else's; choose the recipient or the amount |
 | Holder's delegate | Claim the holder's rewards, paid to the holder, until revoked | Grant itself; delegate further; redirect a payout |
