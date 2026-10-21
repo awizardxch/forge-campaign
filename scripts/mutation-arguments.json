@@ -1,4 +1,6 @@
 {
   "create: assert amount > 0;": "Implied by `budget > 0` (and the reverse) while fee_bps < 10000: budget = amount - floor(amount * fee_bps / 10000) has the sign of amount. fee_bps is curried and pinned at 300 by the registry. Both kept; removing one alone is masked by the other.",
-  "create: assert budget > 0;": "See `amount > 0`: each implies the other while fee_bps < 10000."
+  "create: assert budget > 0;": "See `amount > 0`: each implies the other while fee_bps < 10000.",
+  "bond_launcher: assert amount > 0;": "The launcher's amount is bound by the dispute leaf, which derives the launcher's id with CONFIG.dispute_bond, and init asserts dispute_bond > 0 (killed). A zero-amount launcher is a coin the leaf never derives. Second layer.",
+  "dispute: assert bond_grandparent != LOW_KEY;": "coinid() of a zero grandparent is a launcher id no coin has, so the announcement it must make is never made and consensus refuses the bundle (ASSERT_COIN_ANNOUNCEMENT). The zero check only moves that refusal into the leaf; the same argument as Forge's zero-parent checks. Second layer."
 }

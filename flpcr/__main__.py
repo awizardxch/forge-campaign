@@ -1,9 +1,12 @@
 """Build one root from a fixture.
 
-    python -m flpcr fixtures/demo.json --end 2000 [--state state.json]
+    python -m flpcr fixtures/demo.json --end 2000 [--state state.json] [--link-log links.json]
 
-Prints the root manifest; with --state, reads the prior engine state from that
-file if it exists and writes the new state back.
+Prints the root manifest, or `{"posted": false, ...}` when nothing claimable
+changed (the next run covers the longer window). With --state, reads the prior
+engine state from that file if it exists and writes the new state back. With
+--link-log, writes the link log prefix the root commits, the file to publish
+next to the manifest.
 """
 
 from __future__ import annotations
@@ -14,8 +17,9 @@ import os
 import sys
 
 from .engine import EngineState, run_epoch
+from .links import log_to_json
 from .manifest import manifest_hash, root_to_json, state_from_json, state_to_json
-from .model import Boost, Campaign, Holding, Kind, Params, Requirement
+from .model import DEFAULT_FEE_WINDOW, Boost, Campaign, Holding, Kind, Params, Requirement
 from .sources import FixtureSource
 
 
@@ -45,6 +49,7 @@ def campaign_from_json(d: dict) -> Campaign:
             gates=tuple(requirement_from_json(g) for g in p.get("gates", [])),
             boosts=tuple(Boost(requirement_from_json(b), b["bps"]) for b in p.get("boosts", [])),
             boost_cap_bps=p.get("boost_cap_bps", 25_000),
+            fee_window=p.get("fee_window", DEFAULT_FEE_WINDOW),
         ),
         nonce=d.get("nonce", 0),
         **{k: d[k] for k in ("fee_bps", "claim_window") if k in d},
@@ -56,6 +61,7 @@ def main(argv=None) -> int:
     ap.add_argument("fixture")
     ap.add_argument("--end", type=int, required=True, help="accrue up to this height (exclusive)")
     ap.add_argument("--state", help="engine state file, read if present and rewritten")
+    ap.add_argument("--link-log", help="write the link log prefix the root commits to this file")
     args = ap.parse_args(argv)
 
     with open(args.fixture, encoding="utf-8") as f:
@@ -71,9 +77,14 @@ def main(argv=None) -> int:
         state = EngineState(distributor)
 
     state, root = run_epoch(state, campaigns, source, args.end)
-    out = root_to_json(root)
-    if root.root is not None:
+    if root is None:
+        out = {"posted": False, "distributor_id": distributor.hex(), "end": args.end}
+    else:
+        out = root_to_json(root)
         out["manifest_hash"] = manifest_hash(root).hex()
+        if args.link_log:
+            with open(args.link_log, "w", encoding="utf-8") as f:
+                json.dump(log_to_json(source.links()[: root.link_count]), f, indent=2)
     json.dump(out, sys.stdout, indent=2)
     sys.stdout.write("\n")
 

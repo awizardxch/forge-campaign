@@ -1,8 +1,9 @@
 """Random scenarios through the reference model and the puzzles side by side.
 
-Each step picks an operation (post a root, claim for some holder, reclaim,
-the dev fee is checked at creation) and applies it to both `flpcr.distributor.Distributor` and the
-simulator. Both must pay the same amount or both must refuse.
+Each step picks an operation (post a root, claim for some holder, reclaim as
+the creator or as the admin; the dev fee is checked at creation) and applies it
+to both `flpcr.distributor.Distributor` and the simulator, which share one
+Config. Both must pay the same amount or both must refuse.
 """
 
 import random
@@ -15,7 +16,8 @@ try:
 except (ImportError, FileNotFoundError):  # pragma: no cover
     HAVE_CHAIN = False
 
-from flpcr import Config, Distributor, EngineState, FixtureSource, HolderEvent, Kind, Refused, run_epoch
+from flpcr import Distributor, EngineState, FixtureSource, HolderEvent, Kind, Refused, run_epoch
+from flpcr.distributor import HEIGHT_WINDOW
 
 POOL, LP, CAT = b"\xb0" * 32, b"\x1b" * 32, b"\x5c" * 32
 HOLDERS = ["h1", "h2", "h3", "h4", "h5"]
@@ -28,23 +30,18 @@ class TestModelAndChainAgree(unittest.TestCase):
         # Odd seeds pay rewards in a CAT, even seeds in XCH.
         w = SimWorld(reward_asset=b"\xa5" * 32 if seed % 2 else bytes(32))
         k = w.keys
-        model = Distributor(
-            Config(w.launcher_id, w.cfg.reward_asset, w.cfg.dev_fee_ph, w.cfg.guardian_ph, w.cfg.router_ph,
-                   fee_bps=w.cfg.fee_bps, dispute_blocks=w.cfg.dispute_blocks,
-                   min_campaign_length=w.cfg.min_campaign_length,
-                   max_campaign_length=w.cfg.max_campaign_length),
-            w.cfg.engine_ph,
-        )
+        model = Distributor(w.cfg, w.engine_ph)  # the one Config, as the puzzles are curried with it
         w.advance_to(w.h + 2)
-        start = w.h + 2
+        start = w.h + HEIGHT_WINDOW + 2
+        floor = w.cfg.min_claim_window
         campaigns = [
             w.campaign("c1", rng.randint(10**5, 10**7), start, start + rng.randint(30, 60), Kind.LP_HOLD, POOL,
-                       claim_window=rng.randint(16, 40)),
+                       claim_window=rng.randint(floor, floor + 24)),
             w.campaign("c2", rng.randint(10**5, 10**7), start + 5, start + rng.randint(40, 70), Kind.CAT_HOLD, CAT,
-                       claim_window=rng.randint(16, 40)),
+                       claim_window=rng.randint(floor, floor + 24)),
         ]
         for c, creator in zip(campaigns, ("c1", "c2")):
-            model.create(w.h, w.cfg.router_ph, c, c.amount)
+            model.create(w.h, w.cfg.router_ph, c, c.amount, c.creator)
             w.create(c, creator)
         self.assertEqual(w.balance("dev"), model.dev_fee_paid)  # paid at creation, nothing to collect
 
@@ -61,7 +58,7 @@ class TestModelAndChainAgree(unittest.TestCase):
 
         engine = EngineState(w.launcher_id, height=start)
         roots = []
-        self.stats = {"paid": 0, "refused": 0, "reclaimed": 0}
+        self.stats = {"paid": 0, "refused": 0, "reclaimed": 0, "admin": 0}
         last_post = 0
         end_of_all = max(c.end + c.claim_window for c in campaigns) + 20
         while w.h < end_of_all:
@@ -69,11 +66,11 @@ class TestModelAndChainAgree(unittest.TestCase):
             h = w.h
             live = [c for c in campaigns if c.id in model.campaigns]
             op = rng.random()
-            if op < 0.35 and live and h > engine.height and h - last_post > w.cfg.dispute_blocks:
+            if op < 0.35 and live and h > engine.height and h - last_post >= HEIGHT_WINDOW + w.cfg.dispute_blocks:
                 new_engine, root = run_epoch(engine, live, src, h)
-                if root.root is None:
+                if root is None or root.root is None:  # nothing accrued in this window
                     continue
-                model.post_root(h, w.cfg.engine_ph, root.root_id, root.start, root.end, root.root, root.totals)
+                model.post_root(h, w.engine_ph, root.root_id, root.start, root.end, root.root, root.totals)
                 w.post(root)
                 engine, last_post = new_engine, h
                 roots.append(root)
@@ -96,24 +93,29 @@ class TestModelAndChainAgree(unittest.TestCase):
                 self.stats["paid" if got else "refused"] += 1
             else:
                 c = rng.choice(campaigns)
+                admin = rng.random() < 0.3
                 try:
-                    expected = model.reclaim(h, c.id, c.creator)[1]
+                    if admin:
+                        expected = model.reclaim(h, c.id, w.cfg.admin_ph, as_admin=True)[1]
+                    else:
+                        expected = model.reclaim(h, c.id, c.creator)[1]
                 except Refused:
                     expected = None
                 try:
-                    got = w.reclaim(c.id) if c.id in w.d.read_state()["campaigns"] else None
+                    got = w.reclaim(c.id, admin=admin) if w.state().campaign(c.id) else None
                 except ValueError:  # a refusal; any other error is a bug
                     got = None
-                self.assertEqual(got, expected, f"seed {seed} reclaim at {h}")
+                self.assertEqual(got, expected, f"seed {seed} reclaim (admin={admin}) at {h}")
                 self.stats["reclaimed"] += got is not None
-            st = w.d.read_state()
-            self.assertEqual(st["reserve"], model.reserve)
+                self.stats["admin"] += admin and got is not None
+            st = w.state()
+            self.assertEqual(st.reserve, model.reserve)
             self.assertEqual(w.reserve_on_chain(), model.reserve)
             model.check_invariant()
         return len(roots)
 
     def test_random_scenarios(self):
-        totals = {"roots": 0, "paid": 0, "refused": 0, "reclaimed": 0}
+        totals = {"roots": 0, "paid": 0, "refused": 0, "reclaimed": 0, "admin": 0}
         for seed in range(12):
             totals["roots"] += self.run_scenario(seed)
             for key, n in self.stats.items():

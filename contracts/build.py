@@ -14,6 +14,7 @@ diff in pins.json rather than a silent new hash.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import pathlib
 import subprocess
@@ -24,33 +25,48 @@ PUZZLES = HERE / "puzzles"
 COMPILED = HERE / "compiled"
 PINS = HERE / "pins.json"
 
-UPSTREAM = {
-    "action": "upstream/singleton/action.rue",
-    "finalizer": "upstream/singleton/finalizer.rue",
-    "reserve_finalizer": "upstream/singleton/reserve_finalizer.rue",
-    "slot": "upstream/singleton/slot.rue",
-    "p2_delegated_by_singleton": "upstream/singleton/p2_delegated_by_singleton.rue",
-}
-LEAVES = ["init", "create", "post_root", "veto", "claim", "reclaim", "rotate", "delegate"]
+# The leaf list lives in flpcr/leaves.py, loaded by path so the build needs
+# nothing else from the package.
+_spec = importlib.util.spec_from_file_location("flpcr_leaves", HERE.parent / "flpcr" / "leaves.py")
+_leaves = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_leaves)
+UPSTREAM, LEAVES, EXTRA, sources = _leaves.UPSTREAM, _leaves.LEAVES, _leaves.EXTRA, _leaves.sources
 
 
-def sources() -> dict:
-    out = dict(UPSTREAM)
-    out.update({name: f"flpcr/{name}.rue" for name in LEAVES})
-    return out
+class CompileError(Exception):
+    pass
 
 
-def compile_hex(rel: str) -> str:
+def compile_hex(rel: str, project: pathlib.Path = HERE) -> str:
+    """Compile one puzzle of the rue project at `project`. Raises CompileError
+    on a nonzero exit, no output, or any "Error" rue prints."""
     result = subprocess.run(
-        ["rue", "build", "--hex", str(PUZZLES / rel)],
-        cwd=HERE,
+        ["rue", "build", "--hex", str(project / "puzzles" / rel)],
+        cwd=project,
         capture_output=True,
         text=True,
     )
     lines = [l for l in result.stdout.strip().splitlines() if l.strip()]
-    if result.returncode != 0 or not lines:
-        raise SystemExit(f"rue failed on {rel}:\n{result.stdout}\n{result.stderr}")
+    if result.returncode != 0 or not lines or "Error" in result.stdout + result.stderr:
+        raise CompileError(f"rue failed on {rel}:\n{result.stdout}\n{result.stderr}")
     return lines[-1].strip()
+
+
+def compile_into(project: pathlib.Path, out: pathlib.Path) -> None:
+    """Compile every puzzle of `project` into `out`/<name>.hex (scripts/mutate.py)."""
+    out.mkdir(exist_ok=True)
+    for name, rel in sources().items():
+        (out / f"{name}.hex").write_text(compile_hex(rel, project) + "\n")
+
+
+def upstream_source_hashes() -> dict:
+    """sha256 of every vendored upstream source, line endings normalized so a
+    Windows checkout (CRLF) hashes the same as git's LF."""
+    files = sorted((PUZZLES / "upstream").rglob("*.rue"))
+    return {
+        p.relative_to(PUZZLES).as_posix(): hashlib.sha256(p.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+        for p in files
+    }
 
 
 def tree_hash_of_hex(hex_program: str) -> str:
@@ -66,7 +82,10 @@ def main(argv: list[str]) -> int:
     built = {}
     failures = []
     for name, rel in sources().items():
-        hex_program = compile_hex(rel)
+        try:
+            hex_program = compile_hex(rel)
+        except CompileError as e:
+            raise SystemExit(str(e))
         th = tree_hash_of_hex(hex_program)
         built[name] = (hex_program, th)
         group = "upstream" if name in UPSTREAM else "leaves"
@@ -77,6 +96,11 @@ def main(argv: list[str]) -> int:
             failures.append(f"leaf {name}: built {th}, pinned {want} (run --repin if intended)")
         print(f"{name:28s} {th}")
 
+    # The upstream sources are pinned by content too: an edit that happens to
+    # compile to the same tree hash still fails here.
+    pinned_sources = pins.get("upstream_sources_sha256")
+    if pinned_sources is not None and pinned_sources != upstream_source_hashes():
+        failures.append("upstream sources differ from upstream_sources_sha256 in pins.json")
     if failures:
         print("\n".join(failures), file=sys.stderr)
         return 1
@@ -92,13 +116,9 @@ def main(argv: list[str]) -> int:
     for name, (hex_program, _) in built.items():
         (COMPILED / f"{name}.hex").write_text(hex_program + "\n")
     if repin or not pins["leaves"]:
-        pins["leaves"] = {name: built[name][1] for name in LEAVES}
-    pins["upstream_sources_sha256"] = {
-        rel: hashlib.sha256((PUZZLES / rel).read_bytes()).hexdigest()
-        for rel in sorted(
-            str(p.relative_to(PUZZLES)) for p in (PUZZLES / "upstream").rglob("*.rue")
-        )
-    }
+        pins["leaves"] = {name: built[name][1] for name in LEAVES + EXTRA}
+    if pinned_sources is None:
+        pins["upstream_sources_sha256"] = upstream_source_hashes()
     PINS.write_text(json.dumps(pins, indent=2) + "\n")
     return 0
 

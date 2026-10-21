@@ -1,5 +1,8 @@
 // post_root.rue: the operator posts a claim tree. It becomes the pending
-// root and turns active `dispute_blocks` later unless the guardian vetoes it.
+// root and turns active `dispute_blocks` after it lands, unless the guardian
+// vetoes it. The window is counted from `h + HEIGHT_WINDOW`: `h` may be up to
+// HEIGHT_WINDOW - 1 blocks older than the block that includes the spend, so
+// counting from `h` alone would let an understated `h` cut the window short.
 //
 // The emission ceiling: no campaign's total may exceed what its schedule has
 // released by `end`, and no total may fall. Whatever tree is posted, no key
@@ -95,28 +98,21 @@ fn main(
     (
         Truth {
             ephemeral: pinned.ephemeral,
-            state: State {
-                reserve: state.reserve,
-                engine_ph: state.engine_ph,
-                initialized: state.initialized,
-                campaigns: state.campaigns,
-                active: state.active,
-                pending: Root {
+            state: with_roots(
+                state,
+                state.active,
+                Root {
                     root_id: root_id,
                     start: start,
                     end: end,
                     root: root,
                     totals: totals,
-                    activates_at: h + CONFIG.dispute_blocks,
+                    activates_at: h + HEIGHT_WINDOW + CONFIG.dispute_blocks,
                 },
-            },
+            ),
         },
         [
-            ReceiveMessage {
-                mode: MODE_PUZZLE_TO_COIN,
-                message: "p" + tree_hash([root_id, start, end, root, totals, manifest_hash]),
-                sender: [state.engine_ph],
-            },
+            receive_from(state.engine_ph, "p" + tree_hash([root_id, start, end, root, totals, manifest_hash])),
             ...conditions,
         ],
     )

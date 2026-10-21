@@ -1,0 +1,27 @@
+// bond_launcher.rue: the coin a dispute bond is born from.
+//
+// Not a leaf of the distributor: a plain coin the disputer's spend creates
+// with exactly `amount` mojos. It creates one coin, the bond, at the puzzle
+// hash it is told (the distributor's bond puzzle hash), for its whole
+// amount, hinted with the distributor id, and makes a COIN announcement
+// saying so. `dispute` derives this coin's id from the disputer's coin and
+// asserts that announcement: a coin id commits to its puzzle hash, so the
+// only coin that can make it runs this puzzle, and this puzzle does nothing
+// but create the bond. The Forge registry proves reserves the same way.
+//
+// solution: created_puzzle_hash, amount, distributor_id
+
+import shared::bond_message;
+
+fn main(created_puzzle_hash: Bytes32, amount: Int, distributor_id: Bytes32) -> List<Condition> {
+    assert amount > 0;
+    [
+        AssertMyAmount { amount: amount },
+        CreateCoin {
+            puzzle_hash: created_puzzle_hash,
+            amount: amount,
+            memos: Memos { value: [distributor_id] },
+        },
+        CreateCoinAnnouncement { message: bond_message(created_puzzle_hash, amount, distributor_id) },
+    ]
+}

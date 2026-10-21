@@ -5,12 +5,22 @@
 // so the reserve's input must rise by the whole `amount`. The bundle (for a
 // CAT, the CAT ring) must supply it or it is invalid. The fee goes straight to
 // `dev_fee_ph`; nothing is left in the distributor to collect later.
+//
+// Two parties must agree in the same bundle: the router (a coin at router_ph
+// sends "c" + id) and the creator, by spending a coin of their own at
+// `creator` that sends "k" + id. The creator's spend is what funds the
+// deposit in practice, so whoever builds the bundle cannot name someone
+// else as the creator who will receive the leftovers at reclaim.
 
 import shared::*;
 
+// flpcr/model.py Params.as_clvm: the leaf reads the split and the blacklist
+// (the addresses this campaign never pays); the engine applies the rest.
 struct Params {
     time_bps: Int,
     fees_bps: Int,
+    min_balance: Int,
+    blacklist: List<Bytes32>,
     ...rest: Any,
 }
 
@@ -27,6 +37,7 @@ fn main(
     params: Params,
     nonce: Any,
     claim_window: Int,
+    auth: Int,
 ) -> (Truth, List<Condition>) {
     let (pinned, conditions) = prologue(truth, h);
     let state = pinned.state;
@@ -51,17 +62,27 @@ fn main(
     let budget = amount - fee;
     let length = end - start;
 
+    assert state.initialized == 1;
+    assert creator.length == 32;
     assert amount > 0;
     assert budget > 0;
-    assert start >= h;
+    // Not in the past, even with `h` understated by up to HEIGHT_WINDOW - 1
+    // blocks; and not so far ahead that an idle row can hold a table slot for
+    // longer than any campaign could run.
+    assert start >= h + HEIGHT_WINDOW;
+    assert start <= h + CONFIG.max_campaign_length;
     assert length >= CONFIG.min_campaign_length;
     assert length <= CONFIG.max_campaign_length;
-    assert (kind == 1) | (kind == 2);
+    // LP_HOLD, CAT_HOLD, NFT_HOLD (flpcr/model.py Kind). Only an LP has fees to weight by.
+    assert (kind == 1) | (kind == 2) | (kind == 3);
     assert params.time_bps >= 0;
     assert params.fees_bps >= 0;
     assert params.time_bps + params.fees_bps == BPS;
     assert (kind == 1) | (params.fees_bps == 0);
-    assert claim_window >= 2 * CONFIG.dispute_blocks;
+    assert count_hashes(params.blacklist) <= MAX_EXCLUDED;
+    // Room for the previous root's window, one veto and repost of the final
+    // root, and the HEIGHT_WINDOW slack, before reclaiming opens.
+    assert claim_window >= 3 * CONFIG.dispute_blocks + HEIGHT_WINDOW;
     assert claim_window <= CONFIG.max_campaign_length;
     assert count(state.campaigns) < CONFIG.max_campaigns;
     assert find_campaign(state.campaigns, id) is nil;
@@ -81,17 +102,15 @@ fn main(
                         end: end,
                         claim_window: claim_window,
                         claimed: 0,
+                        excluded: tree_hash(params.blacklist),
                     },
                     ...state.campaigns,
                 ],
             ),
         },
         [
-            ReceiveMessage {
-                mode: MODE_PUZZLE_TO_COIN,
-                message: "c" + id,
-                sender: [CONFIG.router_ph],
-            },
+            receive_from(CONFIG.router_ph, "c" + id),
+            authorize_by_spend(creator, auth, id),
             ...if fee > 0 {
                 [reserve_payment(CONFIG.dev_fee_ph, fee), ...conditions]
             } else {

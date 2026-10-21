@@ -8,18 +8,21 @@ The live adapter (not in this slice) reads a full node or coinset.org:
     picks the lane by protocol (17 = V16, the shipping revision; 16 = V15 and
     15 = V14, whose pools stay live), the same replay the browser uses. One
     event per `swap` action, weighted by the fee it paid valued in XCH at the
-    pool's own pre-spend spot price.
+    pool's own pre-spend spot price, as an exact rational (SPEC section 6.3).
   * exclusions and forwarders: derived from the Forge registry, not configured
     by hand.
+  * links: the operator's append-only address link log (SPEC section 6.8).
 
 `FixtureSource` is the in-memory implementation the tests and the CLI use.
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
+from fractions import Fraction
 from typing import Dict, List, Protocol, Set, Tuple
+
+from .links import Link, link_from_json
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,24 @@ class HolderEvent:
     delta: int  # mojos of the tracked asset; negative on spend
 
 
+def fee_weight(value) -> Fraction:
+    """A fee weight as an exact rational. An int or a Fraction is accepted;
+    anything else, a float above all, is refused: a float's rounding differs
+    between implementations, so two replays of one chain would disagree."""
+    if isinstance(value, bool) or not isinstance(value, (int, Fraction)):
+        raise TypeError(f"fee weight must be an int or a Fraction, not {type(value).__name__}")
+    return Fraction(value)
+
+
+def fee_weight_from_json(value) -> Fraction:
+    """A JSON fee weight: an integer, or [numerator, denominator] for a rational."""
+    if isinstance(value, list):
+        if len(value) != 2 or not all(isinstance(x, int) and not isinstance(x, bool) for x in value):
+            raise TypeError("a rational fee weight is [numerator, denominator], both integers")
+        return Fraction(value[0], value[1])
+    return fee_weight(value)
+
+
 class Source(Protocol):
     def lp_asset(self, pool_launcher: bytes) -> bytes:
         """The LP CAT asset id of a Forge pool."""
@@ -36,18 +57,19 @@ class Source(Protocol):
     def holder_events(self, asset_id: bytes, before: int) -> List[HolderEvent]:
         """Every balance change of `asset_id` at heights < `before`, in height order."""
 
-    def fee_events(self, pool_launcher: bytes, start: int, end: int) -> List[Tuple[int, int]]:
-        """(height, weight) for each fee-paying action of the pool in [start, end)."""
+    def fee_events(self, pool_launcher: bytes, start: int, end: int) -> List[Tuple[int, Fraction]]:
+        """(height, weight) for each fee-paying action of the pool in [start, end).
+        Weights are exact (`fee_weight`); the engine refuses a float."""
 
     def nft_events(self, collection_id: bytes, before: int) -> List[HolderEvent]:
         """Every change in how many NFTs of a collection each owner holds, at
         heights < `before`: +1 when an NFT of the collection arrives at an owner
         puzzle hash (the NFT ownership layer's inner puzzle, as hinted), -1 when
-        it leaves. Collection = NFTs minted by the DID with this launcher id."""
+        it leaves or ends. Collection = NFTs minted by the DID with this launcher id."""
 
-    def links(self) -> list:
-        """Published address links (flpcr.links.Link). Optional: a source
-        without this method has none."""
+    def links(self) -> List[Link]:
+        """The operator's address link log, in log order (append-only,
+        heights non-decreasing). Empty when nobody has linked."""
 
     def excluded(self, asset_id: bytes) -> Set[bytes]:
         """Puzzle hashes that hold `asset_id` but are never anyone's position:
@@ -63,13 +85,13 @@ class Source(Protocol):
 class FixtureSource:
     lp_assets: Dict[bytes, bytes] = field(default_factory=dict)
     events: Dict[bytes, List[HolderEvent]] = field(default_factory=dict)
-    fees: Dict[bytes, List[Tuple[int, int]]] = field(default_factory=dict)
+    fees: Dict[bytes, List[Tuple[int, Fraction]]] = field(default_factory=dict)
     exclusions: Dict[bytes, Set[bytes]] = field(default_factory=dict)
     wrappers: Dict[bytes, Dict[bytes, bytes]] = field(default_factory=dict)
     nfts: Dict[bytes, List[HolderEvent]] = field(default_factory=dict)
-    address_links: list = field(default_factory=list)
+    address_links: List[Link] = field(default_factory=list)
 
-    def links(self) -> list:
+    def links(self) -> List[Link]:
         return list(self.address_links)
 
     def lp_asset(self, pool_launcher: bytes) -> bytes:
@@ -81,8 +103,8 @@ class FixtureSource:
             key=lambda e: e.height,
         )
 
-    def fee_events(self, pool_launcher: bytes, start: int, end: int) -> List[Tuple[int, int]]:
-        return sorted((h, w) for h, w in self.fees.get(pool_launcher, []) if start <= h < end)
+    def fee_events(self, pool_launcher: bytes, start: int, end: int) -> List[Tuple[int, Fraction]]:
+        return sorted((h, fee_weight(w)) for h, w in self.fees.get(pool_launcher, []) if start <= h < end)
 
     def nft_events(self, collection_id: bytes, before: int) -> List[HolderEvent]:
         return sorted(
@@ -105,7 +127,10 @@ class FixtureSource:
                 h(asset): [HolderEvent(e[0], h(e[1]), e[2]) for e in evs]
                 for asset, evs in data.get("events", {}).items()
             },
-            fees={h(k): [tuple(x) for x in v] for k, v in data.get("fees", {}).items()},
+            fees={
+                h(k): [(height, fee_weight_from_json(w)) for height, w in v]
+                for k, v in data.get("fees", {}).items()
+            },
             exclusions={h(k): {h(x) for x in v} for k, v in data.get("exclusions", {}).items()},
             wrappers={
                 h(k): {h(a): h(b) for a, b in v.items()} for k, v in data.get("wrappers", {}).items()
@@ -114,9 +139,5 @@ class FixtureSource:
                 h(coll): [HolderEvent(e[0], h(e[1]), e[2]) for e in evs]
                 for coll, evs in data.get("nfts", {}).items()
             },
+            address_links=[link_from_json(x) for x in data.get("links", [])],
         )
-
-    @classmethod
-    def load(cls, path: str) -> "FixtureSource":
-        with open(path, encoding="utf-8") as f:
-            return cls.from_json(json.load(f))
