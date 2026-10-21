@@ -195,5 +195,86 @@ class TestNftEnds(unittest.TestCase):
                          [alice.puzzle_hash, bob.puzzle_hash])
 
 
+
+def chip7(collection_uuid, name="Wizards", nonce=0):
+    """A CHIP-0007 metadata file in MintGarden Studio's shape."""
+    import json
+    doc = {"format": "CHIP-0007", "name": f"Wizard #{nonce}", "description": "", "attributes": [],
+           "collection": {"id": collection_uuid, "name": name, "attributes": []}}
+    return json.dumps(doc, indent=2).encode()
+
+
+@unittest.skipUnless(HAVE_CHAIN, "chia-wallet-sdk missing")
+class TestCollectionByMetadata(unittest.TestCase):
+    """A DID can mint several collections. A campaign that names a `col1` id
+    counts an NFT only if the DID minted it AND its metadata file, checked
+    against the hash on chain, names that collection id."""
+
+    WIZARDS = "0b7d8f2e-6c4a-4c1d-9f53-1a2b3c4d5e6f"
+    FAMILIARS = "7f1e2d3c-4b5a-4968-8776-655443322110"
+
+    def setUp(self):
+        import hashlib
+        from flpcr.chain.nfts import collection_id
+        self.clvm, self.sim = Clvm(), Simulator()
+        k = self.kit = NftKit(self.sim, self.clvm)
+        self.minter, self.alice, self.bob, self.carol, self.dave, self.eve = (k.wallet() for _ in range(6))
+        self.files = {}
+
+        def host(uri, body):
+            self.files[uri] = body
+            return [uri], hashlib.sha256(body).digest()
+
+        did = k.create_did(self.minter)
+        self.did_id = did.info.launcher_id
+        self.col = collection_id(self.did_id, self.WIZARDS)
+        uris, h = host("https://meta.invalid/w1.json", chip7(self.WIZARDS, nonce=1))
+        _, did = k.mint(self.minter, did, 2, to_ph=self.alice.puzzle_hash, metadata_uris=uris, metadata_hash=h)
+        uris, h = host("ipfs://bafyfamiliar/metadata.json", chip7(self.FAMILIARS, "Familiars"))
+        _, did = k.mint(self.minter, did, 1, to_ph=self.bob.puzzle_hash, metadata_uris=uris, metadata_hash=h)
+        # The hash on chain is for one file; the URL serves another that names Wizards.
+        uris, h = host("https://meta.invalid/tampered.json", chip7(self.FAMILIARS, "Familiars", nonce=9))
+        self.files["https://meta.invalid/tampered.json"] = chip7(self.WIZARDS, nonce=9)
+        _, did = k.mint(self.minter, did, 1, to_ph=self.carol.puzzle_hash, metadata_uris=uris, metadata_hash=h)
+        # No metadata at all.
+        _, did = k.mint(self.minter, did, 1, to_ph=self.dave.puzzle_hash)
+        # Another DID copies the Wizards collection id into its own metadata.
+        other = k.wallet(1000)
+        copycat = k.create_did(other)
+        uris, h = host("https://meta.invalid/copy.json", chip7(self.WIZARDS, nonce=7))
+        k.mint(other, copycat, 1, to_ph=self.eve.puzzle_hash, metadata_uris=uris, metadata_hash=h)
+
+    def held(self, target, collections):
+        src = ChainNftSource(self.sim, self.clvm, collections=collections, fetch=self.files.get)
+        out = {}
+        for e in src.nft_events(target, self.sim.height() + 1):
+            out[e.puzzle_hash] = out.get(e.puzzle_hash, 0) + e.delta
+        return {k: v for k, v in out.items() if v}
+
+    def test_only_the_named_collection_counts(self):
+        self.assertEqual(self.held(self.col, {self.col: (self.did_id, self.WIZARDS)}), {self.alice.puzzle_hash: 2})
+
+    def test_the_did_alone_still_means_every_nft_it_minted(self):
+        held = self.held(self.did_id, {})
+        self.assertEqual(held, {self.alice.puzzle_hash: 2, self.bob.puzzle_hash: 1, self.carol.puzzle_hash: 1,
+                                self.dave.puzzle_hash: 1})
+
+    def test_ipfs_uris_resolve_through_the_fetcher(self):
+        from flpcr.chain.nfts import collection_id
+        familiars = collection_id(self.did_id, self.FAMILIARS)
+        self.assertEqual(self.held(familiars, {familiars: (self.did_id, self.FAMILIARS)}), {self.bob.puzzle_hash: 1})
+
+    def test_a_wrong_collection_mapping_is_refused(self):
+        with self.assertRaises(ValueError):
+            ChainNftSource(self.sim, self.clvm, collections={self.col: (self.did_id, self.FAMILIARS)})
+
+    def test_the_col1_id_matches_spacescan(self):
+        """Forge LP on testnet11: DID did:chia:1eyqr5…xxchd0 + fbda3c3f… is col1uraa0n4…"""
+        from flpcr.chain.nfts import collection_id
+        did = bytes.fromhex("c9003a378e9e9020162b1773a2e1f138acd3e099aa88ebced42d71724ad336b1")
+        got = collection_id(did, "fbda3c3f-7657-46e5-a67e-41ccefa35855")
+        self.assertEqual(got.hex(), "e0fbd7cebc11c0c2bddb101c3bb726c7b1af0819504101a54f05e33845c13d17")
+
+
 if __name__ == "__main__":
     unittest.main()

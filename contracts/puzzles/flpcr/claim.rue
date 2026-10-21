@@ -1,16 +1,18 @@
 // claim.rue: pays a holder `cumulative - claimed` for one campaign, against
 // the active root. Only the holder, or a delegate the holder granted, can
-// claim. The spend must carry an authorization of the claim leaf:
-//   AUTH_SIGNATURE: auth_data is the holder's synthetic public key; it must be
-//     the key of the holder's standard address, and it signs the claim leaf
-//     with AGG_SIG_ME (bound to this singleton coin, so it cannot be replayed);
-//   AUTH_MESSAGE: a coin at the holder's puzzle hash sends "k" + leaf to this
-//     coin (for holders whose address is a vault, a multisig or any other
-//     puzzle);
-//   AUTH_DELEGATE: auth_data is (delegate . (mode . data)). The holder's
-//     delegation slot for that delegate is spent and recreated (proving the
-//     grant exists), and the delegate authorizes the leaf by signature or
-//     message. One hop only: a delegate cannot delegate.
+// claim, and no authorization names a generation (shared.rue authorize_claim),
+// so claims from many wallets share whichever spend a sequencer builds:
+//   AUTH_SIGNATURE: the holder's synthetic key signs the leaf (AGG_SIG_UNSAFE);
+//     a wallet signs for all its addresses at once, none of which needs a coin;
+//   AUTH_MESSAGE: a coin at the holder's puzzle hash sends "k" + leaf, mode 16
+//     (a vault, a multisig or any other puzzle); or
+//   AUTH_DELEGATE: auth_data is (delegate, uses, left, right, auth, data).
+//     The holder's active delegation slot for that delegate is spent and
+//     recreated with uses + 1 (proving the grant exists), and the delegate
+//     authorizes the leaf by either of the above. One hop only.
+// The burn address never claims, nor does any address the creator excluded:
+// `excluded` is the campaign's list, checked against the hash the campaign
+// stored at creation.
 // The payment always goes to the leaf's puzzle hash. There is no deadline: a
 // claim works until the campaign has been reclaimed.
 //
@@ -48,16 +50,31 @@ fn main(
     slot_info: Any,
     auth: Int,
     auth_data: Any,
+    excluded: List<Bytes32>,
 ) -> (Truth, List<Condition>) {
     let (pinned, conditions) = prologue(truth, h);
     let state = pinned.state;
+    assert puzzle_hash.length == 32;
     assert !(state.active is nil);
     let campaign = get_campaign(state.campaigns, campaign_id);
+    assert puzzle_hash != BURN_PUZZLE_HASH;
+    assert tree_hash(excluded) == campaign.excluded;
+    assert !is_member(excluded, puzzle_hash);
 
     let leaf = tree_hash(["flpcr-claim-v1", CONFIG.distributor_id, campaign_id, puzzle_hash, cumulative]);
     assert simplify_merkle_proof(leaf, proof) == state.active.root;
 
-    let authorization = authorize_or_delegate(CONFIG, puzzle_hash, auth, auth_data, leaf);
+    let authorization = if auth == AUTH_DELEGATE {
+        let d = unchecked_cast::<Delegated>(auth_data);
+        let dkey = delegation_key(puzzle_hash, d.delegate);
+        [
+            spend_delegation_slot(CONFIG, DelegationSlot { key: dkey, active: 1, uses: d.uses, left: d.left, right: d.right }),
+            create_delegation_slot(CONFIG, DelegationSlot { key: dkey, active: 1, uses: d.uses + 1, left: d.left, right: d.right }),
+            authorize_claim(d.delegate, d.auth, d.data, leaf),
+        ]
+    } else {
+        [authorize_claim(puzzle_hash, auth, auth_data, leaf)]
+    };
 
     let key = tree_hash((campaign_id, puzzle_hash));
 
@@ -98,6 +115,7 @@ fn main(
         end: campaign.end,
         claim_window: campaign.claim_window,
         claimed: campaign.claimed + amount,
+        excluded: campaign.excluded,
     };
 
     (

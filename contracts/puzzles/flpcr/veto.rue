@@ -15,25 +15,16 @@ fn main(
     // After the prologue's promotion, a root past its window is no longer pending.
     assert !(state.pending is nil);
     assert state.pending.root_id == root_id;
+    // A disputed root is settled by `resolve`, which refunds or forfeits the bond.
+    assert state.dispute is nil;
 
     (
         Truth {
             ephemeral: pinned.ephemeral,
-            state: State {
-                reserve: state.reserve,
-                engine_ph: state.engine_ph,
-                initialized: state.initialized,
-                campaigns: state.campaigns,
-                active: state.active,
-                pending: nil,
-            },
+            state: with_roots(state, state.active, nil),
         },
         [
-            ReceiveMessage {
-                mode: MODE_PUZZLE_TO_COIN,
-                message: "v" + tree_hash(root_id),
-                sender: [CONFIG.guardian_ph],
-            },
+            receive_from(CONFIG.guardian_ph, "v" + tree_hash(root_id)),
             ...conditions,
         ],
     )

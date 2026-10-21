@@ -103,11 +103,14 @@ class Holdings:
     blacklisted wrapper is not forwarded: its balance stays with the wrapper,
     which the blacklist then keeps from earning."""
 
-    def __init__(self, source: Source, asset_id: bytes, before: int, forward: bool, blacklist=frozenset()):
+    def __init__(self, source: Source, asset_id: bytes, before: int, forward: bool, blacklist=frozenset(),
+                 nft: bool = False):
+        """`nft`: `asset_id` is a collection (its minting DID), and the
+        positions are NFT counts from `Source.nft_events`; NFTs have no wrappers."""
         self.excluded = source.excluded(asset_id)
-        self.main = Timeline(source.holder_events(asset_id, before))
+        self.main = Timeline(source.nft_events(asset_id, before) if nft else source.holder_events(asset_id, before))
         self.wrappers: Dict[bytes, Tuple[Timeline, set]] = {}
-        if forward:
+        if forward and not nft:
             for wrapper_ph, share_asset in source.forwarders(asset_id).items():
                 if wrapper_ph in blacklist:
                     continue
@@ -293,7 +296,7 @@ def accrue(campaign: Campaign, source: Source, start: int, end: int) -> Balances
     lo, hi = window
     p = campaign.params
     asset = source.lp_asset(campaign.target) if campaign.kind == Kind.LP_HOLD else campaign.target
-    holdings = Holdings(source, asset, hi, p.forward, p.blacklist)
+    holdings = Holdings(source, asset, hi, p.forward, p.blacklist, nft=campaign.kind == Kind.NFT_HOLD)
     weights = Weights(campaign, holdings, Requirements(campaign, source, hi))
 
     credit: Balances = defaultdict(Fraction)

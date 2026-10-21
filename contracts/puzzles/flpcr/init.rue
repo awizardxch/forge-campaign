@@ -1,6 +1,8 @@
-// init.rue: one-shot. Creates the two sentinel claim slots every insert
-// sits between. A second set of sentinels would let one key be inserted
-// twice, so `initialized` makes this run exactly once.
+// init.rue: one-shot. Checks the curried Config once and creates the sentinel
+// slots of both sorted lists (claims, nonce 1; delegations, nonce 2). A second
+// set of sentinels would let one key be inserted twice, so `initialized`
+// makes this run exactly once. Every other leaf that changes the lists or
+// takes money runs only after it.
 
 import shared::*;
 
@@ -12,9 +14,15 @@ fn main(
     let (pinned, conditions) = prologue(truth, h);
     let state = pinned.state;
     assert state.initialized == 0;
-
-    let low = 0x0000000000000000000000000000000000000000000000000000000000000000;
-    let high = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
+    // A rotation must stay public for longer than a dispute window.
+    assert CONFIG.rotate_delay > CONFIG.dispute_blocks;
+    assert CONFIG.delegate_fee >= 0;
+    // A free dispute would be a free freeze of every root.
+    assert CONFIG.dispute_bond > 0;
+    assert CONFIG.bond_puzzle_hash.length == 32;
+    assert CONFIG.bond_launcher_hash.length == 32;
+    assert CONFIG.admin_ph.length == 32;
+    assert CONFIG.dev_fee_ph.length == 32;
 
     (
         Truth {
@@ -26,11 +34,15 @@ fn main(
                 campaigns: state.campaigns,
                 active: state.active,
                 pending: state.pending,
+                rotation: state.rotation,
+                dispute: state.dispute,
             },
         },
         [
-            create_claim_slot(CONFIG, ClaimSlot { key: low, claimed: 0, left: low, right: high }),
-            create_claim_slot(CONFIG, ClaimSlot { key: high, claimed: 0, left: low, right: high }),
+            create_claim_slot(CONFIG, ClaimSlot { key: LOW_KEY, claimed: 0, left: LOW_KEY, right: HIGH_KEY }),
+            create_claim_slot(CONFIG, ClaimSlot { key: HIGH_KEY, claimed: 0, left: LOW_KEY, right: HIGH_KEY }),
+            create_delegation_slot(CONFIG, DelegationSlot { key: LOW_KEY, active: 0, uses: 0, left: LOW_KEY, right: HIGH_KEY }),
+            create_delegation_slot(CONFIG, DelegationSlot { key: HIGH_KEY, active: 0, uses: 0, left: LOW_KEY, right: HIGH_KEY }),
             ...conditions,
         ],
     )

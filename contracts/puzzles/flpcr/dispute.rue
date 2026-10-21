@@ -1,0 +1,59 @@
+// dispute.rue: anyone contests the pending root by locking a bond.
+//
+// What Merkl does with a dispute token, on Chia coins. The disputer's bundle
+// spends a coin that creates a bond launcher (bond_launcher.rue) holding
+// exactly `dispute_bond` mojos; the launcher creates the bond coin at
+// `bond_puzzle_hash` (p2_delegated_by_singleton, nonce 3) and announces that
+// it did. This leaf is given the launcher's GRANDPARENT (the disputer's coin),
+// derives the launcher's id
+//
+//     P = coinid(grandparent, bond_launcher_hash, dispute_bond)
+//
+// and asserts its announcement, so a bond that was never funded cannot open a
+// dispute. The pending root then cannot activate until `resolve` lands:
+// upheld, the root is revoked and the bond refunded to `disputer_ph`;
+// rejected, the bond is forfeited to the dev multisig and the window restarts.
+//
+// Nobody authorizes a dispute: the bond is the authorization. `disputer_ph`
+// is only where a refund goes, and it is the disputer's own choice.
+
+import shared::*;
+
+fn main(
+    CONFIG: Config,
+    truth: Truth,
+    h: Int,
+    root_id: Int,
+    disputer_ph: Bytes32,
+    bond_grandparent: Bytes32,
+) -> (Truth, List<Condition>) {
+    let (pinned, conditions) = prologue(truth, h);
+    let state = pinned.state;
+
+    // After the prologue's promotion, a root past its window is no longer
+    // pending and can no longer be disputed; one open dispute at a time.
+    assert !(state.pending is nil);
+    assert state.pending.root_id == root_id;
+    assert state.dispute is nil;
+    assert disputer_ph.length == 32;
+    assert bond_grandparent != LOW_KEY;
+
+    let bond_parent = coinid(bond_grandparent, CONFIG.bond_launcher_hash, CONFIG.dispute_bond);
+
+    (
+        Truth {
+            ephemeral: pinned.ephemeral,
+            state: with_dispute(
+                state,
+                state.pending,
+                Dispute { root_id: root_id, disputer_ph: disputer_ph, bond_parent: bond_parent },
+            ),
+        },
+        [
+            AssertCoinAnnouncement {
+                id: sha256(bond_parent + bond_message(CONFIG.bond_puzzle_hash, CONFIG.dispute_bond, CONFIG.distributor_id)),
+            },
+            ...conditions,
+        ],
+    )
+}

@@ -1,0 +1,61 @@
+// resolve.rue: the guardian or the admin settles an open dispute.
+//
+//   upheld == 1: the disputer was right. The pending root is revoked (the
+//     operator posts a corrected one under the same id) and the bond goes
+//     back to the disputer.
+//   upheld == 0: the dispute was wrong. The bond is forfeited to the dev
+//     multisig and the root's dispute window restarts from this spend, so a
+//     bad dispute buys no time.
+//
+// Either way the bond coin is released by a mode-23 message from this
+// singleton to the coin derived from the recorded parent, carrying the tree
+// hash of the one delegated puzzle that pays it out; the bundle must spend
+// the bond coin with that puzzle. The message names the coin by id, so it
+// cannot be replayed against another bond.
+
+import shared::*;
+
+fn main(
+    CONFIG: Config,
+    truth: Truth,
+    h: Int,
+    upheld: Int,
+    sender: Bytes32,
+) -> (Truth, List<Condition>) {
+    let (pinned, conditions) = prologue(truth, h);
+    let state = pinned.state;
+
+    assert !(state.dispute is nil);
+    assert !(state.pending is nil);
+    assert (upheld == 0) | (upheld == 1);
+    // The guardian or the admin, by a message from a coin at its address.
+    assert (sender == CONFIG.guardian_ph) | (sender == CONFIG.admin_ph);
+
+    let bond_coin = coinid(state.dispute.bond_parent, CONFIG.bond_puzzle_hash, CONFIG.dispute_bond);
+    let recipient = if upheld == 1 { state.dispute.disputer_ph } else { CONFIG.dev_fee_ph };
+    let pending: Root | nil = if upheld == 1 {
+        nil
+    } else {
+        Root {
+            root_id: state.pending.root_id,
+            start: state.pending.start,
+            end: state.pending.end,
+            root: state.pending.root,
+            totals: state.pending.totals,
+            activates_at: h + HEIGHT_WINDOW + CONFIG.dispute_blocks,
+        }
+    };
+
+    (
+        Truth { ephemeral: pinned.ephemeral, state: with_dispute(state, pending, nil) },
+        [
+            receive_from(sender, "s" + tree_hash([state.dispute.root_id, upheld])),
+            SendMessage {
+                mode: MODE_PUZZLE_TO_COIN,
+                message: bond_release_puzzle(recipient, CONFIG.dispute_bond),
+                receiver: [bond_coin],
+            },
+            ...conditions,
+        ],
+    )
+}

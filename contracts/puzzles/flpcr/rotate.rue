@@ -1,4 +1,19 @@
-// rotate.rue: the guardian replaces the operator key that posts roots.
+// rotate.rue: the guardian proposes a new operator key, or the admin cancels
+// a proposal.
+//
+// A proposal does not take effect at once. It waits in `state.rotation` until
+// `h + HEIGHT_WINDOW + rotate_delay`, a delay longer than the dispute window,
+// and the prologue adopts it on the first spend after that. Until then the
+// current operator keeps posting, the proposal is public on chain for
+// watchers to alert on, holders can claim everything the active root already
+// pays them, and the admin (the dev multisig) can cancel it. So a guardian key
+// alone can no longer rotate itself in and post a root paying itself in one
+// spend; a compromised guardian is slow and visible. A new proposal replaces
+// an older one and restarts the delay.
+//
+//   cancel == 0: a coin at guardian_ph sends "r" + new_engine_ph.
+//   cancel == 1: a coin at admin_ph sends "x" + the pending key; new_engine_ph
+//                must name it.
 
 import shared::*;
 
@@ -7,29 +22,41 @@ fn main(
     truth: Truth,
     h: Int,
     new_engine_ph: Bytes32,
+    cancel: Int,
 ) -> (Truth, List<Condition>) {
     let (pinned, conditions) = prologue(truth, h);
     let state = pinned.state;
 
-    (
-        Truth {
-            ephemeral: pinned.ephemeral,
-            state: State {
-                reserve: state.reserve,
-                engine_ph: new_engine_ph,
-                initialized: state.initialized,
-                campaigns: state.campaigns,
-                active: state.active,
-                pending: state.pending,
+    if cancel == 0 {
+        assert new_engine_ph.length == 32;
+        (
+            Truth {
+                ephemeral: pinned.ephemeral,
+                state: with_engine(
+                    state,
+                    state.engine_ph,
+                    Rotation { engine_ph: new_engine_ph, effective_at: h + HEIGHT_WINDOW + CONFIG.rotate_delay },
+                ),
             },
-        },
-        [
-            ReceiveMessage {
-                mode: MODE_PUZZLE_TO_COIN,
-                message: "r" + new_engine_ph,
-                sender: [CONFIG.guardian_ph],
+            [
+                receive_from(CONFIG.guardian_ph, "r" + new_engine_ph),
+                ...conditions,
+            ],
+        )
+    } else {
+        assert cancel == 1;
+        // After the prologue's adoption, a rotation past its delay is no longer pending.
+        assert !(state.rotation is nil);
+        assert state.rotation.engine_ph == new_engine_ph;
+        (
+            Truth {
+                ephemeral: pinned.ephemeral,
+                state: with_engine(state, state.engine_ph, nil),
             },
-            ...conditions,
-        ],
-    )
+            [
+                receive_from(CONFIG.admin_ph, "x" + new_engine_ph),
+                ...conditions,
+            ],
+        )
+    }
 }

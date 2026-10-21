@@ -14,35 +14,60 @@ import super::upstream::slot::*;
 
 export const BPS: Int = 10000;
 // The leaf commits to a height `h` no later than the block it lands in and
-// no earlier than this many blocks before it.
+// no earlier than this many blocks before it. Every rule that counts blocks
+// from `h` toward something another party relies on (a dispute window, a
+// rotation delay, a campaign start) adds this, so understating `h` can never
+// shorten it.
 export const HEIGHT_WINDOW: Int = 32;
 export const RESERVE_TAG: Int = -42;
 // SEND/RECEIVE_MESSAGE mode: sender identified by puzzle hash, receiver by
 // coin id. The receiver here is always this singleton coin, so a message
 // cannot be replayed against a later generation.
 export const MODE_PUZZLE_TO_COIN: Int = 23;
+// Claims only: sender by puzzle hash, receiver uncommitted (CHIP-0025 mode
+// 0b010_000). A claim's authorization names no generation, so a sequencer can
+// place it in whichever generation it lands in; a message is still received
+// exactly once, and a replayed claim pays nothing (its slot already holds the
+// cumulative it names).
+export const MODE_PUZZLE_TO_ANY: Int = 16;
 // p2_delegated_puzzle_or_hidden_puzzle, the standard wallet puzzle. An address
 // belongs to a synthetic key when it is this mod curried with that key.
 export const STANDARD_MOD_HASH: Bytes32 = 0xe9aaa49f45bad5c889b86ee3341550c155cfdd10c3a6757de618d20612fffd52;
-// How a holder (or their delegate) authorizes an action.
+// How an address (or its delegate) authorizes an action.
 export const AUTH_SIGNATURE: Int = 0;
 export const AUTH_MESSAGE: Int = 1;
-// Claim only: a delegate the holder granted authorizes it (see delegate.rue).
+// A delegate the owner granted authorizes it (see delegate.rue).
 export const AUTH_DELEGATE: Int = 2;
+// Reclaim only: the distributor's admin (the dev multisig) authorizes it.
+export const AUTH_ADMIN: Int = 3;
+// Chia's burn address: Forge pools burn their locked LP floor to it. It holds
+// LP but is no one's position, so no campaign ever pays it.
+export const BURN_PUZZLE_HASH: Bytes32 = 0x000000000000000000000000000000000000000000000000000000000000dead;
+// The most addresses a creator can exclude from one campaign. Every claim
+// reveals the list, so it stays short.
+export const MAX_EXCLUDED: Int = 16;
+export const LOW_KEY: Bytes32 = 0x0000000000000000000000000000000000000000000000000000000000000000;
+export const HIGH_KEY: Bytes32 = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff;
 
 export struct Config {
     distributor_id: Bytes32,
     reward_asset: Bytes32,
     fee_bps: Int,
     dev_fee_ph: Bytes32,  // paid the creation fee in the create spend itself
+    admin_ph: Bytes32,    // the dev multisig: may reclaim for a creator, cancel a rotation, resolve a dispute
     guardian_ph: Bytes32,
     router_ph: Bytes32,
     dispute_blocks: Int,
+    rotate_delay: Int,    // blocks before a rotated operator key takes effect
+    delegate_fee: Int,    // mojos every grant or revoke must leave as network fee
     min_campaign_length: Int,
     max_campaign_length: Int,
     max_campaigns: Int,
     slot_1st_curry_hash: Bytes32,
     delegation_slot_1st_curry_hash: Bytes32,
+    dispute_bond: Int,            // mojos of XCH a disputer locks to contest a pending root
+    bond_puzzle_hash: Bytes32,    // p2_delegated_by_singleton for this distributor, nonce 3: where the bond sits
+    bond_launcher_hash: Bytes32,  // bond_launcher.rue: the only puzzle a bond coin may be born from
 }
 
 export struct Campaign {
@@ -53,6 +78,28 @@ export struct Campaign {
     end: Int,
     claim_window: Int,
     claimed: Int,
+    // tree_hash of the creator's excluded addresses (params' blacklist):
+    // a claim reveals the list and is refused for anyone on it.
+    excluded: Bytes32,
+}
+
+// Whether `x` is in `list`.
+export fn is_member(list: List<Bytes32>, x: Bytes32) -> Bool {
+    if list is nil {
+        false
+    } else {
+        (list.first == x) | is_member(list.rest, x)
+    }
+}
+
+// Every item is 32 bytes; returns how many there are.
+export fn count_hashes(list: List<Bytes32>) -> Int {
+    if list is nil {
+        0
+    } else {
+        assert list.first.length == 32;
+        1 + count_hashes(list.rest)
+    }
 }
 
 export struct Root {
@@ -64,6 +111,23 @@ export struct Root {
     activates_at: Int,
 }
 
+// A rotation the guardian has proposed; it becomes the operator key at
+// `effective_at` unless the admin cancels it first.
+export struct Rotation {
+    engine_ph: Bytes32,
+    effective_at: Int,
+}
+
+// An open dispute of the pending root: who posted the bond (and is refunded
+// if the dispute is upheld), and the bond coin's parent, from which the coin
+// id is derived when the dispute is resolved. While one is open the pending
+// root cannot activate.
+export struct Dispute {
+    root_id: Int,
+    disputer_ph: Bytes32,
+    bond_parent: Bytes32,
+}
+
 export struct State {
     reserve: Int,
     engine_ph: Bytes32,
@@ -71,6 +135,8 @@ export struct State {
     campaigns: List<Campaign>,
     active: Root | nil,
     pending: Root | nil,
+    rotation: Rotation | nil,
+    dispute: Dispute | nil,
 }
 
 export struct Truth {
@@ -80,14 +146,15 @@ export struct Truth {
 
 // --- the height pin --------------------------------------------------------
 
-// The first action of a spend pins `h` and promotes a pending root whose
-// dispute window has passed; later actions in the same spend must name the
-// same `h`. Returns the state to act on and the conditions to emit.
+// The first action of a spend pins `h`, promotes a pending root whose dispute
+// window has passed (and is not disputed) and adopts a rotation whose delay
+// has passed; later actions in the same spend must name the same `h`. Returns
+// the state to act on and the conditions to emit.
 export fn prologue(truth: Truth, h: Int) -> (Truth, List<Condition>) {
     if truth.ephemeral is nil {
         assert h > 0;
         (
-            Truth { ephemeral: [h], state: promote(truth.state, h) },
+            Truth { ephemeral: [h], state: adopt(promote(truth.state, h), h) },
             [
                 AssertHeightAbsolute { height: h },
                 AssertBeforeHeightAbsolute { height: h + HEIGHT_WINDOW },
@@ -103,15 +170,21 @@ fn promote(state: State, h: Int) -> State {
     if state.pending is nil {
         state
     } else {
-        if h >= state.pending.activates_at {
-            State {
-                reserve: state.reserve,
-                engine_ph: state.engine_ph,
-                initialized: state.initialized,
-                campaigns: state.campaigns,
-                active: state.pending,
-                pending: nil,
-            }
+        // A disputed root waits for `resolve`, however long that takes.
+        if (h >= state.pending.activates_at) & (state.dispute is nil) {
+            with_roots(state, state.pending, nil)
+        } else {
+            state
+        }
+    }
+}
+
+fn adopt(state: State, h: Int) -> State {
+    if state.rotation is nil {
+        state
+    } else {
+        if h >= state.rotation.effective_at {
+            with_engine(state, state.rotation.engine_ph, nil)
         } else {
             state
         }
@@ -189,7 +262,7 @@ export fn total_for(totals: List<(Bytes32, Int)>, id: Bytes32) -> Int {
 
 // --- state updates -------------------------------------------------------------
 
-export fn with_campaigns(state: State, reserve: Int, campaigns: List<Campaign>) -> State {
+export inline fn with_campaigns(state: State, reserve: Int, campaigns: List<Campaign>) -> State {
     State {
         reserve: reserve,
         engine_ph: state.engine_ph,
@@ -197,6 +270,47 @@ export fn with_campaigns(state: State, reserve: Int, campaigns: List<Campaign>) 
         campaigns: campaigns,
         active: state.active,
         pending: state.pending,
+        rotation: state.rotation,
+        dispute: state.dispute,
+    }
+}
+
+export inline fn with_roots(state: State, active: Root | nil, pending: Root | nil) -> State {
+    State {
+        reserve: state.reserve,
+        engine_ph: state.engine_ph,
+        initialized: state.initialized,
+        campaigns: state.campaigns,
+        active: active,
+        pending: pending,
+        rotation: state.rotation,
+        dispute: state.dispute,
+    }
+}
+
+export inline fn with_engine(state: State, engine_ph: Bytes32, rotation: Rotation | nil) -> State {
+    State {
+        reserve: state.reserve,
+        engine_ph: engine_ph,
+        initialized: state.initialized,
+        campaigns: state.campaigns,
+        active: state.active,
+        pending: state.pending,
+        rotation: rotation,
+        dispute: state.dispute,
+    }
+}
+
+export inline fn with_dispute(state: State, pending: Root | nil, dispute: Dispute | nil) -> State {
+    State {
+        reserve: state.reserve,
+        engine_ph: state.engine_ph,
+        initialized: state.initialized,
+        campaigns: state.campaigns,
+        active: state.active,
+        pending: pending,
+        rotation: state.rotation,
+        dispute: dispute,
     }
 }
 
@@ -213,7 +327,27 @@ export fn reserve_payment(puzzle_hash: Bytes32, amount: Int) -> Condition {
     ))
 }
 
+// --- the dispute bond ------------------------------------------------------------
+
+// What a bond launcher announces: it created the bond coin at this puzzle hash,
+// for this amount, for this distributor. The ASCII prefix is a namespace.
+export fn bond_message(bond_puzzle_hash: Bytes32, amount: Int, distributor_id: Bytes32) -> Bytes {
+    "flpcr-bond-v1" + tree_hash([bond_puzzle_hash, amount, distributor_id])
+}
+
+// The delegated puzzle the bond coin runs when the singleton releases it:
+// pay the whole bond to one address, hinted. The bond coin receives the
+// tree hash of exactly this puzzle, so nothing else can be run against it.
+export fn bond_release_puzzle(recipient: Bytes32, amount: Int) -> Bytes32 {
+    tree_hash((1, [CreateCoin { puzzle_hash: recipient, amount: amount, memos: Memos { value: [recipient] } }]))
+}
+
 // --- authorization -----------------------------------------------------------------
+
+// A message from a coin at `sender` to this singleton coin.
+export inline fn receive_from(sender: Bytes32, message: Bytes) -> Condition {
+    ReceiveMessage { mode: MODE_PUZZLE_TO_COIN, message: message, sender: [sender] }
+}
 
 // `address` authorizes `message`:
 //   AUTH_SIGNATURE: `data` is a synthetic public key whose standard puzzle hash
@@ -227,48 +361,112 @@ export fn authorize(address: Bytes32, auth: Int, data: Any, message: Bytes32) ->
         AggSigMe { public_key: public_key, message: message }
     } else {
         assert auth == AUTH_MESSAGE;
-        ReceiveMessage { mode: MODE_PUZZLE_TO_COIN, message: "k" + message, sender: [address] }
+        receive_from(address, "k" + message)
     }
 }
 
+// A claim's authorization, bound to no generation:
+//   AUTH_SIGNATURE: `data` is a synthetic public key whose standard puzzle hash
+//     is `address`; it signs `message` with AGG_SIG_UNSAFE. A wallet signs the
+//     claims of all its addresses in one approval, and none of those addresses
+//     needs a coin. `message` is a claim leaf: it names the distributor and the
+//     cumulative, so a replay pays nothing and no other distributor accepts it.
+//   AUTH_MESSAGE: a coin at `address` sends "k" + message, mode 16.
+export fn authorize_claim(address: Bytes32, auth: Int, data: Any, message: Bytes32) -> Condition {
+    if auth == AUTH_SIGNATURE {
+        let public_key = unchecked_cast::<PublicKey>(data);
+        assert curry_tree_hash(STANDARD_MOD_HASH, [tree_hash_atom(unchecked_cast::<Bytes>(public_key))]) == address;
+        AggSigUnsafe { public_key: public_key, message: message }
+    } else {
+        assert auth == AUTH_MESSAGE;
+        ReceiveMessage { mode: MODE_PUZZLE_TO_ANY, message: "k" + message, sender: [address] }
+    }
+}
+
+// The same, but only by spending a coin at `address` (AUTH_MESSAGE). For the
+// actions that must cost their author a coin spend: creating a campaign.
+export fn authorize_by_spend(address: Bytes32, auth: Int, message: Bytes32) -> Condition {
+    assert auth == AUTH_MESSAGE;
+    receive_from(address, "k" + message)
+}
+
 // `owner` authorizes `message` directly (AUTH_SIGNATURE, AUTH_MESSAGE), or a
-// delegate the owner granted does (AUTH_DELEGATE, data = (delegate . (mode .
-// data))): the owner's delegation slot for that delegate is spent and
-// recreated, proving the grant exists, and the delegate authorizes by
-// signature or message. One hop only: `authorize` refuses AUTH_DELEGATE.
+// delegate the owner granted does (AUTH_DELEGATE). With `spend_only`, the
+// owner or the delegate must authorize by message (a coin spend). One hop
+// only: neither `authorize` nor `authorize_by_spend` accepts AUTH_DELEGATE.
+//
+// A delegated use spends the active delegation slot (key, 1, uses, left,
+// right) and recreates it with uses + 1. The two values always differ, so the
+// slot a spend creates can never be the one that proves the grant: a slot
+// this spend creates could otherwise be spent ephemerally in the same bundle
+// and satisfy its own proof.
 export struct Delegated {
     delegate: Bytes32,
+    uses: Int,
+    left: Bytes32,
+    right: Bytes32,
     auth: Int,
     ...data: Any,
 }
 
-export fn authorize_or_delegate(config: Config, owner: Bytes32, auth: Int, data: Any, message: Bytes32) -> List<Condition> {
+export fn authorize_or_delegate(
+    config: Config,
+    owner: Bytes32,
+    auth: Int,
+    data: Any,
+    message: Bytes32,
+    spend_only: Bool,
+) -> List<Condition> {
     if auth == AUTH_DELEGATE {
         let d = unchecked_cast::<Delegated>(data);
+        let key = delegation_key(owner, d.delegate);
         [
-            spend_delegation(config, owner, d.delegate),
-            create_delegation(config, owner, d.delegate),
-            authorize(d.delegate, d.auth, d.data, message),
+            spend_delegation_slot(config, DelegationSlot { key: key, active: 1, uses: d.uses, left: d.left, right: d.right }),
+            create_delegation_slot(config, DelegationSlot { key: key, active: 1, uses: d.uses + 1, left: d.left, right: d.right }),
+            if spend_only {
+                authorize_by_spend(d.delegate, d.auth, message)
+            } else {
+                authorize(d.delegate, d.auth, d.data, message)
+            },
         ]
     } else {
-        [authorize(owner, auth, data, message)]
+        [
+            if spend_only {
+                authorize_by_spend(owner, auth, message)
+            } else {
+                authorize(owner, auth, data, message)
+            },
+        ]
     }
 }
 
 // --- delegation slots ----------------------------------------------------------------
 
-// A slot of its own type (nonce 2) whose existence means: `delegate` may
-// authorize claims for `holder`. Hinted with the holder.
-export inline fn delegation_value_hash(holder: Bytes32, delegate: Bytes32) -> Bytes32 {
-    tree_hash((holder, delegate))
+// A sorted, doubly linked list of slots of their own type (nonce 2), one per
+// (owner, delegate), keyed by tree_hash((owner . delegate)), between the
+// sentinels 0x00.. and 0xff... `active` says whether the delegate may act
+// for the owner now; `uses` rises on every spend of the slot. A key appears
+// once, so granting twice and revoking once revokes. Hinted with the key,
+// like the claim slots: a neighbour recreated during an insert keeps its
+// hint without the leaf knowing whose it is.
+export struct DelegationSlot {
+    key: Bytes32,
+    active: Int,
+    uses: Int,
+    left: Bytes32,
+    ...right: Bytes32,
 }
 
-export fn spend_delegation(config: Config, holder: Bytes32, delegate: Bytes32) -> Condition {
-    spend_slot(config.delegation_slot_1st_curry_hash, delegation_value_hash(holder, delegate))
+export inline fn delegation_key(owner: Bytes32, delegate: Bytes32) -> Bytes32 {
+    tree_hash((owner, delegate))
 }
 
-export fn create_delegation(config: Config, holder: Bytes32, delegate: Bytes32) -> Condition {
-    create_slot_with_hint(config.delegation_slot_1st_curry_hash, delegation_value_hash(holder, delegate), holder)
+export fn spend_delegation_slot(config: Config, slot: DelegationSlot) -> Condition {
+    spend_slot(config.delegation_slot_1st_curry_hash, tree_hash(slot))
+}
+
+export fn create_delegation_slot(config: Config, slot: DelegationSlot) -> Condition {
+    create_slot_with_hint(config.delegation_slot_1st_curry_hash, tree_hash(slot), slot.key)
 }
 
 // --- claim slots -----------------------------------------------------------------

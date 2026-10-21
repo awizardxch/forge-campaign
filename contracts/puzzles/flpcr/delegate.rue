@@ -1,38 +1,90 @@
-// delegate.rue: a holder grants or revokes a delegate that may claim for them.
+// delegate.rue: an owner grants or revokes a delegate that may act for them.
 //
 // For a cold wallet that wants a hot wallet (a cloud wallet, a vault's
-// signer) to approve its claims. Rewards still go to the holder; the delegate
-// only decides when. The holder authorizes the grant or revoke itself, by
-// signature or by a message from its own address (so a vault or multisig can
-// grant once and never sign a claim again). A grant creates a delegation slot;
-// a revoke spends it, after which the delegate's claims are refused.
+// signer) to approve its claims, and for a creator's reclaims. Rewards still
+// go to the owner; the delegate only decides when. The owner authorizes the
+// grant or revoke itself, by signature or by a message from its own address
+// (so a vault or multisig can grant once and never sign a claim again).
+//
+// Delegations are a sorted, doubly linked slot list with one slot per
+// (owner, delegate) key (shared.rue DelegationSlot):
+//   insert == 1: the first grant for this key inserts (key, 1, 0, left,
+//     right) between its neighbours, which are recreated pointing at it;
+//   insert == 0: the key's own slot (key, active, uses, left, right) is
+//     spent and recreated as (key, grant, uses + 1, left, right).
+// So a key exists once, granting twice and revoking once leaves it revoked,
+// and no recreated value ever equals the one spent.
+//
+// Every grant or revoke leaves `delegate_fee` mojos as network fee
+// (RESERVE_FEE), so spending the singleton through this leaf to invalidate
+// other parties' prebuilt bundles costs the spammer every block.
 
 import shared::*;
+
+struct OwnDelegation {
+    active: Int,
+    uses: Int,
+    left: Bytes32,
+    ...right: Bytes32,
+}
+
+struct DelegationNeighbours {
+    left_key: Bytes32,
+    left_active: Int,
+    left_uses: Int,
+    left_left: Bytes32,
+    right_key: Bytes32,
+    right_active: Int,
+    right_uses: Int,
+    right_right: Bytes32,
+}
 
 fn main(
     CONFIG: Config,
     truth: Truth,
     h: Int,
-    holder: Bytes32,
+    owner: Bytes32,
     delegate: Bytes32,
     grant: Int,
+    insert: Int,
+    slot_info: Any,
     auth: Int,
     auth_data: Any,
 ) -> (Truth, List<Condition>) {
     let (pinned, conditions) = prologue(truth, h);
     assert (grant == 0) | (grant == 1);
-    let message = tree_hash(["flpcr-delegate-v1", CONFIG.distributor_id, holder, delegate, grant]);
+    assert owner.length == 32;
+    assert delegate.length == 32;
+    let message = tree_hash(["flpcr-delegate-v2", CONFIG.distributor_id, owner, delegate, grant]);
+    let key = delegation_key(owner, delegate);
+
+    let slot_conditions = if insert == 0 {
+        let own = unchecked_cast::<OwnDelegation>(slot_info);
+        [
+            spend_delegation_slot(CONFIG, DelegationSlot { key: key, active: own.active, uses: own.uses, left: own.left, right: own.right }),
+            create_delegation_slot(CONFIG, DelegationSlot { key: key, active: grant, uses: own.uses + 1, left: own.left, right: own.right }),
+        ]
+    } else {
+        // A revoke of a key that was never granted has nothing to change.
+        assert grant == 1;
+        let n = unchecked_cast::<DelegationNeighbours>(slot_info);
+        assert key > n.left_key;
+        assert n.right_key > key;
+        [
+            spend_delegation_slot(CONFIG, DelegationSlot { key: n.left_key, active: n.left_active, uses: n.left_uses, left: n.left_left, right: n.right_key }),
+            spend_delegation_slot(CONFIG, DelegationSlot { key: n.right_key, active: n.right_active, uses: n.right_uses, left: n.left_key, right: n.right_right }),
+            create_delegation_slot(CONFIG, DelegationSlot { key: n.left_key, active: n.left_active, uses: n.left_uses, left: n.left_left, right: key }),
+            create_delegation_slot(CONFIG, DelegationSlot { key: n.right_key, active: n.right_active, uses: n.right_uses, left: key, right: n.right_right }),
+            create_delegation_slot(CONFIG, DelegationSlot { key: key, active: 1, uses: 0, left: n.left_key, right: n.right_key }),
+        ]
+    };
 
     (
         pinned,
         [
-            authorize(holder, auth, auth_data, message),
-            if grant == 1 {
-                create_delegation(CONFIG, holder, delegate)
-            } else {
-                spend_delegation(CONFIG, holder, delegate)
-            },
-            ...conditions,
+            authorize(owner, auth, auth_data, message),
+            ReserveFee { amount: CONFIG.delegate_fee },
+            ...merge_list(slot_conditions, conditions),
         ],
     )
 }

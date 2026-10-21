@@ -15,9 +15,18 @@ a DID coin spend, so an NFT is counted only on evidence from one:
      NFT's eve spend set this DID as its owner. This is the reference wallet's
      DID-authorized mint, whose launcher's parent is an ordinary XCH coin.
 
-The reader never trusts the off-chain "collection id" in CHIP-0007 metadata,
-or the NFT's owner field on its own (an NFT can be transferred to a DID later
-without having been minted by it).
+The reader never trusts the NFT's owner field on its own (an NFT can be
+transferred to a DID later without having been minted by it).
+
+**Collections as wallets show them.** A DID can mint several collections; the
+one an NFT belongs to is named in its CHIP-0007 metadata (`collection.id`), and
+explorers name the collection `col1…` = sha256(DID launcher id in hex +
+collection id) (checked against Spacescan on testnet11). A campaign that names
+a `col1` id counts an NFT only when BOTH hold: the DID minted it (the on-chain
+evidence above) and its metadata file, fetched and checked against the hash
+the NFT carries on chain, names that collection id. Metadata the DID did not
+mint means nothing (anyone can copy a collection id), and a file that is
+missing or does not match its on-chain hash counts as not in the collection.
 
 `ChainReader` is the three calls this needs. The simulator provides them
 under these names; a full node or coinset.org provides the same data
@@ -27,12 +36,16 @@ get_puzzle_and_solution).
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional, Protocol, Set, Tuple
+import hashlib
+import json
+import urllib.request
+from typing import Callable, Dict, Iterable, List, Optional, Protocol, Set, Tuple
 
 from chia_wallet_sdk import Clvm, Coin, CoinSpend, CoinState, Constants, Did, Nft
 
 from ..links import Link
 from ..sources import HolderEvent, Source
+from ..model import BURN_PUZZLE_HASH
 
 # Enough for any DID spend; only used to read the spend's own conditions.
 MAX_COST = 11_000_000_000
@@ -213,18 +226,102 @@ def owner_history(reader: ChainReader, clvm: Clvm, launcher_id: bytes) -> List[T
     return history
 
 
+def collection_id(did_launcher_id: bytes, metadata_collection_id: str) -> bytes:
+    """The `col1…` id explorers give a collection: sha256(DID hex + collection id)."""
+    return hashlib.sha256((did_launcher_id.hex() + metadata_collection_id).encode()).digest()
+
+
+Fetch = Callable[[str], Optional[bytes]]
+
+
+# Public gateways for ipfs:// URIs (MintGarden Studio and most minting tools
+# publish both an ipfs:// and a gateway URL). Any gateway will do: the file is
+# accepted only if its sha256 equals the hash on chain.
+IPFS_GATEWAYS = ("https://ipfs.io/ipfs/", "https://dweb.link/ipfs/")
+
+
+def http_fetch(uri: str) -> Optional[bytes]:
+    if uri.startswith("ipfs://"):
+        for gateway in IPFS_GATEWAYS:
+            body = http_fetch(gateway + uri[len("ipfs://"):])
+            if body is not None:
+                return body
+        return None
+    if not uri.startswith(("https://", "http://")):
+        return None
+    try:
+        req = urllib.request.Request(uri, headers={"User-Agent": "flpcr-engine/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.read(2_000_000)
+    except Exception:
+        return None
+
+
+def metadata_collection(nft: Nft, fetch: Fetch) -> Optional[str]:
+    """The collection id an NFT's CHIP-0007 metadata names, from a file whose
+    sha256 equals the metadata hash the NFT carries on chain. None when it has
+    no metadata hash, no URI serves the matching file, or the file names none."""
+    try:
+        meta = nft.info.metadata.parse_nft_metadata()
+    except Exception:
+        return None
+    if meta is None or not meta.metadata_hash:
+        return None
+    for uri in meta.metadata_uris:
+        body = fetch(uri)
+        if body is None or hashlib.sha256(body).digest() != meta.metadata_hash:
+            continue
+        try:
+            doc = json.loads(body)
+        except ValueError:
+            return None
+        coll = doc.get("collection") if isinstance(doc, dict) else None
+        cid = (coll or {}).get("id") if isinstance(coll, dict) else None
+        cid = cid or (doc.get("collection_id") if isinstance(doc, dict) else None)
+        return cid if isinstance(cid, str) else None
+    return None
+
+
 class ChainNftSource:
     """`nft_events` for the engine, read from chain. `excluded` owners (offer
-    settlement puzzles and the like) are never anyone's holding."""
+    settlement puzzles and the like) are never anyone's holding.
 
-    def __init__(self, reader: ChainReader, clvm: Optional[Clvm] = None, excluded: Iterable[bytes] = ()):
+    A target is either a DID launcher id (every NFT the DID minted) or a `col1`
+    collection id listed in `collections` as (DID launcher id, metadata
+    collection id): then only the DID's NFTs whose verified metadata names
+    that collection."""
+
+    def __init__(self, reader: ChainReader, clvm: Optional[Clvm] = None, excluded: Iterable[bytes] = (),
+                 collections: Optional[Dict[bytes, Tuple[bytes, str]]] = None, fetch: Fetch = http_fetch):
         self.reader = reader
+        self.collections = dict(collections or {})
+        for col, (did, uuid) in self.collections.items():
+            if collection_id(did, uuid) != col:
+                raise ValueError(f"{col.hex()[:12]} is not the collection id of DID {did.hex()[:12]} + {uuid}")
+        self.fetch = fetch
+        self._members: Dict[bytes, str] = {}  # launcher id -> collection id its metadata names ("" for none)
         self.clvm = clvm or Clvm()
-        self.excluded = set(excluded) | {Constants.settlement_payment_hash()}
+        # Offer settlements hold an NFT mid-trade; the burn address ends it.
+        self.excluded = set(excluded) | {Constants.settlement_payment_hash(), BURN_PUZZLE_HASH}
+
+    def members(self, target: bytes) -> List[bytes]:
+        """Launcher ids of the NFTs `target` names (a DID, or a listed `col1` id)."""
+        if target not in self.collections:
+            return collection(self.reader, self.clvm, target)
+        did, uuid = self.collections[target]
+        out = []
+        for launcher_id in collection(self.reader, self.clvm, did):
+            if launcher_id not in self._members:
+                launcher = self.reader.coin_state(launcher_id)
+                nft = _first_generation(self.reader, self.clvm, launcher.coin) if launcher else None
+                self._members[launcher_id] = (metadata_collection(nft, self.fetch) or "") if nft else ""
+            if self._members[launcher_id] == uuid:
+                out.append(launcher_id)
+        return out
 
     def nft_events(self, collection_id: bytes, before: int) -> List[HolderEvent]:
         events: List[HolderEvent] = []
-        for launcher_id in collection(self.reader, self.clvm, collection_id):
+        for launcher_id in self.members(collection_id):
             history = owner_history(self.reader, self.clvm, launcher_id)
             for i, (height, owner) in enumerate(history):
                 if height >= before or owner is None:

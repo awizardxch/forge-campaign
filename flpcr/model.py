@@ -23,6 +23,10 @@ class Kind(IntEnum):
     LP_HOLD = 1
     # Time-weighted holders of any CAT. `target` is the CAT's asset id (TAIL hash).
     CAT_HOLD = 2
+    # Time-weighted holders of an NFT collection, one share per NFT. `target` is
+    # the launcher id of the DID that minted the collection: on chain, that DID is
+    # the only thing tying the NFTs together. Nothing is staked.
+    NFT_HOLD = 3
 
 
 class Holding(IntEnum):
@@ -39,6 +43,11 @@ MAX_BOOST_CAP_BPS = 100_000  # 10x
 # deposit is worth a negligible share of a swap's fee weight, short enough that
 # the fee half of the budget is credited (at each bucket's end) within a day.
 DEFAULT_FEE_WINDOW = BLOCKS_PER_DAY
+# Chia's burn address: Forge pools burn their locked LP floor to it. Never a
+# position; no campaign pays it (claim.rue refuses it too).
+BURN_PUZZLE_HASH = bytes.fromhex("000000000000000000000000000000000000000000000000000000000000dead")
+# The most addresses a creator can exclude from one campaign (create.rue MAX_EXCLUDED).
+MAX_EXCLUDED = 16
 
 
 @dataclass(frozen=True)
@@ -132,6 +141,17 @@ class Params:
     def hash(self) -> bytes:
         return sha256tree(self.as_clvm())
 
+    @classmethod
+    def from_clvm(cls, v: list) -> "Params":
+        """The inverse of `as_clvm` for params without gates or boosts (what a
+        deploy record stores), so a campaign rebuilt from its record keeps its
+        blacklist and hashes to the same id."""
+        if v[6] or v[7]:
+            raise ValueError("gates and boosts are not rebuilt from a record yet")
+        h = lambda x: bytes.fromhex(x) if isinstance(x, str) else bytes(x)  # noqa: E731
+        return cls(time_bps=v[0], fees_bps=v[1], min_balance=v[2], blacklist=frozenset(h(x) for x in v[3]),
+                   whitelist=frozenset(h(x) for x in v[4]), forward=bool(v[5]), boost_cap_bps=v[8], fee_window=v[9])
+
 
 @dataclass(frozen=True)
 class Campaign:
@@ -165,12 +185,16 @@ class Campaign:
         p = self.params
         if p.time_bps < 0 or p.fees_bps < 0 or p.time_bps + p.fees_bps != BPS:
             raise ValueError("time_bps + fees_bps must equal 10000")
-        if self.kind == Kind.CAT_HOLD and p.fees_bps:
-            raise ValueError("fee weighting needs a pool; CAT_HOLD is time only")
+        if self.kind in (Kind.CAT_HOLD, Kind.NFT_HOLD) and p.fees_bps:
+            raise ValueError(f"fee weighting needs a pool; {self.kind.name} is time only")
         if p.min_balance < 0:
             raise ValueError("min_balance must be >= 0")
         if p.blacklist & p.whitelist:
             raise ValueError("a puzzle hash cannot be on both lists")
+        if len(p.blacklist) > MAX_EXCLUDED:
+            raise ValueError(f"at most {MAX_EXCLUDED} excluded addresses")
+        if any(len(x) != 32 for x in p.blacklist):
+            raise ValueError("an excluded address is a 32-byte puzzle hash")
 
     @property
     def fee(self) -> int:
@@ -226,7 +250,7 @@ class Campaign:
 
     def eligible(self, puzzle_hash: bytes, balance) -> bool:
         p = self.params
-        if puzzle_hash in p.blacklist:
+        if puzzle_hash == BURN_PUZZLE_HASH or puzzle_hash in p.blacklist:
             return False
         if p.whitelist and puzzle_hash not in p.whitelist:
             return False
