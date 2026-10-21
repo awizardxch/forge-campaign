@@ -35,6 +35,10 @@ class Holding(IntEnum):
 
 
 MAX_BOOST_CAP_BPS = 100_000  # 10x
+# Default fee window (Params.fee_window): one day. Long enough that a flash
+# deposit is worth a negligible share of a swap's fee weight, short enough that
+# the fee half of the budget is credited (at each bucket's end) within a day.
+DEFAULT_FEE_WINDOW = BLOCKS_PER_DAY
 
 
 @dataclass(frozen=True)
@@ -92,10 +96,17 @@ class Params:
     # Weight multipliers while a requirement is met, stacking up to the cap.
     boosts: Tuple[Boost, ...] = ()
     boost_cap_bps: int = 25_000  # 2.5x, Merkl's usual ceiling
+    # Fee weighting (SPEC section 6.3): the length, in blocks, of both the
+    # campaign-relative buckets the fee budget is split in and the lookback
+    # over which an LP's share is averaged when a swap pays a fee. A one-block
+    # deposit counts for at most 1/fee_window of one swap's weight.
+    fee_window: int = DEFAULT_FEE_WINDOW
 
     def __post_init__(self) -> None:
         if not BPS <= self.boost_cap_bps <= MAX_BOOST_CAP_BPS:
             raise ValueError("boost_cap_bps must be between 10000 (1x) and 100000 (10x)")
+        if isinstance(self.fee_window, bool) or not isinstance(self.fee_window, int) or self.fee_window < 1:
+            raise ValueError("fee_window must be a whole number of blocks, at least 1")
 
     def multiplier_bps(self, satisfied: Tuple[bool, ...]) -> int:
         """Weight multiplier for a holder meeting the boosts flagged in `satisfied`."""
@@ -115,6 +126,7 @@ class Params:
             [g.as_clvm() for g in self.gates],
             [b.as_clvm() for b in self.boosts],
             self.boost_cap_bps,
+            self.fee_window,
         ]
 
     def hash(self) -> bytes:

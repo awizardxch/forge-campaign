@@ -57,13 +57,19 @@ Returns the struct from SPEC §3.1 in full (params expanded), plus:
 The manifest exactly as pinned (see `flpcr/manifest.py`), with its `manifest_hash`, the `post_root`
 spend's coin id and height, and `activates_at`.
 
-### `GET /links?address=` and `POST /links`
+### `GET /links?address=`, `GET /links/log?distributor=` and `POST /links`
 
-Address links (SPEC §6.8). `POST` body: `{ primary, member, member_pk, member_sig, primary_pk, primary_sig }`,
-the two `signMessageByAddress` results over `flpcr-link-v1:<primary>:<member>`. The API verifies both
-signatures and both addresses, records the link at the current peak height, and publishes it (the
-`flpcr.links.link_to_json` form) with the next root's manifest. An unlink is `primary == member` with one
-signature. `GET` returns an address's group and the links that formed it.
+Address links (SPEC §6.8), one log per distributor.
+- `POST` body: `{ distributor, primary, member, seq, unlink, member_pk, member_sig, primary_pk, primary_sig }`.
+  A link carries both `signMessageByAddress` results over
+  `flpcr-link-v2:<distributor_id>:<primary>:<member>:<seq>`; an unlink carries one, from either address,
+  over `flpcr-unlink-v2:<distributor_id>:<primary>:<member>:<seq>`.
+- The API verifies the signatures and addresses (`flpcr.links.verify`), refuses a `seq` not above the
+  pair's last signed entry, appends the entry to the distributor's log at the current peak height, and
+  returns it (the `flpcr.links.link_to_json` form).
+- `GET /links` returns an address's group, the entries that formed it, and each pair's last `seq`.
+- `GET /links/log` returns the whole log (`flpcr.links.log_to_json`). Every root manifest commits the
+  prefix it used (`links.count`, `links.sha256`), so a watcher can check the log against the roots.
 
 ### `GET /distributors`
 
@@ -75,14 +81,16 @@ The registry contents: per reward asset, the launcher, the config, and a summary
 
 Body: the campaign fields minus `distributor_id`, which is resolved from `reward_asset`. `claim_window`
 (blocks) is required; the distributor's bounds are returned in the error if it is out of range.
-Optional `params.gates` and `params.boosts`:
+Optional `params.gates` and `params.boosts`, and `params.fee_window` (blocks, default 4608 = one day: the
+fee-share bucket and lookback of SPEC §6.3):
 
 ```json
 "params": {
   "gates":  [{ "holding": "NFT", "asset": "<minter DID launcher id>", "min_count": 1 }],
   "boosts": [{ "holding": "NFT", "asset": "<minter DID>", "min_count": 3, "bps": 3000 },
              { "holding": "CAT", "asset": "<asset id>", "min_count": 1000000, "bps": 2000 }],
-  "boost_cap_bps": 25000
+  "boost_cap_bps": 25000,
+  "fee_window": 4608
 }
 ```
 

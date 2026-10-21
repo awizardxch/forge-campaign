@@ -3,7 +3,7 @@
 The distributor puzzle verifies claim leaves with `sha256tree`, so the engine must
 hash exactly what CLVM would. Values are bytes (atoms), ints (atoms in CLVM's
 minimal two's-complement encoding), str (UTF-8 atoms), None (nil), tuples of two
-(pairs) and lists (nil-terminated). No dependency on `clvm` here; `tests/test_clvm.py`
+(pairs) and lists (nil-terminated). No dependency on `clvm` here; `tests/test_hashing.py`
 cross-checks against it when it is installed.
 """
 
