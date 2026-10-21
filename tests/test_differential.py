@@ -71,7 +71,7 @@ class TestModelAndChainAgree(unittest.TestCase):
             op = rng.random()
             if op < 0.35 and live and h > engine.height and h - last_post > w.cfg.dispute_blocks:
                 new_engine, root = run_epoch(engine, live, src, h)
-                if root.root is None:
+                if root is None or root.root is None:  # nothing accrued: run_epoch posts nothing (G-6)
                     continue
                 model.post_root(h, w.cfg.engine_ph, root.root_id, root.start, root.end, root.root, root.totals)
                 w.post(root)
