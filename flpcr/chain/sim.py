@@ -76,7 +76,8 @@ class SimWorld:
     def __init__(self, dispute_blocks: int = 8, min_campaign_length: int = 16,
                  max_campaign_length: int = 365 * 4608, fee_bps: int = 300, max_campaigns: int = 32,
                  reward_asset: bytes = bytes(32), rotate_delay: int = 24, delegate_fee: int = 0,
-                 init: bool = True, raw_config: Optional[dict] = None, raw_bond: Optional[dict] = None):
+                 init: bool = True, raw_config: Optional[dict] = None, raw_bond: Optional[dict] = None,
+                 engine_ph: Optional[bytes] = None):
         """`reward_asset` bytes(32) pays rewards in XCH; anything else is a CAT
         asset id, minted here with a fabricated lineage (test setup only).
         `delegate_fee` defaults to 0 here so most tests need no fee coin; the
@@ -100,7 +101,7 @@ class SimWorld:
         )
         for name, value in (raw_config or {}).items():
             object.__setattr__(self.cfg, name, value)
-        self.engine_ph = k.ph("engine")
+        self.engine_ph = engine_ph or k.ph("engine")  # a real key's address when a test posts as a service would
         self.d = Distributor(self.puzzles, self.cfg, self.engine_ph)
         if raw_bond:  # a probe: curry a malformed bond hash so only init's check can refuse it
             for name, value in raw_bond.items():

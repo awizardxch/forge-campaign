@@ -36,11 +36,13 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from chia_wallet_sdk import (
     Cat,
+    CatInfo,
     CatSpend,
     Clvm,
     Coin,
     CoinSpend,
     Constants,
+    LineageProof,
     Program,
     Spend,
     cat_puzzle_hash,
@@ -83,6 +85,22 @@ OP_SEND_MESSAGE = 66
 LOW = bytes(32)
 HIGH = b"\xff" * 32
 MAX_COST = 11_000_000_000
+
+
+def _lineage_json(proof) -> Optional[list]:
+    """A CAT lineage proof as JSON: [parent's parent, parent's inner puzzle hash, parent's amount],
+    or None for an eve coin (its parent was not a CAT)."""
+    if proof is None:
+        return None
+    return [proof.parent_parent_coin_info.hex(),
+            proof.parent_inner_puzzle_hash.hex() if proof.parent_inner_puzzle_hash else None,
+            proof.parent_amount]
+
+
+def _lineage_from_json(value) -> "Optional[LineageProof]":
+    if value is None:
+        return None
+    return LineageProof(bytes.fromhex(value[0]), bytes.fromhex(value[1]) if value[1] else None, int(value[2]))
 
 
 class BundleCollision(ValueError):
@@ -886,10 +904,8 @@ class Distributor:
 
     def snapshot(self) -> dict:
         """Everything `apply` keeps, as JSON-safe values, so a later process can
-        carry on from the same generation. XCH distributors only for now: a CAT
-        reserve's lineage proof is not serialized yet."""
-        if self.is_cat:
-            raise NotImplementedError("snapshot of a CAT distributor is not supported yet")
+        carry on from the same generation. A CAT reserve also keeps its lineage
+        proof, which its next spend in the CAT ring needs."""
         if self.coin is None:
             raise ValueError("nothing to snapshot before launch")
 
@@ -909,6 +925,7 @@ class Distributor:
             "claims": {k.hex(): record(v) for k, v in self.claims.items()},
             "delegations": {k.hex(): record(v) for k, v in self.delegations.items()},
             "excluded": {k.hex(): [x.hex() for x in v] for k, v in self.excluded.items()},
+            **({"reserve_lineage": _lineage_json(self.reserve_cat.lineage_proof)} if self.is_cat else {}),
         }
 
     def restore(self, snap: dict) -> None:
@@ -928,6 +945,11 @@ class Distributor:
         self.claims = {bytes.fromhex(k): ClaimRecord(**unhex(v)) for k, v in snap["claims"].items()}
         self.delegations = {bytes.fromhex(k): DelegationRecord(**unhex(v)) for k, v in snap["delegations"].items()}
         self.excluded = {bytes.fromhex(k): [bytes.fromhex(x) for x in v] for k, v in snap.get("excluded", {}).items()}
+        if self.is_cat:
+            if "reserve_lineage" not in snap:
+                raise ValueError("a CAT distributor's snapshot needs its reserve lineage (made before CAT support?)")
+            self.reserve_cat = Cat(self.reserve_coin, _lineage_from_json(snap["reserve_lineage"]),
+                                   CatInfo(self.cfg.reward_asset, None, self.reserve_ph))
 
     # --- slot list helpers ------------------------------------------------------------------
 

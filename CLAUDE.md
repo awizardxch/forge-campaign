@@ -43,7 +43,7 @@ rerun against the new ones.
 
 - The front end sets the total amount and the campaign length; emission per day is total / days, equal every day.
 - Holder shares come from past holdings, time-averaged, never the live block (as Merkl roots do): a position held for one or two blocks must average to about zero. Confirm the engine's fee lookback excludes the current block and set a floor on `params.fee_window`.
-- A wallet with several addresses claims for all of them in one bundle. Built differently from the rule as written (one coin spend per address): the wallet signs every address's leaf in one approval (key signature, no coin at the addresses) and one coin spend pays the fee; `Distributor.sequence` chains generations for real collisions. Pending the owner's confirmation, with FLPCR-07 below.
+- A wallet with several addresses claims for all of them in one bundle. Built differently from the rule as written (one coin spend per address): the wallet signs every address's leaf in one approval (key signature, no coin at the addresses) and one coin spend pays the fee; `Distributor.sequence` chains generations for real collisions. Confirmed by the owner (2026-10-20), with FLPCR-07 below.
 
 ## Build and test
 
@@ -98,9 +98,10 @@ driver all read it. `build.py` also enforces the upstream source sha256 pins.
   of the leaf; no coin needed), `AUTH_MESSAGE` (a coin at the address sends `"k" + leaf`, mode 16), or
   `AUTH_DELEGATE` whose delegate authorizes either way. No claim names a generation, so
   `Distributor.sequence` packs many into one bundle; replay pays nothing (slot `claimed`, `amount > 0`)
-  and the payout always goes to the leaf's puzzle hash. **Pending the owner's confirmation:** FLPCR-07
+  and the payout always goes to the leaf's puzzle hash. **Confirmed by the owner (2026-10-20):** FLPCR-07
   for claims ("to claim a person has to spend a mojo") is no longer puzzle-enforced; the wallet's one
-  fee-paying coin spend in the claim bundle plays that role off-puzzle. Every other action keeps mode 23
+  fee-paying coin spend in the claim bundle plays that role off-puzzle (the claimant still pays for an
+  on-chain transaction). Every other action keeps mode 23
   / `AGG_SIG_ME`.
 - Reclaim: by the creator, the creator's delegate, or the admin, from `end + claim_window`; always paid
   to the creator. Holders can claim until the reclaim lands.

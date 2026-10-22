@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import IntEnum
+import hashlib
 from typing import FrozenSet, Optional, Tuple
 
 from .clvm import sha256tree
@@ -110,8 +111,16 @@ class Params:
     # over which an LP's share is averaged when a swap pays a fee. A one-block
     # deposit counts for at most 1/fee_window of one swap's weight.
     fee_window: int = DEFAULT_FEE_WINDOW
+    # NFT_HOLD on a col1 collection: (minting DID launcher id, the metadata's collection id).
+    # Committed by the params hash and revealed by the create spend, so anyone (a service
+    # booting from chain, a disputer) can check membership; target must be its col1 id.
+    collection: Optional[Tuple[bytes, str]] = None
 
     def __post_init__(self) -> None:
+        if self.collection is not None:
+            did, uuid = self.collection
+            if len(did) != 32 or not isinstance(uuid, str) or not uuid:
+                raise ValueError("collection is (32-byte minting DID launcher id, metadata collection id)")
         if not BPS <= self.boost_cap_bps <= MAX_BOOST_CAP_BPS:
             raise ValueError("boost_cap_bps must be between 10000 (1x) and 100000 (10x)")
         if isinstance(self.fee_window, bool) or not isinstance(self.fee_window, int) or self.fee_window < 1:
@@ -136,6 +145,8 @@ class Params:
             [b.as_clvm() for b in self.boosts],
             self.boost_cap_bps,
             self.fee_window,
+            # Appended only when set, so campaigns without one keep their ids.
+            *([[self.collection[0], self.collection[1].encode()]] if self.collection else []),
         ]
 
     def hash(self) -> bytes:
@@ -149,8 +160,13 @@ class Params:
         if v[6] or v[7]:
             raise ValueError("gates and boosts are not rebuilt from a record yet")
         h = lambda x: bytes.fromhex(x) if isinstance(x, str) else bytes(x)  # noqa: E731
+        collection = None
+        if len(v) > 10 and v[10]:
+            did, uuid = v[10]
+            collection = (h(did), uuid if isinstance(uuid, str) else bytes(uuid).decode())
         return cls(time_bps=v[0], fees_bps=v[1], min_balance=v[2], blacklist=frozenset(h(x) for x in v[3]),
-                   whitelist=frozenset(h(x) for x in v[4]), forward=bool(v[5]), boost_cap_bps=v[8], fee_window=v[9])
+                   whitelist=frozenset(h(x) for x in v[4]), forward=bool(v[5]), boost_cap_bps=v[8], fee_window=v[9],
+                   collection=collection)
 
 
 @dataclass(frozen=True)
@@ -185,6 +201,12 @@ class Campaign:
         p = self.params
         if p.time_bps < 0 or p.fees_bps < 0 or p.time_bps + p.fees_bps != BPS:
             raise ValueError("time_bps + fees_bps must equal 10000")
+        if p.collection is not None:
+            if self.kind != Kind.NFT_HOLD:
+                raise ValueError("only an NFT_HOLD campaign names a collection")
+            did, uuid = p.collection
+            if hashlib.sha256((did.hex() + uuid).encode()).digest() != self.target:
+                raise ValueError("an NFT campaign naming a collection must target its col1 id (sha256 of DID hex + id)")
         if self.kind in (Kind.CAT_HOLD, Kind.NFT_HOLD) and p.fees_bps:
             raise ValueError(f"fee weighting needs a pool; {self.kind.name} is time only")
         if p.min_balance < 0:
