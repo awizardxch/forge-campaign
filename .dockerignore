@@ -1,0 +1,13 @@
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+state*.json
+lp-crawl*.json
+reviews
+docs
+tests
+scripts
+fixtures
+data

@@ -356,8 +356,8 @@ Every other action (create, reclaim, delegate, rotate, post_root, veto, dispute,
 unchanged: mode 23 and `AGG_SIG_ME` where it used them, and `create` still needs the creator's own coin
 spend. **Owner rule FLPCR-07** ("to claim a person has to spend a mojo") was puzzle-enforced for
 claims until this change (a bare signature was refused). It is now met off-puzzle: the claimer's
-wallet makes the one fee-paying coin spend of the claim bundle. This change is **pending the owner's
-confirmation**.
+wallet makes the one fee-paying coin spend of the claim bundle, so the claimant still pays for an
+on-chain transaction. The owner confirmed this on 2026-10-20.
 
 **A delegate the owner chose.** A holder can let one specific other address claim for them: a cold
 wallet whose hot wallet (or a cloud wallet we run for them) approves claims, or a vault whose signer

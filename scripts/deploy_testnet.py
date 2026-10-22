@@ -38,7 +38,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.stdout.reconfigure(encoding="utf-8")
 
-from chia_wallet_sdk import Address, Clvm, Coin, CoinSpend, Constants, Program, PublicKey, Signature, SpendBundle, standard_puzzle_hash  # noqa: E402
+from chia_wallet_sdk import Address, Cat, CatSpend, Clvm, Coin, CoinSpend, Constants, Program, PublicKey, Signature, SpendBundle, cat_puzzle_hash, standard_puzzle_hash  # noqa: E402
 
 from flpcr import Campaign, EngineState, FixtureSource, HolderEvent, Kind, run_epoch  # noqa: E402
 from flpcr.model import Params  # noqa: E402
@@ -185,6 +185,37 @@ class Wallet:
             conditions.append([52, fee])
         return self.spend(coin, conditions)
 
+    def cat_coin(self, asset_id: bytes, minimum: int, what: str = "reward CAT") -> Cat:
+        """The smallest unspent coin of `asset_id` at any of the wallet's addresses holding
+        `minimum`, as a spendable Cat: its lineage proof comes from its parent's spend."""
+        by_full = {cat_puzzle_hash(asset_id, ph): ph for ph in self.phs}
+        for attempt in range(16):
+            coins = sorted((c for c in unspent_at(list(by_full)) if c.amount >= minimum and c.coin_id() not in self.used),
+                           key=lambda c: c.amount)
+            if coins:
+                coin = coins[0]
+                parent = coin_record(coin.parent_coin_info)
+                sol = rpc("get_puzzle_and_solution", {"coin_id": "0x" + coin.parent_coin_info.hex(),
+                                                      "height": int(parent["spent_block_index"])})["coin_solution"]
+                pc = parent["coin"]
+                parent_coin = Coin(bytes.fromhex(pc["parent_coin_info"][2:]), bytes.fromhex(pc["puzzle_hash"][2:]), int(pc["amount"]))
+                puzzle = self.clvm.deserialize(bytes.fromhex(sol["puzzle_reveal"][2:])).puzzle()
+                children = puzzle.parse_child_cats(parent_coin, self.clvm.deserialize(bytes.fromhex(sol["solution"][2:]))) or []
+                match = [x for x in children if x.coin.coin_id() == coin.coin_id()]
+                if not match:
+                    raise SystemExit(f"could not read the lineage of {what} coin {coin.coin_id().hex()[:12]}")
+                self.used.add(coin.coin_id())
+                return match[0]
+            print(f"  waiting for an unspent {what} coin >= {minimum:,} (attempt {attempt + 1})", flush=True)
+            time.sleep(15)
+        raise SystemExit(f"no unspent {what} coin of {asset_id.hex()[:12]} holds {minimum:,} in this wallet")
+
+    def cat_spend(self, cat: Cat, conditions: list) -> CatSpend:
+        """A standard-wallet spend inside the CAT layer: the inner conditions name inner puzzle hashes."""
+        c = self.clvm
+        pk = self.keys[cat.info.p2_puzzle_hash]
+        return CatSpend(cat, c.standard_spend(pk, c.delegated_spend([to_program(c, cond) for cond in conditions])))
+
     def fee_spend(self, fee: int) -> CoinSpend:
         ph = self.phs[0]
         coin = self.pick([ph], fee + 1, "fee")
@@ -256,15 +287,21 @@ def push_and_wait(wallet: Wallet, puzzle_spends: Sequence[CoinSpend], wallet_spe
 
 def push_calls(wallet: Wallet, d: Distributor, calls: Sequence[LeafCall], label: str,
                keep_by_sender: Optional[Dict[bytes, int]] = None, fee: int = FEE,
-               creator_coin: Optional[Coin] = None) -> Prepared:
+               creator_coin: Optional[Coin] = None, cat_spends: Sequence[CatSpend] = ()) -> Prepared:
     """Prepare, satisfy every message the leaves need from the wallet's role
-    coins, add the fee, push, and advance the driver once confirmed."""
-    prepared = d.prepare(calls)
+    coins, add the fee, push, and advance the driver once confirmed.
+    `cat_spends`: the wallet's own coins of the reward CAT that join the
+    reserve's CAT ring (a creator's deposit); Sage signs their spends."""
+    prepared = d.prepare(calls, cat_spends)
     if prepared.unresolved:
         raise SystemExit(f"{label}: local slot records are behind the chain: {[u.hex()[:12] for u in prepared.unresolved]}")
     if any(not s.unsafe for s in prepared.signatures):
         raise SystemExit(f"{label}: a leaf asked for an AGG_SIG_ME signature; this script signs only claim leaves")
     claim_signature = wallet.sign_claims(prepared.signatures)
+    ours = {cs.cat.coin.coin_id() for cs in cat_spends}
+    if ours:
+        signed_cats = wallet.sign([s for s in prepared.spends if s.coin.coin_id() in ours])
+        claim_signature = Signature.aggregate([claim_signature, signed_cats])
     wallet_spends = []
     fee_left = fee + prepared.fee
     for i, m in enumerate(prepared.messages):
@@ -329,7 +366,8 @@ def commit(state: dict, d: Distributor, step: str, result: dict, **extra) -> Non
 def record_campaign(c: Campaign) -> dict:
     return {"id": c.id.hex(), "creator": c.creator.hex(), "amount": c.amount, "start": c.start, "end": c.end,
             "claim_window": c.claim_window, "kind": int(c.kind), "target": c.target.hex(), "nonce": c.nonce,
-            "params": [[x.hex() for x in v] if i in (3, 4) else v for i, v in enumerate(c.params.as_clvm())]}
+            "params": [[x.hex() for x in v] if i in (3, 4) else [v[0].hex(), v[1].decode()] if i == 10 else v
+                       for i, v in enumerate(c.params.as_clvm())]}
 
 
 def campaign_records(state: dict) -> dict:
@@ -357,7 +395,7 @@ def campaign_from(state: dict, d: Distributor, campaign_id: Optional[str] = None
                     claim_window=r["claim_window"])
 
 
-FORGE_API = (os.environ.get("FLPCR_FORGE_API", "").strip() or "https://forge-responder.up.railway.app").rstrip("/")
+FORGE_API = (os.environ.get("FLPCR_FORGE_API", "").strip() or "https://testnet-api.forge.awizard.dev").rstrip("/")
 CRAWL_CACHE = ROOT / f"lp-crawl-{NETWORK}.json"
 
 
@@ -410,7 +448,8 @@ def cmd_launch(args, wallet: Wallet, state: dict, puzzles: Puzzles) -> None:
     net = addresses(NETWORK)
     funding = wallet.pick([wallet.phs[0]], FEE + 2, "funding")
     launcher_id = Coin(funding.coin_id(), Constants.singleton_launcher_hash(), 1).coin_id()
-    cfg = Config.testnet(launcher_id, bytes(32), net.dev_fee_ph, net.admin_ph, wallet.ph("guardian"), wallet.ph("router"))
+    reward_asset = bytes.fromhex(args.reward_asset) if args.reward_asset else bytes(32)
+    cfg = Config.testnet(launcher_id, reward_asset, net.dev_fee_ph, net.admin_ph, wallet.ph("guardian"), wallet.ph("router"))
     engine_ph = wallet.ph("operator")
     d = Distributor(puzzles, cfg, engine_ph)
     conditions = d.funding_conditions(funding)
@@ -418,8 +457,19 @@ def cmd_launch(args, wallet: Wallet, state: dict, puzzles: Puzzles) -> None:
     conditions.append([52, FEE])
     funding_spend = wallet.spend(funding, conditions)
     launcher = d.launcher_spend(funding)
-    print(f"launching XCH distributor {launcher_id.hex()} from {funding.coin_id().hex()[:12]}")
-    result = push_and_wait(wallet, [launcher], [funding_spend], d.coin.coin_id(), "launch")
+    wallet_spends = [funding_spend]
+    if d.is_cat:
+        # A coin of the reward CAT creates the empty reserve in its own ring and keeps its value.
+        seed = wallet.cat_coin(reward_asset, 1, "seed")
+        owner = seed.info.p2_puzzle_hash
+        c = wallet.clvm
+        c.spend_cats([wallet.cat_spend(seed, [[51, d.reserve_ph, 0, [d.reserve_ph]], [51, owner, seed.coin.amount, [owner]]])])
+        wallet_spends += c.coin_spends()
+        d.reserve_cat = seed.child(d.reserve_ph, 0)
+        d.reserve_coin = d.reserve_cat.coin
+    kind = f"CAT {reward_asset.hex()[:12]}" if d.is_cat else "XCH"
+    print(f"launching {kind} distributor {launcher_id.hex()} from {funding.coin_id().hex()[:12]}")
+    result = push_and_wait(wallet, [launcher], wallet_spends, d.coin.coin_id(), "launch")
     state.clear()
     state.update({
         "network": NETWORK, "launcher_id": launcher_id.hex(), "engine_ph": engine_ph.hex(),
@@ -464,8 +514,9 @@ def cmd_create(args, wallet: Wallet, state: dict, puzzles: Puzzles) -> None:
     d = distributor_from(state, puzzles)
     creator = wallet.ph("creator")
     length = int(args.hours * 3600 / 18.75)
-    # The creator's own coin supplies the deposit, so it has to hold it first.
-    need = args.amount + 2 * FEE
+    # The creator's own coin supplies the deposit, so it has to hold it first. For a CAT
+    # distributor the deposit is a CAT coin and the creator's coin only sends the consent.
+    need = (0 if d.is_cat else args.amount) + 2 * FEE
     if not any(x.amount >= need for x in unspent_at([creator])):
         coin = wallet.pick([wallet.phs[0]], need + FEE + 1, "funding")
         spend = wallet.spend(coin, [[51, creator, need, [creator]],
@@ -487,8 +538,11 @@ def cmd_create(args, wallet: Wallet, state: dict, puzzles: Puzzles) -> None:
         print(f"  collection {Address(target, 'col').encode()} = DID {did.hex()[:12]} + {args.collection_id}")
     else:
         target = Address.decode(args.target).puzzle_hash if args.target.startswith(("did:", "col1")) else bytes.fromhex(args.target)
+    # A collection campaign commits its (DID, collection id) in params, so the chain alone tells
+    # anyone how to check membership.
+    params = Params(blacklist=excluded, collection=(bytes.fromhex(collection[0]), collection[1]) if collection else None)
     c = Campaign(d.launcher_id, creator, d.cfg.reward_asset, args.amount, start, start + length,
-                 kind, target, params=Params(blacklist=excluded), nonce=args.nonce,
+                 kind, target, params=params, nonce=args.nonce,
                  fee_bps=d.cfg.fee_bps, claim_window=max(d.cfg.min_claim_window, args.window))
     if excluded:
         print(f"  excluded from this campaign: {[wallet.address(x) if x in wallet.keys else x.hex()[:16] for x in excluded]}")
@@ -496,7 +550,14 @@ def cmd_create(args, wallet: Wallet, state: dict, puzzles: Puzzles) -> None:
           f"~{length * 18.75 / 3600:.1f} h), window {c.claim_window}, fee {c.fee:,}, budget {c.budget:,}")
     call = d.create(h, c.creator, c.amount, c.start, c.end, int(c.kind), c.target, c.params.as_clvm(), c.nonce,
                     c.claim_window)
-    _, result = push_calls(wallet, d, [call], "create", keep_by_sender={c.creator: c.amount})
+    if d.is_cat:
+        deposit = wallet.cat_coin(d.cfg.reward_asset, c.amount, "deposit")
+        owner = deposit.info.p2_puzzle_hash
+        change = deposit.coin.amount - c.amount
+        cat_spend = wallet.cat_spend(deposit, [[51, owner, change, [owner]]] if change else [])
+        _, result = push_calls(wallet, d, [call], "create", cat_spends=[cat_spend])
+    else:
+        _, result = push_calls(wallet, d, [call], "create", keep_by_sender={c.creator: c.amount})
     state.setdefault("campaigns", {})[c.id.hex()] = {**record_campaign(c), **({"collection": collection} if collection else {})}
     state["campaign"] = record_campaign(c)
     commit(state, d, "create", result, campaign_id=c.id.hex())
@@ -738,6 +799,54 @@ def cmd_cancel_rotation(args, wallet: Wallet, state: dict, puzzles: Puzzles) -> 
     commit(state, d, "cancel-rotation", result)
 
 
+def cmd_resync(args, wallet, state: dict, puzzles: Puzzles) -> None:
+    """Rebuild the record's driver state from the chain (flpcr.chain.resync) and compare it with the
+    record; --write saves it. Campaign fields and roots the record lacks are filled in from the
+    chain; root proofs and the wallet's roles are not on chain, so the record keeps its own."""
+    from flpcr.chain.resync import ResyncError, resync
+    launcher = args.launcher or state.get("launcher_id")
+    if not launcher:
+        raise SystemExit("no launcher id: pass --launcher or keep one in the record")
+    try:
+        got = resync(NodeReader.connect(NODE), puzzles, bytes.fromhex(launcher.removeprefix("0x")))
+    except ResyncError as e:
+        raise SystemExit(f"resync refused: {e}")
+    d, cfg = got.distributor, got.config
+    print(f"distributor {launcher[:12]}: {got.generations} generations, {len(got.actions)} actions replayed; "
+          f"coin {d.coin.coin_id().hex()[:12]} unspent, reserve {d.reserve_coin.amount:,}")
+    print(f"  {len(got.campaigns)} campaign(s) and {len(got.roots)} root(s) on chain; "
+          f"{len(d.claims) - 2} claim slot(s), {len(d.delegations) - 2} delegation slot(s)")
+    snap = d.snapshot()
+    if state.get("driver"):
+        diff = [k for k in snap if snap[k] != state["driver"].get(k)]
+        print("  the record matches the chain" if not diff else f"  the record differs from the chain in: {', '.join(diff)}")
+    else:
+        print("  the record has no driver state yet")
+    if not args.write:
+        print("  (compare only; --write saves the chain's state into the record)")
+        return
+    state.setdefault("network", NETWORK)
+    state["launcher_id"] = launcher.removeprefix("0x")
+    state["engine_ph"] = state.get("engine_ph") or d.chain_state.engine_ph.hex()
+    config = state.setdefault("config", {})
+    for name in ("reward_asset", "dev_fee_ph", "admin_ph", "guardian_ph", "router_ph"):
+        config[name] = getattr(cfg, name).hex()
+    for name in ("fee_bps", "dispute_blocks", "rotate_delay", "delegate_fee", "min_campaign_length",
+                 "max_campaign_length", "max_campaigns", "dispute_bond"):
+        config[name] = getattr(cfg, name)
+    state["driver"] = snap
+    records = state.setdefault("campaigns", {})
+    for cid, fields in got.campaigns.items():
+        if cid not in records:
+            records[cid] = {**fields, "from_chain": True}
+    roots = state.setdefault("roots", {})
+    for rid, root in got.roots.items():
+        if rid not in roots:
+            roots[rid] = {**root, "claims": [], "from_chain": True}
+    commit(state, d, "resync", {"generations": got.generations}, launcher_id=state["launcher_id"])
+    print(f"  saved to {STATE_FILE.name}")
+
+
 def cmd_status(args, wallet: Wallet, state: dict, puzzles: Puzzles) -> None:
     d = distributor_from(state, puzzles)
     st = d.chain_state
@@ -761,6 +870,7 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("launch"); s.add_argument("--force", action="store_true")
+    s.add_argument("--reward-asset", help="pay rewards in this CAT (its asset id); default XCH")
     s = sub.add_parser("fund-roles"); s.add_argument("--count", type=int, default=ROLE_FUNDING)
     s = sub.add_parser("create")
     s.add_argument("--hours", type=float, default=4.0)
@@ -791,9 +901,15 @@ def main() -> int:
     sub.add_parser("rotate")
     sub.add_parser("cancel-rotation")
     sub.add_parser("status")
+    s = sub.add_parser("resync", help="rebuild the record's driver state from the chain")
+    s.add_argument("--launcher", help="the distributor's launcher id; default the record's")
+    s.add_argument("--write", action="store_true", help="save the chain's state into the record")
     args = p.parse_args()
     clvm = Clvm()
     puzzles = Puzzles(clvm)
+    if args.cmd == "resync":  # reads the chain only: no wallet needed
+        cmd_resync(args, None, load(), puzzles)
+        return 0
     wallet = Wallet(clvm)
     print(f"wallet {wallet.name}  node {NODE}  state {STATE_FILE.name}")
     state = load()

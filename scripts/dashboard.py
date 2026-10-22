@@ -37,7 +37,7 @@ BLOCK_SECONDS = 18.75
 BLOCKS_PER_DAY = 4608
 # The testnet responder behind forge.awizard.dev's testnet markets: the live
 # state of every real testnet pool, which is what a campaign's APR is priced on.
-FORGE_API = os.environ.get("FLPCR_FORGE_API", "https://forge-responder.up.railway.app").rstrip("/")
+FORGE_API = os.environ.get("FLPCR_FORGE_API", "https://testnet-api.forge.awizard.dev").rstrip("/")
 XCH = "0" * 64
 _pools_cache: dict = {"at": 0, "pools": {}}
 _nft_cache: dict = {}
