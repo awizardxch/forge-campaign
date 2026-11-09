@@ -6,6 +6,13 @@
                                          message to sign and the proof (xch1/txch1 or hex)
     POST /api/v1/claims                  the sequencer (flpcr.service.sequencer): signed claims
     GET  /api/v1/claims/<request id>     a submitted claim's progress
+    POST /api/v1/campaigns/quote         the create intake (flpcr.service.intake): a campaign's
+                                         terms, the creator's conditions and a lease
+    POST /api/v1/campaigns/create        the creator's signed bundle for a quote; the router co-signs
+    GET  /api/v1/campaigns/<campaign id> one campaign: its status row and terms
+
+A quote that can no longer be honoured (lapsed lease, moved singleton) answers 409 with
+"requote": true; another create holding the distributor answers 503 with "retry_after".
 """
 
 from __future__ import annotations
@@ -28,7 +35,7 @@ def puzzle_hash_of(text: str) -> bytes:
     return raw
 
 
-def make_handler(service, sequencer=None):
+def make_handler(service, sequencer=None, intake=None):
     class Handler(BaseHTTPRequestHandler):
         server_version = "flpcr-service/1.0"
 
@@ -70,6 +77,9 @@ def make_handler(service, sequencer=None):
                 if path.startswith("/api/v1/claims/") and sequencer is not None:
                     found = sequencer.status_of(path.rsplit("/", 1)[1])
                     return self.send_json(200 if found else 404, {"success": bool(found), **(found or {"error": "unknown request"})})
+                if path.startswith("/api/v1/campaigns/") and intake is not None:
+                    found = intake.campaign(path.rsplit("/", 1)[1])
+                    return self.send_json(200 if found else 404, {"success": bool(found), **(found or {"error": "unknown campaign"})})
                 return self.send_json(404, {"success": False, "error": "not found"})
             except ValueError as e:
                 return self.send_json(400, {"success": False, "error": str(e)})
@@ -86,8 +96,16 @@ def make_handler(service, sequencer=None):
                 body = json.loads(self.rfile.read(length) or b"{}")
                 if path == "/api/v1/claims" and sequencer is not None:
                     return self.send_json(202, {"success": True, **sequencer.submit(body)})
+                if path == "/api/v1/campaigns/quote" and intake is not None:
+                    return self.send_json(200, {"success": True, **intake.quote(body)})
+                if path == "/api/v1/campaigns/create" and intake is not None:
+                    return self.send_json(200, {"success": True, **intake.create(body)})
                 return self.send_json(404, {"success": False, "error": "not found"})
             except ValueError as e:
+                if type(e).__name__ == "Requote":
+                    return self.send_json(409, {"success": False, "error": str(e), "requote": True})
+                if type(e).__name__ == "LeaseBusy":
+                    return self.send_json(503, {"success": False, "error": str(e), "retry_after": e.retry_after})
                 return self.send_json(400, {"success": False, "error": str(e)})
             except Exception as e:  # noqa: BLE001
                 traceback.print_exc()
@@ -96,5 +114,5 @@ def make_handler(service, sequencer=None):
     return Handler
 
 
-def serve(service, port: int, sequencer=None) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer(("0.0.0.0", port), make_handler(service, sequencer))
+def serve(service, port: int, sequencer=None, intake=None) -> ThreadingHTTPServer:
+    return ThreadingHTTPServer(("0.0.0.0", port), make_handler(service, sequencer, intake))

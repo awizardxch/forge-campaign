@@ -142,7 +142,7 @@ The page shows:
 - **Delegate:** grant and revoke, each costing `delegate_fee`. This can wait until after launch: it serves
   cold wallets and vaults, not first users.
 
-## 5. What forge-campaign must build first: the create intake
+## 5. The create intake (built)
 
 Creation needs two parties on chain:
 - our router's message `"c" + id`;
@@ -152,28 +152,42 @@ Creation needs two parties on chain:
 **The constraint:** mode 23 names the singleton's current coin id. A creator's signed spend therefore goes
 stale as soon as anything else spends the singleton: a claim batch, a root, another create.
 
-**Proposed intake,** a new module beside the sequencer, sharing the service's single-writer loop:
+**Built (`flpcr/service/intake.py`, `flpcr/service/lease.py`), with no puzzle change:**
 
-- **`POST /api/v1/campaigns/quote`.** Runs `router.check_campaign` and the `RouterRules`, and computes the
-  campaign id, fee, budget and daily emission. It returns the exact conditions the creator's spend must
-  carry: the deposit, and the `"k" + id` message to the named singleton coin. It also returns a **lease**:
-  the intake holds the next singleton generation for this create for N seconds (proposed: 120).
-- **`POST /api/v1/campaigns/create`.** Takes the creator's signed spend bundle and checks it, the way the
-  sequencer checks a claim: deposit, message, signature, fee. It adds the router's message spend and
-  pushes before any other action spends the singleton.
-- **Lapsed lease:** the page re-quotes, and the wallet signs again.
+- **`POST /api/v1/campaigns/quote`.** Validates the request against the distributor's `Config` (length,
+  claim window floor `3 × dispute_blocks + 32`, start from `h + 32` to the horizon, at most 16 excluded
+  addresses) and runs `router.check_campaign` with the host's `RouterRules` and a Forge registry built
+  from V16-or-newer pools only (a V15/V14 pool is refused by name; a reward CAT must sit in a V16 pool).
+  It returns the campaign id and every field it commits to, the fee, budget, daily emission
+  (budget × 4608 ÷ length, equal every day), `reclaim_from`, the singleton coin to message, the exact
+  condition the creator's spend must carry (`[66, 23, "k" + id, coin id]`), the deposit rule, and a
+  **lease** (`FLPCR_LEASE_SECONDS`, default 120).
+- **The lease** (`SingletonLease`) is one in-process lock: while a quote holds it, `operator_step` and the
+  claim sequencer's `run_batch` each check it once, under the service lock, and spend nothing. One lease
+  at a time: a second quote answers 503 with `retry_after`. A pushed create pins the lease until it has
+  confirmed or failed.
+- **`POST /api/v1/campaigns/create`** takes `{quote, spend_bundle}` and checks the creator's bundle before
+  anything is pushed: exactly one message, `"k" + id` mode 23 from a coin at the creator's address to the
+  quoted coin; the deposit (XCH: the creator's spends' inputs less their outputs and any `RESERVE_FEE` are
+  at least `amount`; CAT: spends of the reward CAT whose outputs leave exactly `amount`, which the service
+  rebuilds into the reserve's CAT ring); an aggregated signature over exactly the `AGG_SIG`s those spends
+  need; every coin unspent. It then adds the router's spend (a coin at `router_ph` sends `"c" + id` and
+  recreates itself less the network fee, which the router pays), the singleton spend from
+  `Distributor.create` / `prepare`, pushes, waits for the successor coin and applies.
+- **Lapsed lease or moved singleton:** 409 with `"requote": true`. The page re-quotes and the wallet signs
+  again.
+
+**The router key** is a second key on the host, `FLPCR_ROUTER_SK`, separate from `FLPCR_OPERATOR_SK`.
+Unset, the intake still quotes and refuses to create. The router address needs an XCH coin for the fee
+(at least 0.002 XCH). The `RouterRules` values come from `FLPCR_ROUTER_RULES` (JSON), the owner's to set.
+**Owner decision still open:** keep the router key on the same host, or move it to a separate signer.
 
 **The alternative removes the lease:** make the creator's consent generation-free, as claims are (mode 16,
-bound by the campaign id). That is a leaf change, so it means a re-pin and a review item. The intake design
-above needs no puzzle change, so it is the default.
-
-**Where the router key lives:** with the intake, as a second key on the host, separate from the operator
-key. The status artifact's "server holds the operator key only" then becomes "operator and router keys".
-**Owner decision:** keep the router key on the same host, or a separate signer.
+bound by the campaign id). That is a leaf change, so it means a re-pin and a review item; not taken.
 
 ## 6. Service API the tab uses
 
-These are the paths that exist today (`flpcr/service/http.py`), all JSON and CORS-open:
+All JSON and CORS-open (`flpcr/service/http.py`):
 
 | Method and path | Use |
 |---|---|
@@ -182,11 +196,16 @@ These are the paths that exist today (`flpcr/service/http.py`), all JSON and COR
 | `GET /api/v1/claimable/<address>` | a holder's leaves in the claimable root, with leaf and proof |
 | `POST /api/v1/claims` | the sequencer: signed claims |
 | `GET /api/v1/claims/<id>` | progress of a submitted claim |
+| `POST /api/v1/campaigns/quote` | the create intake (§5): terms, the creator's condition, a lease |
+| `POST /api/v1/campaigns/create` | the creator's signed bundle for a quote; the router co-signs and pushes |
+| `GET /api/v1/campaigns/<id>` | one campaign: the status row plus fee, budget, daily emission, `reclaim_from`, and `allocated` through the last root the service rebuilt |
 
-**To add for the tab:**
-- `POST /api/v1/campaigns/quote` and `POST /api/v1/campaigns/create` (§5);
-- `GET /api/v1/campaigns/<id>`, the campaign page in one call, with the engine's running total as
-  "earned".
+**Quote request:** `{creator, amount, kind: "LP_HOLD" | "NFT_HOLD" | "CAT_HOLD", target, days | length | end,
+start?, claim_window?, excluded?: [address], collection?: {did, id}, reward_asset?, nonce?}`. Amounts are
+mojos, heights are blocks; `target` is a pool launcher id, a DID, or omitted when `collection` names a
+`col1` collection.
+
+**Still to add:** the engine's running total as "earned" (between roots).
 
 **Host (proposal):** behind the Hetzner proxy that already serves the routers. Either
 `api.forge.awizard.dev/flpcr/...` and `testnet-api.forge.awizard.dev/flpcr/...`, or a `campaigns-api`

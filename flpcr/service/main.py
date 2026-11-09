@@ -6,19 +6,27 @@ Environment (the host's service variables):
     FLPCR_LAUNCHER       the distributor's launcher id, hex           (required)
     FLPCR_NODE_URL       full node or coinset RPC (default: coinset for the network)
     FLPCR_FORGE_API      Forge router for pool -> LP asset ids (default: the network's router)
-    FLPCR_OPERATOR_SK    the operator's synthetic secret key, hex: the service's ONLY key.
-                         Unset: the service serves reads and claims but posts no roots.
+    FLPCR_OPERATOR_SK    the operator's synthetic secret key, hex. Unset: the service serves
+                         reads and claims but posts no roots.
+    FLPCR_ROUTER_SK      the router's synthetic secret key, hex: a second key, separate from the
+                         operator's, used only by the create intake to send "c" + id. Unset: the
+                         intake quotes but refuses to create.
+    FLPCR_ROUTER_RULES   JSON RouterRules (the owner's values): {"min_amount": {asset hex: mojos},
+                         "min_per_day": {asset hex: mojos}, "max_live_per_creator": n,
+                         "nft_collections": [DID hex, ...]}. Unset: RouterRules() defaults.
+    FLPCR_LEASE_SECONDS  how long a create quote holds the singleton (default 120)
     FLPCR_EVERY          blocks between roots while campaigns run (default 180, ~1 h)
     FLPCR_LOOP_SECONDS   seconds between operator checks (default 60)
     FLPCR_CACHE_DIR      where the LP crawl cache lives (a mounted volume; default ./data)
     PORT                 HTTP port (default 8080)
 
 Boot resyncs from chain; nothing else is needed on disk. The guardian and the admin
-are multisigs and never live here.
+are multisigs and never live here. The host holds at most two keys: operator and router.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import sys
@@ -34,6 +42,8 @@ from ..model import Kind
 from .chain import NodeChain
 from .core import CampaignService, OperatorKey
 from .http import serve
+from .intake import CampaignIntake, cached, forge_pool_infos
+from ..router import RouterRules
 from .sequencer import ClaimSequencer
 
 NODES = {"mainnet": "https://api.coinset.org", "testnet11": "https://testnet11.api.coinset.org"}
@@ -61,6 +71,16 @@ def live_source_factory(network: str, node: str, api: str, cache_dir: pathlib.Pa
     return source_for
 
 
+def rules_from_env(text: str) -> RouterRules:
+    if not text.strip():
+        return RouterRules()
+    raw = json.loads(text)
+    per_asset = lambda m: {bytes.fromhex(k.removeprefix("0x")): int(v) for k, v in (m or {}).items()}  # noqa: E731
+    return RouterRules(min_amount=per_asset(raw.get("min_amount")), min_per_day=per_asset(raw.get("min_per_day")),
+                       max_live_per_creator=int(raw.get("max_live_per_creator", 4)),
+                       nft_collections=frozenset(bytes.fromhex(x.removeprefix("0x")) for x in raw.get("nft_collections") or []))
+
+
 def main() -> int:
     env = os.environ
     network = env.get("FLPCR_NETWORK", "").strip()
@@ -81,10 +101,15 @@ def main() -> int:
     service = CampaignService(chain, bytes.fromhex(launcher), network, live_source_factory(network, node, api, cache),
                               operator=operator, every=every)
     sequencer = ClaimSequencer(service)
-    server = serve(service, port, sequencer)
+    router_hex = env.get("FLPCR_ROUTER_SK", "").strip().removeprefix("0x")
+    router_sk = SecretKey.from_bytes(bytes.fromhex(router_hex)) if router_hex else None
+    intake = CampaignIntake(service, cached(lambda: forge_pool_infos(api)), rules_from_env(env.get("FLPCR_ROUTER_RULES", "")),
+                            router_sk=router_sk, lease_seconds=float(env.get("FLPCR_LEASE_SECONDS", "120")))
+    server = serve(service, port, sequencer, intake)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     print(f"flpcr-service: {network} distributor {launcher[:12]}…, node {node}, port {port}, "
-          f"operator {'set (' + operator.puzzle_hash.hex()[:12] + '…)' if operator else 'not set: reads and claims only'}",
+          f"operator {'set (' + operator.puzzle_hash.hex()[:12] + '…)' if operator else 'not set: reads and claims only'}, "
+          f"router key {'set' if router_sk else 'not set: quotes only'}",
           flush=True)
 
     while service.s is None:  # boot: retried until the chain answers

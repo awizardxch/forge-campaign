@@ -178,6 +178,8 @@ class ClaimSequencer:
         if not queued:
             return None
         with svc.lock:
+            if svc.lease.busy():  # a quoted create holds the singleton; the queue waits
+                return None
             d = svc.d
             h = svc.chain.peak()
             take = list(queued)

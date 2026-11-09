@@ -14,8 +14,13 @@ Then:
 * `status()` and `claimable(puzzle_hash)` answer the public API: campaigns,
   roots, and each holder's leaves with the exact message to sign.
 * `operator_step()` posts a root when one is due, signed with the operator key
-  the service holds (its only key: the guardian and admin stay multisigs).
+  the service holds (with the intake's router key, its only keys: the guardian
+  and admin stay multisigs).
 * the sequencer (`flpcr.service.sequencer`) batches claimants' signed claims.
+* the create intake (`flpcr.service.intake`) quotes and co-signs creators' campaigns
+  with the router key (a second key, FLPCR_ROUTER_SK). While a quote's lease
+  (`flpcr.service.lease`) is live, `operator_step` and the sequencer leave the
+  singleton alone.
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ from ..chain.values import to_bytes, to_int, to_list
 from ..engine import EngineState, Root, run_epoch
 from ..merkle import claim_leaf
 from ..model import Campaign, Kind, Params
+from .lease import SingletonLease
 
 MIN_FEE = 2_000_000_000  # 0.002 XCH: the floor the deploy scripts use
 FEE_PER_COST = 10  # mojos per unit of cost; under 5 the mempool refuses a nonzero fee
@@ -94,6 +100,7 @@ class CampaignService:
         self.lock = threading.RLock()
         self.s: Optional[ServiceState] = None
         self.signer = KeySigner.for_network([operator.secret] if operator else [], network)
+        self.lease = SingletonLease()  # held by a create the intake has quoted (flpcr.service.lease)
 
     # --- boot -------------------------------------------------------------------------
 
@@ -215,6 +222,8 @@ class CampaignService:
         if self.operator is None:
             return None
         with self.lock:
+            if self.lease.busy():  # a quoted create holds the singleton's next generation
+                return None
             h = self.chain.peak()
             end = self.due(h)
             if end is None:
