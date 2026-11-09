@@ -1,0 +1,70 @@
+
+XCH A: ephemeral slots on the delegation list
+  [PASS] revoked delegate claims: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK revoked delegate + ephemeral spend of the slot this claim creates (1, uses+1): REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK revoked delegate + 'ephemeral' slot at the value the leaf spends (1, uses): REFUSED UnknownUnspent   (want refuse (UnknownUnspent))
+  [PASS] ATTACK replay the pre-revoke slot value (active 1, uses - 1): REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK the attacker's own grant in the same spend + the revoked delegate's claim (driver check off): REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] control: re-granted delegate claims (paid to holder): ACCEPTED 485000   (want accept)
+
+XCH B: AUTH_SIGNATURE claims and excluded addresses
+  [PASS] control: a third party submits the holder's signed claim (no coin at the address): ACCEPTED (None, None)   (want accept)
+  [PASS]   ... paid to the holder 
+  [PASS] ATTACK replay the same signature and leaf after it was paid: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] ATTACK the r1 signature reused for the r2 cumulative: REFUSED Simulator error: Validation error: BadAggregateSignature   (want refuse (BadAggregateSignature))
+  [PASS] ATTACK another key's signature for the holder's leaf: REFUSED Simulator error: Validation error: BadAggregateSignature   (want refuse (BadAggregateSignature))
+  [PASS] ATTACK excluded address claims by key signature from a root that pays it: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] ATTACK excluded address claims with an empty excluded list: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] ATTACK excluded address claims through a delegate: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] ATTACK the burn address claims: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] control: a listed holder claims from the same root: ACCEPTED 1000   (want accept)
+
+XCH C: bonds, disputes, resolves
+  [PASS] C1 dispute with no bond launcher in the bundle: REFUSED AssertCoinAnnouncementFailed   (want refuse (AssertCoinAnnouncementFailed))
+  [PASS] C2 dispute whose launcher announces another bond puzzle hash: REFUSED AssertCoinAnnouncementFailed   (want refuse (AssertCoinAnnouncementFailed))
+  [FAIL] C5 ATTACK (NEW-1) reuse the disputer's signed funding spend; launcher pays the thief: ACCEPTED    (want refuse (any))
+  [FAIL] C5 the thief holds none of the disputer's bond (thief received 100000000000 of 100000000000)
+  [FAIL] C6 ATTACK (NEW-2) the disputer's published bundle rewritten with disputer_ph = thief: ACCEPTED True   (want refuse (any))
+  [FAIL] C6 an upheld dispute refunds the disputer, not the rewriter (thief received 100000000000; the disputer funded 100000000000)
+  [PASS] C3 spend the bond coin to the thief without resolve: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] C4 resolve (upheld) with the bond coin's puzzle swapped to pay the thief: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] C4 control: resolve (upheld) as built: ACCEPTED    (want accept)
+  [PASS] C8 a second resolve with no dispute open: REFUSED clvm raise   (want refuse (clvm raise))
+  [FAIL] C7 ATTACK (NEW-3) creator disputes its final root, then reclaims at end + window (56) while the root is disputed: ACCEPTED 970000   (want refuse (any))
+      after the guardian rejected the dispute and the root activated, alice's claim is refused (campaign gone): the creator took 970000, alice's whole accrual, for a forfeited bond of 100000000000
+
+CAT A: ephemeral slots on the delegation list
+  [PASS] revoked delegate claims: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK revoked delegate + ephemeral spend of the slot this claim creates (1, uses+1): REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK revoked delegate + 'ephemeral' slot at the value the leaf spends (1, uses): REFUSED UnknownUnspent   (want refuse (UnknownUnspent))
+  [PASS] ATTACK replay the pre-revoke slot value (active 1, uses - 1): REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK the attacker's own grant in the same spend + the revoked delegate's claim (driver check off): REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] control: re-granted delegate claims (paid to holder): ACCEPTED 485000   (want accept)
+
+CAT B: AUTH_SIGNATURE claims and excluded addresses
+  [PASS] control: a third party submits the holder's signed claim (no coin at the address): ACCEPTED (None, None)   (want accept)
+  [PASS]   ... paid to the holder 
+  [PASS] ATTACK replay the same signature and leaf after it was paid: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] ATTACK the r1 signature reused for the r2 cumulative: REFUSED Simulator error: Validation error: BadAggregateSignature   (want refuse (BadAggregateSignature))
+  [PASS] ATTACK another key's signature for the holder's leaf: REFUSED Simulator error: Validation error: BadAggregateSignature   (want refuse (BadAggregateSignature))
+  [PASS] ATTACK excluded address claims by key signature from a root that pays it: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] ATTACK excluded address claims with an empty excluded list: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] ATTACK excluded address claims through a delegate: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] ATTACK the burn address claims: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] control: a listed holder claims from the same root: ACCEPTED 1000   (want accept)
+
+CAT C: bonds, disputes, resolves
+  [PASS] C1 dispute with no bond launcher in the bundle: REFUSED AssertCoinAnnouncementFailed   (want refuse (AssertCoinAnnouncementFailed))
+  [PASS] C2 dispute whose launcher announces another bond puzzle hash: REFUSED AssertCoinAnnouncementFailed   (want refuse (AssertCoinAnnouncementFailed))
+  [FAIL] C5 ATTACK (NEW-1) reuse the disputer's signed funding spend; launcher pays the thief: ACCEPTED    (want refuse (any))
+  [FAIL] C5 the thief holds none of the disputer's bond (thief received 100000000000 of 100000000000)
+  [FAIL] C6 ATTACK (NEW-2) the disputer's published bundle rewritten with disputer_ph = thief: ACCEPTED True   (want refuse (any))
+  [FAIL] C6 an upheld dispute refunds the disputer, not the rewriter (thief received 100000000000; the disputer funded 100000000000)
+  [PASS] C3 spend the bond coin to the thief without resolve: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] C4 resolve (upheld) with the bond coin's puzzle swapped to pay the thief: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] C4 control: resolve (upheld) as built: ACCEPTED    (want accept)
+  [PASS] C8 a second resolve with no dispute open: REFUSED clvm raise   (want refuse (clvm raise))
+  [FAIL] C7 ATTACK (NEW-3) creator disputes its final root, then reclaims at end + window (56) while the root is disputed: ACCEPTED 970000   (want refuse (any))
+      after the guardian rejected the dispute and the root activated, alice's claim is refused (campaign gone): the creator took 970000, alice's whole accrual, for a forfeited bond of 100000000000
+
+new surface: 44/54 as expected; UNEXPECTED: ["C5 ATTACK (NEW-1) reuse the disputer's signed funding spend; launcher pays the thief", "C5 the thief holds none of the disputer's bond", "C6 ATTACK (NEW-2) the disputer's published bundle rewritten with disputer_ph = thief", 'C6 an upheld dispute refunds the disputer, not the rewriter', 'C7 ATTACK (NEW-3) creator disputes its final root, then reclaims at end + window (56) while the root is disputed', "C5 ATTACK (NEW-1) reuse the disputer's signed funding spend; launcher pays the thief", "C5 the thief holds none of the disputer's bond", "C6 ATTACK (NEW-2) the disputer's published bundle rewritten with disputer_ph = thief", 'C6 an upheld dispute refunds the disputer, not the rewriter', 'C7 ATTACK (NEW-3) creator disputes its final root, then reclaims at end + window (56) while the root is disputed']

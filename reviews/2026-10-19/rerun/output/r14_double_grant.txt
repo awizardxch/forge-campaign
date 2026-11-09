@@ -1,0 +1,20 @@
+
+XCH
+  [PASS] control (grant, revoke): delegated claim: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK (grant, grant, revoke): delegated claim (was ACCEPTED, 485000): REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] one slot for the pair, inactive, uses counted (active 0, uses 4, unspent coins at its puzzle hash 1)
+  [PASS] ATTACK insert a second slot for the existing key elsewhere in the list: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] revoke + delegated claim in one spend: driver: REFUSED BundleCollision: two actions touch the delegation slot 4bc4bee2b82f5f57; split them across spends   (want refuse (delegation))
+  [PASS]   ... driver check off: consensus (both spend the one live slot): REFUSED DoubleSpend   (want refuse (any))
+  [PASS] control: re-granted, the delegate claims (paid to holder): ACCEPTED 485000   (want accept)
+
+CAT
+  [PASS] control (grant, revoke): delegated claim: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK (grant, grant, revoke): delegated claim (was ACCEPTED, 485000): REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] one slot for the pair, inactive, uses counted (active 0, uses 4, unspent coins at its puzzle hash 1)
+  [PASS] ATTACK insert a second slot for the existing key elsewhere in the list: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] revoke + delegated claim in one spend: driver: REFUSED BundleCollision: two actions touch the delegation slot 4bc4bee2b82f5f57; split them across spends   (want refuse (delegation))
+  [PASS]   ... driver check off: consensus (both spend the one live slot): REFUSED DoubleSpend   (want refuse (any))
+  [PASS] control: re-granted, the delegate claims (paid to holder): ACCEPTED 485000   (want accept)
+
+FLPCR-14: 14/14 as expected

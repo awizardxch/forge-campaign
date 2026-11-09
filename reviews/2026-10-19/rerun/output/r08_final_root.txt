@@ -1,0 +1,44 @@
+
+XCH
+  [FAIL] D=8, window 56, h trails by up to 31, no veto: r2 activates end+79, reclaim opens end+56 -> ATTACK creator reclaims while r2 is pending: ACCEPTED 970000   (want refuse (any))
+      creator received 970000 of budget 970000: the holders' accrual in r2 (and any unclaimed r1) is gone
+  [PASS] D=8, window 56, h trails by up to 31, early veto: r2 activates end+50, reclaim opens end+56 -> holders have 6 blocks
+  [FAIL] D=8, window 56, h trails by up to 31, late veto: r2 activates end+88, reclaim opens end+56 -> ATTACK creator reclaims while r2 is pending: ACCEPTED 970000   (want refuse (any))
+      creator received 970000 of budget 970000: the holders' accrual in r2 (and any unclaimed r1) is gone
+  [FAIL] D=8, window 56, h = P (shipped tools), no veto: r2 activates end+80, reclaim opens end+56 -> ATTACK creator reclaims while r2 is pending: ACCEPTED 970000   (want refuse (any))
+      creator received 970000 of budget 970000: the holders' accrual in r2 (and any unclaimed r1) is gone
+  [FAIL] D=8, window 56, h = P (shipped tools), early veto: r2 activates end+82, reclaim opens end+56 -> ATTACK creator reclaims while r2 is pending: ACCEPTED 970000   (want refuse (any))
+      creator received 970000 of budget 970000: the holders' accrual in r2 (and any unclaimed r1) is gone
+  [FAIL] D=8, window 56, h = P (shipped tools), late veto: r2 activates end+120, reclaim opens end+56 -> ATTACK creator reclaims while r2 is pending: ACCEPTED 970000   (want refuse (any))
+      creator received 970000 of budget 970000: the holders' accrual in r2 (and any unclaimed r1) is gone
+  [PASS] D=38, window 146, h trails by up to 31, no veto: r2 activates end+139, reclaim opens end+146 -> holders have 7 blocks
+  [PASS] D=38, window 146, h trails by up to 31, early veto: r2 activates end+110, reclaim opens end+146 -> holders have 36 blocks
+  [FAIL] D=38, window 146, h trails by up to 31, late veto: r2 activates end+178, reclaim opens end+146 -> ATTACK creator reclaims while r2 is pending: ACCEPTED 970000   (want refuse (any))
+      creator received 970000 of budget 970000: the holders' accrual in r2 (and any unclaimed r1) is gone
+  [PASS] D=38, window 146, h = P (shipped tools), no veto: r2 activates end+140, reclaim opens end+146 -> holders have 6 blocks
+  [PASS] D=38, window 146, h = P (shipped tools), early veto: r2 activates end+142, reclaim opens end+146 -> holders have 4 blocks
+  [FAIL] D=38, window 146, h = P (shipped tools), late veto: r2 activates end+210, reclaim opens end+146 -> ATTACK creator reclaims while r2 is pending: ACCEPTED 970000   (want refuse (any))
+      creator received 970000 of budget 970000: the holders' accrual in r2 (and any unclaimed r1) is gone
+
+CAT
+  [FAIL] D=8, window 56, h trails by up to 31, no veto: r2 activates end+79, reclaim opens end+56 -> ATTACK creator reclaims while r2 is pending: ACCEPTED 970000   (want refuse (any))
+      creator received 970000 of budget 970000: the holders' accrual in r2 (and any unclaimed r1) is gone
+  [PASS] D=8, window 56, h trails by up to 31, early veto: r2 activates end+50, reclaim opens end+56 -> holders have 6 blocks
+  [FAIL] D=8, window 56, h trails by up to 31, late veto: r2 activates end+88, reclaim opens end+56 -> ATTACK creator reclaims while r2 is pending: ACCEPTED 970000   (want refuse (any))
+      creator received 970000 of budget 970000: the holders' accrual in r2 (and any unclaimed r1) is gone
+  [FAIL] D=8, window 56, h = P (shipped tools), no veto: r2 activates end+80, reclaim opens end+56 -> ATTACK creator reclaims while r2 is pending: ACCEPTED 970000   (want refuse (any))
+      creator received 970000 of budget 970000: the holders' accrual in r2 (and any unclaimed r1) is gone
+  [FAIL] D=8, window 56, h = P (shipped tools), early veto: r2 activates end+82, reclaim opens end+56 -> ATTACK creator reclaims while r2 is pending: ACCEPTED 970000   (want refuse (any))
+      creator received 970000 of budget 970000: the holders' accrual in r2 (and any unclaimed r1) is gone
+  [FAIL] D=8, window 56, h = P (shipped tools), late veto: r2 activates end+120, reclaim opens end+56 -> ATTACK creator reclaims while r2 is pending: ACCEPTED 970000   (want refuse (any))
+      creator received 970000 of budget 970000: the holders' accrual in r2 (and any unclaimed r1) is gone
+  [PASS] D=38, window 146, h trails by up to 31, no veto: r2 activates end+139, reclaim opens end+146 -> holders have 7 blocks
+  [PASS] D=38, window 146, h trails by up to 31, early veto: r2 activates end+110, reclaim opens end+146 -> holders have 36 blocks
+  [FAIL] D=38, window 146, h trails by up to 31, late veto: r2 activates end+178, reclaim opens end+146 -> ATTACK creator reclaims while r2 is pending: ACCEPTED 970000   (want refuse (any))
+      creator received 970000 of budget 970000: the holders' accrual in r2 (and any unclaimed r1) is gone
+  [PASS] D=38, window 146, h = P (shipped tools), no veto: r2 activates end+140, reclaim opens end+146 -> holders have 6 blocks
+  [PASS] D=38, window 146, h = P (shipped tools), early veto: r2 activates end+142, reclaim opens end+146 -> holders have 4 blocks
+  [FAIL] D=38, window 146, h = P (shipped tools), late veto: r2 activates end+210, reclaim opens end+146 -> ATTACK creator reclaims while r2 is pending: ACCEPTED 970000   (want refuse (any))
+      creator received 970000 of budget 970000: the holders' accrual in r2 (and any unclaimed r1) is gone
+
+FLPCR-08: 10/24 as expected; UNEXPECTED: ['D=8, window 56, h trails by up to 31, no veto: r2 activates end+79, reclaim opens end+56 -> ATTACK creator reclaims while r2 is pending', 'D=8, window 56, h trails by up to 31, late veto: r2 activates end+88, reclaim opens end+56 -> ATTACK creator reclaims while r2 is pending', 'D=8, window 56, h = P (shipped tools), no veto: r2 activates end+80, reclaim opens end+56 -> ATTACK creator reclaims while r2 is pending', 'D=8, window 56, h = P (shipped tools), early veto: r2 activates end+82, reclaim opens end+56 -> ATTACK creator reclaims while r2 is pending', 'D=8, window 56, h = P (shipped tools), late veto: r2 activates end+120, reclaim opens end+56 -> ATTACK creator reclaims while r2 is pending', 'D=38, window 146, h trails by up to 31, late veto: r2 activates end+178, reclaim opens end+146 -> ATTACK creator reclaims while r2 is pending', 'D=38, window 146, h = P (shipped tools), late veto: r2 activates end+210, reclaim opens end+146 -> ATTACK creator reclaims while r2 is pending', 'D=8, window 56, h trails by up to 31, no veto: r2 activates end+79, reclaim opens end+56 -> ATTACK creator reclaims while r2 is pending', 'D=8, window 56, h trails by up to 31, late veto: r2 activates end+88, reclaim opens end+56 -> ATTACK creator reclaims while r2 is pending', 'D=8, window 56, h = P (shipped tools), no veto: r2 activates end+80, reclaim opens end+56 -> ATTACK creator reclaims while r2 is pending', 'D=8, window 56, h = P (shipped tools), early veto: r2 activates end+82, reclaim opens end+56 -> ATTACK creator reclaims while r2 is pending', 'D=8, window 56, h = P (shipped tools), late veto: r2 activates end+120, reclaim opens end+56 -> ATTACK creator reclaims while r2 is pending', 'D=38, window 146, h trails by up to 31, late veto: r2 activates end+178, reclaim opens end+146 -> ATTACK creator reclaims while r2 is pending', 'D=38, window 146, h = P (shipped tools), late veto: r2 activates end+210, reclaim opens end+146 -> ATTACK creator reclaims while r2 is pending']

@@ -1,0 +1,16 @@
+
+XCH
+  [PASS] control: alice's first claim: ACCEPTED 969   (want accept)
+  [PASS] ATTACK a second first-claim insert for alice (old: CoinAmountNegative / posted-total): REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+
+CAT
+  [PASS] control: alice's first claim: ACCEPTED 969   (want accept)
+  [PASS] ATTACK a second first-claim insert for alice (old: CoinAmountNegative / posted-total): REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+
+refused() in tests/test_chain.py
+  [PASS] refused() calls pinning a reason with expect=: 125 of 135 
+  [PASS] refused() treats a Python error as a failure, not a refusal 
+  [PASS] refused(expect=...) fails on a refusal for another reason 
+  [PASS] AGENT_TOOLS no longer says a clvm raise names a puzzle rule 
+
+FLPCR-16: 8/8 as expected

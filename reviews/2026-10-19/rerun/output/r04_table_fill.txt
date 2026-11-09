@@ -1,0 +1,39 @@
+
+XCH
+  [PASS] griefer 1-mojo campaign #1: ACCEPTED    (want accept)
+  [PASS] griefer 1-mojo campaign #2: ACCEPTED    (want accept)
+  [PASS] table full: 2 campaigns, reserve 2 
+  [PASS] honest create while the table is full: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] ATTACK griefer start beyond the horizon (h + max_campaign_length + 1): REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] admin reclaim one block before end + claim_window: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] stranger reclaims a griefer row (creator message sent by a stranger): REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] stranger poses as the admin: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] FIX: admin reclaims a griefer row, paid to the griefer (creator): ACCEPTED 1   (want accept)
+  [PASS] admin reclaim paid the creator exactly its leftover (paid 1)
+  [PASS] honest create after the admin drained the table: ACCEPTED    (want accept)
+  [PASS] fully claimed: claimed == budget 
+  [PASS] FIX: admin removes the fully claimed row (pays 0): ACCEPTED 0   (want accept)
+  [PASS] row gone 
+
+CAT
+  [PASS] griefer 1-mojo campaign #1: ACCEPTED    (want accept)
+  [PASS] griefer 1-mojo campaign #2: ACCEPTED    (want accept)
+  [PASS] table full: 2 campaigns, reserve 2 
+  [PASS] honest create while the table is full: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] ATTACK griefer start beyond the horizon (h + max_campaign_length + 1): REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] admin reclaim one block before end + claim_window: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] stranger reclaims a griefer row (creator message sent by a stranger): REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] stranger poses as the admin: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] FIX: admin reclaims a griefer row, paid to the griefer (creator): ACCEPTED 1   (want accept)
+  [PASS] admin reclaim paid the creator exactly its leftover (paid 1)
+  [PASS] honest create after the admin drained the table: ACCEPTED    (want accept)
+  [PASS] fully claimed: claimed == budget 
+  [PASS] FIX: admin removes the fully claimed row (pays 0): ACCEPTED 0   (want accept)
+  [PASS] row gone 
+
+router
+  [PASS] router with min_amount 1000 refuses a 1-mojo campaign (amount is below the minimum for this reward asset)
+  [NOTE] RouterRules() defaults set no floor: a 1-mojo campaign is routable until the owner sets values
+  [PASS] router refuses a 5th live campaign for one creator (default cap 4) 
+
+FLPCR-04: 30/30 as expected

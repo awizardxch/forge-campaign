@@ -1,0 +1,13 @@
+  [PASS] control (link@10 seq1, member unlinks @50 seq2): atk earns nothing {'b42f': 1000}
+  [PASS] control: the link counts while live {'5df8': 500, 'b42f': 500}
+  [PASS] ATTACK replayed old link @150 (seq 1 <= 2) is ignored (was {..., atk: 250}) {'b42f': 1000}
+  [PASS] primary alone unlinks (was impossible) {'b42f': 1000}
+  [PASS] ATTACK a third party's unlink is ignored {'5df8': 500, 'b42f': 500}
+  [PASS] ATTACK a link signed for another distributor does not verify here 
+  [PASS] ATTACK backdated link (recorded after root 1, dated 120 inside its window) refused (link recorded at 120, inside a window root 1 settled)
+  [PASS] the root's manifest commits the log prefix it used 
+  [PASS] ATTACK dropping a committed entry refused 
+  [PASS] FixtureSource.from_json keeps links (was False) 
+  [PASS] identity key never signs an unlink 
+
+FLPCR-11: 11/11 as expected

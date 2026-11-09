@@ -1,0 +1,18 @@
+
+XCH
+  [PASS] ATTACK h = P - 31, start = h (old: accepted, 31 blocks retroactive): REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] ATTACK h = P - 31, start = P (h + 31): REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] ATTACK h = P, start = P + 31: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] control: h = P - 31, start = h + 32 = P + 1: ACCEPTED    (want accept)
+  [PASS] the accepted campaign starts after the block that created it (start 43, created at 42)
+  [PASS] control: h = P, start = P + 32: ACCEPTED    (want accept)
+
+CAT
+  [PASS] ATTACK h = P - 31, start = h (old: accepted, 31 blocks retroactive): REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] ATTACK h = P - 31, start = P (h + 31): REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] ATTACK h = P, start = P + 31: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] control: h = P - 31, start = h + 32 = P + 1: ACCEPTED    (want accept)
+  [PASS] the accepted campaign starts after the block that created it (start 43, created at 42)
+  [PASS] control: h = P, start = P + 32: ACCEPTED    (want accept)
+
+FLPCR-15: 12/12 as expected

@@ -1,0 +1,7 @@
+  [PASS] control: collection == [real] 
+  [PASS] ATTACK A: forged NFT under a DID payment is NOT counted (was True) (size 1)
+  [PASS] ATTACK A: mallory's wizard count is 0 (was 1) 
+  [PASS] B: DID-authorized single mint (launcher parent = XCH coin) is counted (was False) 
+  [PASS] melt stand-in: the NFT whose spend cannot be followed stops counting for alice (was: forever) {'alice': 1}
+
+FLPCR-10: 5/5 as expected
