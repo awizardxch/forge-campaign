@@ -88,11 +88,15 @@ class Config:
 
     @property
     def min_claim_window(self) -> int:
-        """The creator's claim window has only a technical floor: room for the
-        previous root's dispute window, one veto and repost of the root
-        covering `end`, and the HEIGHT_WINDOW slack, before reclaiming opens
-        (FLPCR-08). Its ceiling is the longest campaign."""
-        return 3 * self.dispute_blocks + HEIGHT_WINDOW
+        """The creator's claim window has only a technical floor: four root
+        cycles of HEIGHT_WINDOW + dispute_blocks (a root posted at the node's
+        peak activates one cycle after it lands). The root pending across
+        `end`, the final root, one late veto and repost of it, and one cycle
+        for holders to claim the final root, before reclaiming opens
+        (FLPCR-08, review 2026-11-09: the old floor 3 * dispute_blocks + 32
+        let a late veto push the final root past the opening). Its ceiling is
+        the longest campaign."""
+        return 4 * (self.dispute_blocks + HEIGHT_WINDOW)
 
     @property
     def min_start_lead(self) -> int:
@@ -368,7 +372,9 @@ class Distributor:
         whatever holders left: budget never earned plus earnings never claimed.
         The creator, a delegate the creator granted, or the admin
         (`as_admin`, authorized by admin_ph) can reclaim; the payment always
-        goes to the creator."""
+        goes to the creator. Refused while a dispute is open or while the
+        pending root raises this campaign's total over the active root's
+        (review 2026-11-09, NEW-3): those holders' accrual is still in flight."""
         self._settle(h)
         rec = self.campaigns.get(campaign_id)
         if rec is None:
@@ -381,6 +387,13 @@ class Distributor:
             raise Refused("only the creator, their delegate or the admin can reclaim")
         if h < rec.campaign.reclaim_from:
             raise Refused("claim window still open")
+        # NEW-3: not while holders' accrual is still in flight.
+        if self.dispute is not None:
+            raise Refused("a dispute is open")
+        if self.pending is not None:
+            before = self.active.totals.get(campaign_id, 0) if self.active is not None else 0
+            if self.pending.totals.get(campaign_id, 0) != before:
+                raise Refused("the pending root raises this campaign's total")
         amount = rec.campaign.budget - rec.claimed
         del self.campaigns[campaign_id]
         self.reserve -= amount

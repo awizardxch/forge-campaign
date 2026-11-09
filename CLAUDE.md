@@ -10,12 +10,16 @@ for this project is `docs/skills/forgeCampaigns.md` in `awizardxch/aWizard-Famil
 `reviews/2026-10-19/FINDINGS.md` is the pre-testnet review of `dea1d7d`. Read it before changing a leaf or
 launching anything. The original probes (`reviews/2026-10-19/probes/`) are the record of `dea1d7d`; every one was ported
 to the current driver and rerun on 2026-11-09 (`reviews/2026-10-19/rerun/`, `python
-reviews/2026-10-19/rerun/run_all.py`; status table at the top of `FINDINGS.md`). 16 of 17 findings are
-refused for their own reason. **Open, being fixed:** FLPCR-08 (the claim-window floor is too short with a
-root pending across `end`), and three new findings from the rerun: NEW-1 (anyone can redirect a dispute
-bond: the bond launcher's destination is an unsigned solution value), NEW-2 (`disputer_ph`, where an upheld
-bond is refunded, is unsigned) and NEW-3 (`reclaim` ignores an open dispute or a pending root, so a
-creator can dispute its own final root and reclaim the holders' accrual).
+reviews/2026-10-19/rerun/run_all.py`; status table at the top of `FINDINGS.md`). 16 of 17 findings were
+refused for their own reason; FLPCR-08 and three new findings were not. **Fixed on `fix-bond-reclaim`
+(2026-11-09), one re-pin of `bond_launcher`, `dispute`, `reclaim` and `create`:** NEW-1 and NEW-2 (the
+bond launcher is curried with `bond_puzzle_hash`, `distributor_id` and `disputer_ph`, and creates the bond
+only on the `dispute` leaf's message, so the disputer's signed spend fixes the bond's destination and its
+refund address), NEW-3 (`reclaim` refuses while a dispute is open or while the pending root raises the
+campaign's total), FLPCR-08 (floor `4 × (dispute_blocks + 32)`). `Config`/`State` shapes are unchanged,
+but `Config.bond_launcher_hash` (now the curried launcher's mod hash) moved, so every distributor's
+puzzle hash moved: launched distributors keep the old, vulnerable dispute path (`docs/TESTNET.md` §5).
+`run_all.py` is all ok; 461 tests pass.
 
 - **Applied on `fix/review-2026-10-19-onchain`, in one re-pin of every leaf:** FLPCR-02 (delegation
   slot list), -03 (dispute window from `h + 32`), -04 (admin reclaim), -05 (height guards pinned), -06
@@ -62,7 +66,7 @@ creator can dispute its own final root and reclaim the holders' accrual).
 cargo install rue-cli --version 0.8.4 --locked       # exactly 0.8.4: reproduces upstream's pinned hashes
 pip install chia-wallet-sdk==0.36.0 pytest clvm
 python contracts/build.py --check   # compiled/ matches the sources and every pin; run before trusting anything
-.venv/Scripts/python.exe -m pytest tests -q   # 460 tests (5 skip without Sage RPC), all on the in-process simulator
+.venv/Scripts/python.exe -m pytest tests -q   # 461 tests (5 skip without Sage RPC), all on the in-process simulator
 python scripts/mutate.py            # optional, ~3 min; must end "0 unargued survivors"
 ```
 
@@ -107,7 +111,8 @@ driver all read it. `build.py` also enforces the upstream source sha256 pins.
 - Admin: `admin_ph` is the dev multisig (normally the same address as `dev_fee_ph`). It may reclaim for
   a creator, cancel a pending rotation and resolve a dispute; it can never take funds.
 - Disputes are open to anyone with a bond of `dispute_bond` (XCH whatever the reward asset: production
-  5 XCH, testnet 0.1 TXCH), funded by the disputer's own coin spend through the bond launcher; the
+  5 XCH, testnet 0.1 TXCH), funded by the disputer's own coin spend through the bond launcher (curried
+  with the bond puzzle hash, distributor id and `disputer_ph`; it waits for the `dispute` leaf's message); the
   guardian or admin resolves; upheld bonds are refunded to the disputer, rejected bonds go to the dev
   multisig and the window restarts. The bond coin (nonce 3) never enters the reserve, and `veto` is
   refused while a dispute is open.
@@ -130,8 +135,12 @@ driver all read it. `build.py` also enforces the upstream source sha256 pins.
 - Delegate fee: every grant or revoke leaves `delegate_fee` as network fee (production 50,000,000 mojos,
   testnet 1,000,000).
 - Campaign length: testnet from 16 blocks, production from 77, max 365 days; `start` from `h + 32` to
-  `h + max_campaign_length`. The claim window is the creator's choice (floor: `3 × dispute_blocks + 32`,
-  testnet 56, production 146).
+  `h + max_campaign_length`. The claim window is the creator's choice (floor: `4 × (dispute_blocks + 32)`,
+  testnet 160, production 280; was `3 × dispute_blocks + 32`, 56 / 146, until FLPCR-08's rerun showed a
+  late veto pushes the final root to `end + 3 × (dispute_blocks + 32)`; the fourth cycle is the holders'
+  time to claim it). **Raised 2026-11-09, for the owner to confirm.**
+- Reclaim waits (2026-11-09, NEW-3): refused while a dispute is open or while the pending root raises the
+  campaign's total over the active root's; a pending root that leaves it unchanged does not block.
 - Reward assets: XCH, or a CAT in a Forge V16 registry pool (router rule).
 - **Fee weights (2026-11-09, open for the owner):** a swap's LP fee is valued in the pool's asset 0 at the
   pre-spend spot price (XCH whenever the pool holds XCH); a CAT/CAT pool's fees are valued in its own
@@ -150,8 +159,8 @@ driver all read it. `build.py` also enforces the upstream source sha256 pins.
 - **The open pool (balance/365 per day) is a separate puzzle, for later** (`docs/OPEN_POOLS_DESIGN.md`).
   LP and NFT Merkl campaigns on this distributor come first.
 - **Reclaim guard:** our tools refuse a reclaim while holders could not yet claim the final root
-  (`reclaim_blockers()`, `--force` overrides). Operator policy, not a puzzle rule, so a creator's own
-  wallet bypasses it (NEW-3, FLPCR-08: the puzzle fix is in progress).
+  (`reclaim_blockers()`, `--force` overrides). Operator policy beyond the puzzle's own rule (above): it
+  also waits for a final root not yet posted and gives holders `claim_window` after it activates.
 - **Forge V16 and newer only (2026-11-09).** `LP_HOLD` campaigns target pools of the latest Forge
   revision (V16, protocol 17) or a newer one; V15 and V14 pools are not supported, even while they stay
   live on testnet11. A new Forge revision is added by pinning its replay lane, never by keeping old ones.

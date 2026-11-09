@@ -8,7 +8,7 @@ CAT
   [PASS] ATTACK a second first-claim insert for alice (old: CoinAmountNegative / posted-total): REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
 
 refused() in tests/test_chain.py
-  [PASS] refused() calls pinning a reason with expect=: 125 of 135 
+  [PASS] refused() calls pinning a reason with expect=: 134 of 144 
   [PASS] refused() treats a Python error as a failure, not a refusal 
   [PASS] refused(expect=...) fails on a refusal for another reason 
   [PASS] AGENT_TOOLS no longer says a clvm raise names a puzzle rule 

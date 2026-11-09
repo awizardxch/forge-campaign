@@ -2,20 +2,24 @@
 //
 // What Merkl does with a dispute token, on Chia coins. The disputer's bundle
 // spends a coin that creates a bond launcher (bond_launcher.rue) holding
-// exactly `dispute_bond` mojos; the launcher creates the bond coin at
-// `bond_puzzle_hash` (p2_delegated_by_singleton, nonce 3) and announces that
-// it did. This leaf is given the launcher's GRANDPARENT (the disputer's coin),
-// derives the launcher's id
+// exactly `dispute_bond` mojos, curried with this distributor's bond puzzle
+// hash, its id and `disputer_ph`; the launcher creates the bond coin at
+// `bond_puzzle_hash` (p2_delegated_by_singleton, nonce 3). This leaf is given
+// the launcher's GRANDPARENT (the disputer's coin), derives the launcher's id
 //
-//     P = coinid(grandparent, bond_launcher_hash, dispute_bond)
+//     L = curry_tree_hash(bond_launcher_hash, [bond_puzzle_hash, distributor_id, disputer_ph])
+//     P = coinid(grandparent, L, dispute_bond)
 //
-// and asserts its announcement, so a bond that was never funded cannot open a
-// dispute. The pending root then cannot activate until `resolve` lands:
+// and sends P the bond message. The launcher receives it, so a bond that was
+// never funded cannot open a dispute, and the launcher can never be spent
+// without this dispute being recorded. The disputer's signed spend created P,
+// so it fixed both where the bond sits and `disputer_ph` (review 2026-11-09,
+// NEW-1, NEW-2): rewriting either here derives a coin nobody created. The pending root then cannot activate until `resolve` lands:
 // upheld, the root is revoked and the bond refunded to `disputer_ph`;
 // rejected, the bond is forfeited to the dev multisig and the window restarts.
 //
 // Nobody authorizes a dispute: the bond is the authorization. `disputer_ph`
-// is only where a refund goes, and it is the disputer's own choice.
+// is only where a refund goes; the disputer chose it when it funded the bond.
 
 import shared::*;
 
@@ -38,7 +42,11 @@ fn main(
     assert disputer_ph.length == 32;
     assert bond_grandparent != LOW_KEY;
 
-    let bond_parent = coinid(bond_grandparent, CONFIG.bond_launcher_hash, CONFIG.dispute_bond);
+    let launcher_hash = curry_tree_hash(
+        CONFIG.bond_launcher_hash,
+        [tree_hash_atom(CONFIG.bond_puzzle_hash), tree_hash_atom(CONFIG.distributor_id), tree_hash_atom(disputer_ph)],
+    );
+    let bond_parent = coinid(bond_grandparent, launcher_hash, CONFIG.dispute_bond);
 
     (
         Truth {
@@ -50,9 +58,7 @@ fn main(
             ),
         },
         [
-            AssertCoinAnnouncement {
-                id: sha256(bond_parent + bond_message(CONFIG.bond_puzzle_hash, CONFIG.dispute_bond, CONFIG.distributor_id)),
-            },
+            SendMessage { mode: MODE_PUZZLE_TO_COIN, message: bond_message(CONFIG.bond_puzzle_hash, CONFIG.dispute_bond, CONFIG.distributor_id), receiver: [bond_parent] },
             ...conditions,
         ],
     )

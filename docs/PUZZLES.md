@@ -49,8 +49,9 @@ claim slot   = slot(SingletonInfo, nonce 1)(sha256tree(ClaimSlot))
 delegation   = slot(SingletonInfo, nonce 2)(sha256tree(DelegationSlot))
 bond coin    = p2_delegated_by_singleton(SINGLETON_MOD_HASH, struct_hash, nonce 3), bare XCH, holding
                exactly dispute_bond; its puzzle hash is Config.bond_puzzle_hash (driver BOND_NONCE = 3)
-bond launcher= bond_launcher.rue, a plain coin the disputer's own spend creates with exactly
-               dispute_bond mojos; its hash is Config.bond_launcher_hash
+bond launcher= bond_launcher.rue curried with (bond_puzzle_hash, distributor_id, disputer_ph), a
+               plain coin the disputer's own spend creates with exactly dispute_bond mojos; its mod
+               hash is Config.bond_launcher_hash
 LEAVES_ROOT  = merkle root of the ten curried leaf hashes, in this order (flpcr/leaves.py):
                init, create, post_root, veto, claim, reclaim, rotate, delegate, dispute, resolve
 ```
@@ -83,8 +84,8 @@ DelegationSlot (key . (active . (uses . (left . right))))       key = sha256tree
 `admin_ph` is the dev multisig, normally the same address as `dev_fee_ph`. `dispute_bond` is in mojos of
 XCH whatever the reward asset (production 5 XCH = 5,000,000,000,000; testnet 0.1 TXCH =
 100,000,000,000); `bond_puzzle_hash` is the distributor's `p2_delegated_by_singleton` at nonce 3, where a
-bond sits; `bond_launcher_hash` is the hash of `bond_launcher.rue`, the only puzzle a bond coin may be
-born from. `Dispute.bond_parent` is the bond launcher's coin id, from which `resolve` derives the bond
+bond sits; `bond_launcher_hash` is the mod hash of `bond_launcher.rue`, the only puzzle a bond coin may
+be born from (curried per dispute with `bond_puzzle_hash`, `distributor_id` and `disputer_ph`). `Dispute.bond_parent` is the bond launcher's coin id, from which `resolve` derives the bond
 coin.
 
 A leaf receives `(Truth . solution)` and returns `(Truth' . conditions)`. A condition `(-42 . c)` is
@@ -175,7 +176,8 @@ authorization, which is mode 16 (sender puzzle hash, receiver uncommitted).
      both bps `>= 0` and they sum to 10000; `kind == 1` or `fees_bps == 0` (so only an LP campaign
      weights by fees);
    - `count_hashes(blacklist) <= MAX_EXCLUDED`: at most 16 excluded addresses, each 32 bytes;
-   - `3 * dispute_blocks + 32 <= claim_window <= max_campaign_length`;
+   - `4 * (dispute_blocks + 32) <= claim_window <= max_campaign_length` (four root cycles: the root
+     pending across `end`, the final root, one late veto and repost, and one cycle to claim it; FLPCR-08);
    - fewer than `max_campaigns` campaigns, and `id` is new.
 4. Receive `"c" + id` from `router_ph`, **and** `"k" + id` from `creator` (`authorize_by_spend`: `auth`
    must be 1; a signature is refused).
@@ -239,6 +241,10 @@ authorization, which is mode 16 (sender puzzle hash, receiver uncommitted).
 
 ### `reclaim` `[h, campaign_id, auth, auth_data]`
 - The campaign is live and `h >= end + claim_window`.
+- No dispute is open, and the pending root (if any) does not raise the campaign's total:
+  `total_for(pending.totals, id) == total_for(active.totals, id)` (0 with no active root). Holders'
+  accrual in flight blocks the reclaim; a pending root that only re-names the campaign does not
+  (review 2026-11-09, NEW-3).
 - Let `message = sha256tree(["flpcr-reclaim-v1", distributor_id, campaign_id])`. Authorized by either:
   - **the creator:** `authorize_or_delegate(creator, auth, auth_data, message, spend_only = false)`,
     i.e. the creator's signature or message, or a delegate the creator granted through `delegate`
@@ -273,29 +279,34 @@ authorization, which is mode 16 (sender puzzle hash, receiver uncommitted).
 
 ### `dispute` `[h, root_id, disputer_ph, bond_grandparent]`
 Anyone; no authorization. The bond is the authorization, and `disputer_ph` is only where a refund goes
-(the disputer's own choice). Merkl's dispute, on coins.
+(the disputer's own choice, fixed by the launcher it funded). Merkl's dispute, on coins.
 1. After the prologue's promotion: `pending` is not nil and `pending.root_id == root_id` (a root past its
    window is already active and can no longer be disputed); `dispute` is nil (one open dispute at a
    time); `disputer_ph` is 32 bytes; `bond_grandparent != 0x00..`.
-2. Derive `bond_parent = coinid(bond_grandparent, bond_launcher_hash, dispute_bond)`: the bond launcher,
-   a child of the disputer's own coin, with exactly `dispute_bond` mojos.
-3. Emit `ASSERT_COIN_ANNOUNCEMENT sha256(bond_parent + "flpcr-bond-v1" + sha256tree([bond_puzzle_hash,
-   dispute_bond, distributor_id]))`. Only a coin whose id commits to `bond_launcher_hash` can make that
-   announcement, and that puzzle does nothing but create the bond, so a bond that was never funded, or
-   funded with the wrong amount, cannot open a dispute (the Forge registry's reserve-launcher pattern).
+2. Derive `L = curry_tree_hash(bond_launcher_hash, [bond_puzzle_hash, distributor_id, disputer_ph])` and
+   `bond_parent = coinid(bond_grandparent, L, dispute_bond)`: the bond launcher, a child of the
+   disputer's own coin, with exactly `dispute_bond` mojos.
+3. Emit `SEND_MESSAGE` mode 23 to `bond_parent` with `"flpcr-bond-v1" + sha256tree([bond_puzzle_hash,
+   dispute_bond, distributor_id])`. The launcher must receive it, so a bond that was never funded, funded
+   with the wrong amount, sent elsewhere, or with a rewritten `disputer_ph` (a launcher nobody created)
+   cannot open a dispute; and the launcher, which waits for this message, cannot be spent from a lifted
+   funding spend to redirect or strand the bond (review 2026-11-09, NEW-1, NEW-2).
 4. Set `dispute = (root_id, disputer_ph, bond_parent)`. `pending` is unchanged and stays pending: the
    prologue skips promotion while a dispute is open, so the root cannot activate until `resolve` lands.
 
-### `bond_launcher` `[created_puzzle_hash, amount, distributor_id]` (not a leaf)
+### `bond_launcher` curried `[BOND_PUZZLE_HASH, DISTRIBUTOR_ID, DISPUTER_PH]`, solution `[amount, singleton_inner_puzzle_hash]` (not a leaf)
 A plain coin puzzle, compiled and pinned beside the leaves (`EXTRA` in `flpcr/leaves.py`). The disputer's
-own coin spend creates it with exactly `dispute_bond` mojos of bare XCH, hinted with the distributor id,
-in the same bundle as the `dispute` action.
+own coin spend creates it, curried, with exactly `dispute_bond` mojos of bare XCH, hinted with the
+distributor id, in the same bundle as the `dispute` action. Its puzzle hash commits to all three curried
+values, so the disputer's signature over that spend commits to them too. `DISPUTER_PH` is not read; it
+is curried only so the launcher's id names it.
 - `amount > 0`; `ASSERT_MY_AMOUNT amount`.
-- `CREATE_COIN created_puzzle_hash amount (distributor_id)`: the bond coin, at `bond_puzzle_hash`
-  (`p2_delegated_by_singleton`, nonce 3), for the whole amount. Bare XCH even for a CAT distributor; it
-  never enters the reserve.
-- `CREATE_COIN_ANNOUNCEMENT "flpcr-bond-v1" + sha256tree([created_puzzle_hash, amount, distributor_id])`,
-  which `dispute` asserts.
+- `CREATE_COIN BOND_PUZZLE_HASH amount (DISTRIBUTOR_ID)`: the bond coin (`p2_delegated_by_singleton`,
+  nonce 3), for the whole amount. Bare XCH even for a CAT distributor; it never enters the reserve.
+- `RECEIVE_MESSAGE` mode 23 of `"flpcr-bond-v1" + sha256tree([BOND_PUZZLE_HASH, amount, DISTRIBUTOR_ID])`
+  from `curry_tree_hash(SINGLETON_MOD_HASH, [sha256tree((SINGLETON_MOD_HASH . (DISTRIBUTOR_ID .
+  SINGLETON_LAUNCHER_HASH))), singleton_inner_puzzle_hash])`: a generation of this distributor, whose
+  `dispute` leaf alone sends it.
 
 ### `resolve` `[h, upheld, sender]`
 1. `dispute` and `pending` are both not nil; `upheld` is 0 or 1; `sender` is `guardian_ph` or `admin_ph`.
@@ -359,10 +370,11 @@ outright; claims against the previous active root continue. Only one dispute at 
   - For a CAT reward, the reserve and any deposit are spent in one CAT ring (`Clvm.spend_cats`).
 - **Bonds (`BOND_NONCE = 3`):**
   - `Distributor.dispute(h, root_id, disputer_ph, disputer_coin_id)` names the disputer's coin as the
-    bond grandparent. Its `creations` lists the bond launcher `(bond_launcher_hash, dispute_bond,
-    launcher_id)` that the disputer's own spend of that coin must create, and its `extra_spends` holds
-    the launcher's spend (solution `[bond_ph, dispute_bond, launcher_id]`), which creates the bond coin
-    and announces it. The driver never spends the disputer's coin; `SimWorld.dispute` and
+    bond grandparent. Its `creations` lists the bond launcher `(bond_launcher_ph(disputer_ph),
+    dispute_bond, launcher_id)` that the disputer's own spend of that coin must create, and its
+    `extra_spends` holds the launcher's spend (`bond_launcher_puzzle(disputer_ph)`, solution
+    `[dispute_bond, singleton_inner_ph]` of the generation it is built against), which creates the bond
+    coin on the leaf's message. The driver never spends the disputer's coin; `SimWorld.dispute` and
     `scripts/deploy_testnet.py` build that spend from `Prepared.creations`.
   - `Distributor.resolve(h, upheld, sender)` (sender defaults to the guardian) reads the open dispute
     from `chain_state`, carries the `"s"` message, and adds the bond coin's spend to `extra_spends`:

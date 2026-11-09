@@ -1,14 +1,15 @@
 
 FLPCR-01: flash deposit plus dust swap
   [PASS] control (quiet pool) unchanged {'aaaa': 100000.0}
-  [PASS] ATTACK one root [0,1000): attacker <= 1% (was 49549.5) {'aaaa': 99901.0, 'eeee': 99.0}
-  [PASS] ATTACK vs an honest swap of equal fee: attacker <= 1% (was 24799.5) {'aaaa': 99925.75, 'eeee': 74.25}
-  [PASS] fee_window = 1 (no floor): still about one block's share {'aaaa': 99901.0, 'eeee': 99.0}
-  [PASS] fee_window = 2: still about one block's share {'aaaa': 99901.0, 'eeee': 99.0}
-  [NOTE] the deposit lands in the swap's own block (999) and still counts 1/fee_window of that swap: the lookback includes the current block
+  [PASS] ATTACK one root [0,1000): attacker <= 1% (was 49549.5) {'aaaa': 99950.5, 'eeee': 49.5}
+  [PASS] ATTACK vs an honest swap of equal fee: attacker <= 1% (was 24799.5) {'aaaa': 99950.5, 'eeee': 49.5}
+  [PASS] fee_window = 1 refused (floor 192, owner rule 2026-11-09) fee_window must be at least 192 blocks (one hour)
+  [PASS] fee_window = 2 refused (floor 192, owner rule 2026-11-09) fee_window must be at least 192 blocks (one hour)
+  [PASS] fee_window = 191 refused (floor 192, owner rule 2026-11-09) fee_window must be at least 192 blocks (one hour)
+  [PASS] fee_window = 192 (the floor): a deposit in the swap's own block earns nothing of the fee half (the lookback is [h - W, h)); the attacker keeps only its one block of time share {'aaaa': 99950.5, 'eeee': 49.5}
 
 FLPCR-09: where roots are cut
-  [PASS] one root [0,1000) == roots [0,998)+[998,1000) (was {aaaa: 50450, eeee: 49549} vs {99851, 148}) {'aaaa': 99901, 'eeee': 99} vs {'aaaa': 99901, 'eeee': 99}
+  [PASS] one root [0,1000) == roots [0,998)+[998,1000) (was {aaaa: 50450, eeee: 49549} vs {99851, 148}) {'aaaa': 99950, 'eeee': 49} vs {'aaaa': 99950, 'eeee': 49}
 
 FLPCR-17: float fee weights
   [PASS] JSON float weight refused at the Source boundary (TypeError: fee weight must be an int or a Fraction, not float)
@@ -19,4 +20,4 @@ E-7: blacklisted wrapper and forwarding
   [PASS] blacklist={VAULT}, forward on: nothing reaches the vault's holders {'aaaa': 100000.0}
   [PASS] control: an unlisted vault forwards to its holders {'aaaa': 50000.0, 'eeee': 50000.0}
 
-FLPCR-01/09/17, E-7: 11/11 as expected
+FLPCR-01/09/17, E-7: 13/13 as expected

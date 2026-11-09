@@ -155,7 +155,7 @@ stale as soon as anything else spends the singleton: a claim batch, a root, anot
 **Built (`flpcr/service/intake.py`, `flpcr/service/lease.py`), with no puzzle change:**
 
 - **`POST /api/v1/campaigns/quote`.** Validates the request against the distributor's `Config` (length,
-  claim window floor `3 × dispute_blocks + 32`, start from `h + 32` to the horizon, at most 16 excluded
+  claim window floor `4 × (dispute_blocks + 32)`, start from `h + 32` to the horizon, at most 16 excluded
   addresses) and runs `router.check_campaign` with the host's `RouterRules` and a Forge registry built
   from V16-or-newer pools only (a V15/V14 pool is refused by name; a reward CAT must sit in a V16 pool).
   It returns the campaign id and every field it commits to, the fee, budget, daily emission

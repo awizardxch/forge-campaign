@@ -37,7 +37,7 @@ from flpcr import EngineState, FixtureSource, HolderEvent, Kind, run_epoch
 
 POOL, LP = b"\xb0" * 32, b"\x1b" * 32
 POOL2, LP2 = b"\xb2" * 32, b"\x2b" * 32
-WINDOW = 56
+WINDOW = 160  # the claim-window floor, 4 * (dispute_blocks + 32) on testnet
 
 
 @unittest.skipUnless(HAVE_CHAIN, "chia-wallet-sdk or compiled puzzles missing")

@@ -39,7 +39,7 @@ The engine alone (`flpcr/` minus `flpcr/chain/`) needs only the standard library
 | Address links | verified in tests with generated keys | Sage's `signMessageByAddress`. Check one real Sage signature against `flpcr.links.verify` first |
 | Finding the distributor again | the driver holds it in memory | Persist the launcher id plus the driver's state (state value, claim slot records, delegation slot records, lineage). Or rebuild it by replaying the singleton's spends, the way `forge_v16_resync` rebuilds a pool |
 | Fees | none, except `delegate_fee` where a test sets it | The network fee comes from the creator's, holder's or operator's own coin spend. Every delegate grant or revoke must leave `delegate_fee` (testnet 1,000,000 mojos). An XCH bundle tolerates extra XCH (it goes to the fee); a CAT ring does not |
-| Clocks | `Config.testnet`: 8-block disputes, 16-block minimum campaign, 56-block minimum claim window, 24-block rotation delay | Same numbers work on testnet11 (~2.5 min disputes, ~5 min campaigns); production 38 / 77 / 146 / 4,608 |
+| Clocks | `Config.testnet`: 8-block disputes, 16-block minimum campaign, 160-block minimum claim window, 24-block rotation delay | Same numbers work on testnet11 (~2.5 min disputes, ~5 min campaigns); production 38 / 77 / 280 / 4,608 |
 
 ## 3. Suggested order
 
@@ -53,7 +53,7 @@ The engine alone (`flpcr/` minus `flpcr/chain/`) needs only the standard library
 2. **One manual campaign.** Create through a spend of the creator's own coin (supplying `amount` and
    sending `"k" + campaign_id`) plus the router's message, with `start` at least 32 blocks ahead; post a
    hand-built root; claim by a spend from the holder's address and by key signature (`claim --by-key`,
-  `claim-all`); reclaim after the window (at least 56
+  `claim-all`); reclaim after the window (at least 160
    blocks on testnet). Then an admin reclaim, a delegate grant (paying `delegate_fee`) and a rotation
    proposal and cancel. This is `TestLifecycle` and its neighbours, run on testnet.
 3. **A dispute, both ways** (`TestDisputes` on testnet). Fund the `disputer` role (`fund-roles`), then
@@ -132,6 +132,16 @@ new distributor, because an old one keeps the puzzles it was launched with.
 | `38dd21c6…` (third) | `state-testnet11-v3.json` | Generation-free claims. Spent after the leaves changed by rebuilding its exact leaves from source into a separate folder and pointing `FLPCR_COMPILED` at it: a finished campaign was claimed through a live-source final root, and the last 4 mojos were reclaimed |
 | `b1df2ca9…` (fourth, 2026-10-20) | `state-testnet11-v4.json` | **Excluded addresses.** 1,000 real A2 LP was moved to derivation 11, which the campaign then excluded (`--exclude`). Both roots paid only derivation 0: 0.028292 TXCH, then the whole 0.097 TXCH budget. The claim leaf refused derivation 11 with the list revealed and with it hidden, while derivation 0's claim built |
 | `62b6d188…` (fifth, 2026-10-20) | `state-testnet11-v5.json` | **NFT campaigns.** DID campaign `baa243a2` paid in exact proportion to NFT count: 2:1 between derivations 12 and 13, and derivations 14 and 15 only from their mint block. Collection campaign `aeb401ef` on `col1ch4n5ugp…` (the aWizard DID + collection id `ae43c809-…`): three NFTs minted through Sage `bulk_mint_nfts`, reusing metadata Studio Pro had pinned on MintGarden's IPFS; it paid 2:1 between derivations 14 and 15 and left out the earlier unnamed NFTs from the same DID. Both campaigns were claimed by key signature and reclaimed to the mojo; reserve 0 |
+
+**The 2026-11-09 re-pin (`fix-bond-reclaim`) needs a new distributor.** All five distributors above, and
+any launched before that re-pin, keep the old `bond_launcher`, `dispute`, `reclaim` and `create`: their
+dispute path is the vulnerable one (NEW-1: anyone who sees a dispute bundle can take the bond; NEW-2:
+its refund address can be rewritten), their `reclaim` does not wait for an open dispute or a pending
+final root (NEW-3), and their claim-window floor is the old `3 × dispute_blocks + 32` (FLPCR-08). Do not
+dispute on them with a real bond, and do not leave holders' accrual on them to a creator's own wallet.
+Launch a new distributor for disputes and new campaigns; to spend an old one, rebuild its exact old
+leaves into a separate folder and set `FLPCR_COMPILED`. Its new driver builds the curried launcher
+(`Distributor.bond_launcher_ph(disputer_ph)`), which an old distributor's leaf does not derive.
 
 Spacescan's "Forge LP" collection page listed 1 item where the engine verified 2: Spacescan never
 resolved `nft1ksu8…`'s metadata. The engine reads the file itself and checks it against the chain.

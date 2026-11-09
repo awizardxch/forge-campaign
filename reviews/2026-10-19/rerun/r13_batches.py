@@ -83,7 +83,7 @@ def run(tag, asset):
     w2, c = world(asset)
     s = w2.h + LEAD + 2
     p = [10000, 0, 0, None, None, 1]
-    mk = lambda n: w2.d.create(w2.h, w2.keys.ph("creator"), 1000, s, s + 40, 1, POOL, p, n, 56)  # noqa: E731
+    mk = lambda n: w2.d.create(w2.h, w2.keys.ph("creator"), 1000, s, s + 40, 1, POOL, p, n, 160)  # noqa: E731
     attempt("two creates with the same amount (identical dev-fee outputs): driver", w2.d.prepare, [mk(0), mk(1)],
             expect="refuse", reason="payments")
 

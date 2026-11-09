@@ -11,10 +11,15 @@
 >
 > **Status (rerun 2026-11-09, `3b4600c`, ten leaves, fingerprint `bb2781ff…`):** every finding has a fix or a
 > recorded decision, and every probe was ported to the current driver and rerun (`rerun/`, see
-> `rerun/README.md`). 16 of 17 attacks are now refused for their own reason. **FLPCR-08 still gets through**
-> at the claim-window floor, and the rerun found **three new issues in the dispute bond and reclaim**
-> (NEW-1 to NEW-3 below). The completion gate is therefore **not met** until those are fixed and rerun. The
-> body below is the historical record of `dea1d7d`.
+> `rerun/README.md`). 16 of 17 attacks were refused for their own reason; FLPCR-08 still got through at
+> the claim-window floor, and the rerun found three new issues in the dispute bond and reclaim (NEW-1 to
+> NEW-3 below).
+>
+> **Status (branch `fix-bond-reclaim`, 2026-11-09):** NEW-1, NEW-2, NEW-3 and FLPCR-08 are fixed in one
+> re-pin of `bond_launcher`, `dispute`, `reclaim` and `create` (`Config` and `State` unchanged in shape;
+> `Config.bond_launcher_hash` now names the curried launcher's mod). `run_all.py` is all ok: every attack
+> is refused for its own reason. Distributors launched before this re-pin keep the old dispute and reclaim
+> puzzles. The body below is the historical record of `dea1d7d`.
 
 ## Status after the rerun (2026-11-09)
 
@@ -33,7 +38,7 @@ reader), merged in `75e2d70`.
 | FLPCR-05 | High | Fixed | `a11b9f4` `TestHeightPin`; `scripts/mutate.py` `GUARDS` | `r05_height_pin.py` PASS: `AssertHeightAbsoluteFailed` / `AssertBeforeHeightAbsoluteFailed`; both guard mutants killed |
 | FLPCR-06 | Medium | Fixed (delayed, cancellable rotation) | `a11b9f4` `rotate.rue`, prologue `adopt`; `TestRotation` | `r06_guardian_rotation.py` PASS: rotate + post `MessageNotSentOrReceived` |
 | FLPCR-07 | Medium | Fixed (creator's coin spend, 32-byte checks) | `a11b9f4` `create.rue` `authorize_by_spend`; `TestCreatorConsents`, `test_holder_must_be_32_bytes`, `test_owner_and_delegate_are_32_bytes` | `r07_create_creator.py` PASS: `MessageNotSentOrReceived`; malformed lengths `clvm raise` |
-| FLPCR-08 | Medium | **Partly fixed: attack still works** | `a11b9f4` floor `3 × dispute_blocks + 32`; `TestStartAndWindow::test_claim_window_floor`; tools only: `reclaim_blockers()` | `r08_final_root.py` **FAIL**: at the floor the creator reclaims while the final root is pending (testnet in every cadence with a root pending across `end`; production with a late veto) |
+| FLPCR-08 | Medium | Fixed (`fix-bond-reclaim`) | floor raised to `4 × (dispute_blocks + 32)` (testnet 160, production 280; was `3 × dispute_blocks + 32`, 56 / 146) in `create.rue` and `Config.min_claim_window`; `reclaim.rue` waits for a pending root that raises the total (NEW-3); `TestStartAndWindow::test_claim_window_floor`, `TestReclaimWaitsForTheFinalRoot`; tools: `reclaim_blockers()` | `r08_final_root.py` PASS (88/88): with one late veto at `h = P` the final root activates end + 3(D + 32) and holders keep a full cycle (D + 32) before the opening; a slow operator's root still pending at the opening blocks the reclaim (`clvm raise`). On 6b8c027: FAIL, the creator reclaimed while the final root was pending |
 | FLPCR-09 | Medium | Fixed | `9f26520` fixed campaign-relative fee buckets; `TestCutIndependence` | `r01_09_17_engine.py` PASS: cuts give identical cumulatives |
 | FLPCR-10 | Medium | Fixed | `4170368` `nfts.collection` evidence rules; `test_nfts.py::TestCollectionEvidence`, `TestNftEnds` | `r10_nft_reader.py` PASS |
 | FLPCR-11 | Medium | Fixed (links v2) | `9f26520` `links.py`, `engine.committed_links`, manifest; `test_links.py` | `r11_links.py` PASS |
@@ -48,9 +53,9 @@ reader), merged in `75e2d70`.
 | FLPCR-18 E-7 wrapper | Info | Fixed | `9f26520`; `test_blacklisted_wrapper_is_not_forwarded` | `r01_09_17_engine.py` PASS |
 | FLPCR-18 B-2 decoy slots | Info | Safe | resync replays generations | `r18_informational.py` PASS: `AssertMyParentIdFailed`; resync ignores it |
 | FLPCR-18 NFT melt | Info | Fixed | `4170368`; `TestNftEnds` | `r10_nft_reader.py` PASS (stand-in) |
-| **NEW-1** | **High** | **Open** | `bond_launcher.rue`: destination is a solution field | `n_new_surface.py` C5 **FAIL**: the disputer's signed funding spend + a launcher spend paying the thief is accepted; the thief takes the whole bond |
-| **NEW-2** | **Medium** | **Open** | `dispute.rue`: `disputer_ph` is not bound | `n_new_surface.py` C6 **FAIL**: the rewritten dispute refunds the thief when upheld |
-| **NEW-3** | **High** | **Open** | `reclaim.rue` ignores a pending or disputed root | `n_new_surface.py` C7 **FAIL**: the creator disputes its final root, reclaims the holders' accrual while it is disputed |
+| NEW-1 | High | Fixed (`fix-bond-reclaim`) | `bond_launcher.rue` curried with `bond_puzzle_hash`, `distributor_id`, `disputer_ph`, and creates the bond only on a mode-23 message from a generation of this distributor; `dispute.rue` derives the curried launcher and sends that message (was: asserts its announcement); `TestDisputes::test_a_published_bond_launcher_cannot_be_taken` | `n_new_surface.py` C5 PASS: a launcher paying the thief at the funded coin `WrongPuzzleHash`; the lifted launcher spent alone (stranding the bond) `MessageNotSentOrReceived`; thief received 0. On 6b8c027: FAIL, the thief took the whole bond |
+| NEW-2 | Medium | Fixed (`fix-bond-reclaim`) | the leaf derives the launcher's id from its `disputer_ph`, so a rewrite names a coin nobody created; `TestDisputes::test_the_refund_address_is_the_one_the_disputer_funded` | `n_new_surface.py` C6 PASS: `MessageNotSentOrReceived`. On 6b8c027: FAIL, the upheld bond refunded the thief |
+| NEW-3 | High | Fixed (`fix-bond-reclaim`) | `reclaim.rue` refuses while a dispute is open or while the pending root raises the campaign's total over the active root's (a pending root that leaves it unchanged does not block); `distributor.py` mirrors it; `TestReclaimWaitsForTheFinalRoot` (4 tests, XCH and CAT) | `n_new_surface.py` C7 PASS: reclaim during the creator's dispute and during the restarted window `clvm raise`; alice then claims 970,000 and the creator reclaims what is left. On 6b8c027: FAIL, the creator took alice's whole accrual |
 
 New surface that holds (`n_new_surface.py` A and B): the ephemeral-slot trick against the new delegation
 list (revoked pair, created value, stale `uses`, the attacker's own insert in the same spend), replayed or

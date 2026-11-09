@@ -68,7 +68,7 @@ class IntakeWorld:
 
     def request(self, **kw):
         body = {"creator": self.creator.puzzle_hash.hex(), "amount": 1_000_000, "length": 40, "kind": "LP_HOLD",
-                "target": POOL.hex(), "claim_window": 56, "excluded": [(b"\x99" * 32).hex()]}
+                "target": POOL.hex(), "claim_window": 160, "excluded": [(b"\x99" * 32).hex()]}
         body.update(kw)
         return body
 
@@ -127,7 +127,7 @@ class TestXchCreate(unittest.TestCase):
         self.assertEqual(q["fee"], 30_000)
         self.assertEqual(q["budget"], 970_000)
         self.assertEqual(q["daily_emission"], 970_000 * 4608 // 40)
-        self.assertEqual(q["reclaim_from"], q["fields"]["end"] + 56)
+        self.assertEqual(q["reclaim_from"], q["fields"]["end"] + 160)
         self.assertEqual(q["singleton"]["coin_id"], x.svc.d.coin.coin_id().hex())
         self.assertEqual(q["conditions"]["message"]["message"], "6b" + q["campaign"])
         self.assertTrue(x.svc.lease.busy())
@@ -210,7 +210,7 @@ class TestXchCreate(unittest.TestCase):
         x = self.x
         q = x.intake.quote(x.request())
         x.w.d = x.svc.d
-        c = x.w.campaign("other", 1_000_000, x.w.h + 40, x.w.h + 80, 1, POOL, claim_window=56)
+        c = x.w.campaign("other", 1_000_000, x.w.h + 40, x.w.h + 80, 1, POOL, claim_window=160)
         call = x.svc.d.create(x.w.h, c.creator, c.amount, c.start, c.end, int(c.kind), c.target, c.params.as_clvm(),
                               c.nonce, c.claim_window, router=x.svc.d.cfg.router_ph)
         # Another builder (not this service) spends the singleton: the router's message comes from its key.

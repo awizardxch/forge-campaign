@@ -316,8 +316,9 @@ class SimWorld:
         call = self.d.dispute(self.h, root_id, ph, self.creator_coin.coin_id())
         if bond is not None and bond != self.cfg.dispute_bond:
             # A short or long bond: the launcher is created with the wrong amount.
-            call.creations = [(self.d.bond_launcher_hash, amount, self.launcher_id)]
-            call.extra_spends = [self.d.bond_launcher_spend(Coin(self.creator_coin.coin_id(), self.d.bond_launcher_hash, amount))]
+            launcher_ph = self.d.bond_launcher_ph(ph)
+            call.creations = [(launcher_ph, amount, self.launcher_id)]
+            call.extra_spends = [self.d.bond_launcher_spend(Coin(self.creator_coin.coin_id(), launcher_ph, amount), ph)]
         return self.push([call])
 
     def resolve(self, upheld: int, sender: str = "guardian"):

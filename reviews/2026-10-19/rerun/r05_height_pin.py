@@ -48,10 +48,10 @@ def inner():
         w2.advance_to(w2.h + HEIGHT_WINDOW + 2)
         h = w2.h - HEIGHT_WINDOW
         attempt("ATTACK stale h = tip - 32 (create)", w2.create_raw, "creator", 1000, w2.h + LEAD, w2.h + LEAD + 40,
-                1, POOL, [10000, 0, 0, None, None, 1], 0, 56, h=h, expect="refuse",
+                1, POOL, [10000, 0, 0, None, None, 1], 0, 160, h=h, expect="refuse",
                 reason="AssertBeforeHeightAbsoluteFailed")
         attempt("control: the same create at h = tip", w2.create_raw, "creator", 1000, w2.h + LEAD, w2.h + LEAD + 40,
-                1, POOL, [10000, 0, 0, None, None, 1], 1, 56)
+                1, POOL, [10000, 0, 0, None, None, 1], 1, 160)
     finish("FLPCR-05 (current pins)")
 
 

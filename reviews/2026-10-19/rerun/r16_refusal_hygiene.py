@@ -28,7 +28,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[3]
 for tag, asset in ASSETS:
     print(f"\n{tag}")
     w, _ = world(asset)
-    c = w.campaign("creator", 1_000_000, w.h + LEAD + 2, w.h + LEAD + 42, Kind.LP_HOLD, POOL, claim_window=56)
+    c = w.campaign("creator", 1_000_000, w.h + LEAD + 2, w.h + LEAD + 42, Kind.LP_HOLD, POOL, claim_window=160)
     w.create(c, "creator")
     alice = w.keys.ph("alice")
     w.advance_to(c.end + 1)

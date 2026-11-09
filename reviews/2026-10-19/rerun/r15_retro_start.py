@@ -24,7 +24,7 @@ def run(tag, asset):
     lag = P - (HEIGHT_WINDOW - 1)
 
     def create(start, h, nonce):
-        return w.create_raw("creator", 1000, start, start + 40, 1, POOL, PARAMS, nonce, 56, h=h)
+        return w.create_raw("creator", 1000, start, start + 40, 1, POOL, PARAMS, nonce, 160, h=h)
 
     attempt("ATTACK h = P - 31, start = h (old: accepted, 31 blocks retroactive)", create, lag, lag, 0,
             expect="refuse", reason="clvm raise")

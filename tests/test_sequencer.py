@@ -39,7 +39,7 @@ class TestSequencer(unittest.TestCase):
         events = [HolderEvent(0, x.puzzle_hash, 1 + i) for i, x in enumerate(self.holders)] + [HolderEvent(0, self.lock_ph, 2)]
         self.src = FixtureSource(lp_assets={POOL: LP}, events={LP: events})
         start = w.h + HEIGHT_WINDOW + 2
-        self.c = w.campaign("creator", 1_000_000, start, start + 40, Kind.LP_HOLD, POOL, claim_window=56)
+        self.c = w.campaign("creator", 1_000_000, start, start + 40, Kind.LP_HOLD, POOL, claim_window=160)
         w.create(self.c, "creator")
         self.svc = CampaignService(SimChain(w.sim), w.launcher_id, "testnet11", lambda cs: self.src, operator=op, every=10)
         self.svc.boot()
