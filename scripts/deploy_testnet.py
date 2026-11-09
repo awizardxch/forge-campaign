@@ -13,7 +13,7 @@ confirmed by watching the successor coin appear. Progress lands in
     python scripts/deploy_testnet.py claim            # the holder claims against the active root
     python scripts/deploy_testnet.py reclaim [--admin]
     python scripts/deploy_testnet.py delegate --grant 1 | --grant 0
-    python scripts/deploy_testnet.py rotate | cancel-rotation
+    python scripts/deploy_testnet.py rotate [--to ADDRESS] | cancel-rotation
     python scripts/deploy_testnet.py status
 
 Roles are this wallet's own derivations (a stand-in; the guardian will be a
@@ -783,9 +783,16 @@ def cmd_resolve(args, wallet: Wallet, state: dict, puzzles: Puzzles) -> None:
 
 def cmd_rotate(args, wallet: Wallet, state: dict, puzzles: Puzzles) -> None:
     d = distributor_from(state, puzzles)
-    new = wallet.phs[7]
+    # --to hands the operator role to a key outside this wallet (the hosted service's);
+    # by default it goes to this wallet's derivation 7.
+    if args.to:
+        new = Address.decode(args.to).puzzle_hash if args.to.startswith(("txch1", "xch1")) else bytes.fromhex(args.to)
+        if len(new) != 32:
+            raise SystemExit("--to takes an address or a 32-byte puzzle hash")
+    else:
+        new = wallet.phs[7]
     call = d.rotate(peak(), new)
-    _, result = push_calls(wallet, d, [call], f"rotate -> derivation 7")
+    _, result = push_calls(wallet, d, [call], f"rotate -> {args.to or 'derivation 7'}")
     commit(state, d, "rotate", result, new_engine_ph=new.hex())
 
 
@@ -898,7 +905,7 @@ def main() -> int:
     sub.add_parser("dispute")
     s = sub.add_parser("resolve"); s.add_argument("--upheld", type=int, default=1, choices=(0, 1))
     s.add_argument("--by", default="guardian", choices=("guardian",))
-    sub.add_parser("rotate")
+    s = sub.add_parser("rotate"); s.add_argument("--to", help="new operator: an address or puzzle hash (default: derivation 7)")
     sub.add_parser("cancel-rotation")
     sub.add_parser("status")
     s = sub.add_parser("resync", help="rebuild the record's driver state from the chain")

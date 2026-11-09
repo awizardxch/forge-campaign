@@ -1,0 +1,163 @@
+{
+ "about": "FLPCR reference vectors for front-end mirrors. Regenerate with scripts/make_vectors.py.",
+ "claim_tag": "flpcr-claim-v1",
+ "campaign_tag": "flpcr-campaign-v1",
+ "keys": [
+  {
+   "seed_byte": 21,
+   "public_key": "970e87fb24bfe00b2591781397fb86c631711ef4b652e90ac26851ffa5a25cfa8eb135107333340ced91c63cc9b4f345",
+   "puzzle_hash": "48f11c43457e0bcc18329c376c76b09e1d678da7386d9d67e2895daff345d94b"
+  },
+  {
+   "seed_byte": 22,
+   "public_key": "a940b5954f64560629f950d3158df0f253765c9e1eb37b831f38a818a8fec465652beec8b81a9a6eab9c1d2efb31d334",
+   "puzzle_hash": "c22504fb627bcdfe2a9c12a31418368b753106cfc55b5afcf52676f79e3be6ee"
+  }
+ ],
+ "campaigns": [
+  {
+   "fields": {
+    "distributor_id": "62b6d18800000000000000000000000000000000000000000000000000000000",
+    "creator": "3d5faceb1c2efaef34775596aee2adc7dce49d8314ab6c1fa24d70b4e2359e23",
+    "reward_asset": "0000000000000000000000000000000000000000000000000000000000000000",
+    "amount": 1000000000000,
+    "start": 5000000,
+    "end": 5032256,
+    "kind": 1,
+    "target": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+    "nonce": 0,
+    "fee_bps": 300,
+    "claim_window": 4608
+   },
+   "params": {
+    "time_bps": 10000,
+    "fees_bps": 0,
+    "min_balance": 0,
+    "blacklist": [],
+    "fee_window": 4608,
+    "boost_cap_bps": 25000,
+    "collection": null
+   },
+   "params_hash": "1c7d09098297dcdec3da634307a34ab4a34ace2de08563d3677545baf59d8148",
+   "excluded_hash": "4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a",
+   "fee": 30000000000,
+   "budget": 970000000000,
+   "id": "a29d87b187857a3b5eeca4305bc23f51fa001556606d6727e6c4d07fb724f2c7"
+  },
+  {
+   "fields": {
+    "distributor_id": "62b6d18800000000000000000000000000000000000000000000000000000000",
+    "creator": "3d5faceb1c2efaef34775596aee2adc7dce49d8314ab6c1fa24d70b4e2359e23",
+    "reward_asset": "0000000000000000000000000000000000000000000000000000000000000000",
+    "amount": 50000000000,
+    "start": 5000100,
+    "end": 5004708,
+    "kind": 1,
+    "target": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+    "nonce": 1,
+    "fee_bps": 300,
+    "claim_window": 4608
+   },
+   "params": {
+    "time_bps": 10000,
+    "fees_bps": 0,
+    "min_balance": 0,
+    "blacklist": [
+     "c22504fb627bcdfe2a9c12a31418368b753106cfc55b5afcf52676f79e3be6ee"
+    ],
+    "fee_window": 4608,
+    "boost_cap_bps": 25000,
+    "collection": null
+   },
+   "params_hash": "2f224e47ab1e9e5feef9324dae7dfe095807a1c712bc524cd9697ebfdde47139",
+   "excluded_hash": "37f1b9dc23f7f01e87f5e628a7c4e8459c1cb604c578750a50d60b8139b47de3",
+   "fee": 1500000000,
+   "budget": 48500000000,
+   "id": "8b785be2e7b0a00b3a0d1d2863b14df8c7a02da09a5f9df05735f245fa13d743"
+  },
+  {
+   "fields": {
+    "distributor_id": "62b6d18800000000000000000000000000000000000000000000000000000000",
+    "creator": "3d5faceb1c2efaef34775596aee2adc7dce49d8314ab6c1fa24d70b4e2359e23",
+    "reward_asset": "0000000000000000000000000000000000000000000000000000000000000000",
+    "amount": 10000000000,
+    "start": 5001000,
+    "end": 5139240,
+    "kind": 3,
+    "target": "70277e60875aad1416c8b1168eee2b6715e3a43f917f448259303aa78d165630",
+    "nonce": 0,
+    "fee_bps": 300,
+    "claim_window": 9216
+   },
+   "params": {
+    "time_bps": 10000,
+    "fees_bps": 0,
+    "min_balance": 0,
+    "blacklist": [],
+    "fee_window": 4608,
+    "boost_cap_bps": 25000,
+    "collection": [
+     "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+     "ae43c809-0000-4000-8000-000000000000"
+    ]
+   },
+   "params_hash": "81117d4dc253853d6d90df3c9dda62d4a1a3e8d4eb0e35a20073cdb95ac244c5",
+   "excluded_hash": "4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a",
+   "fee": 300000000,
+   "budget": 9700000000,
+   "id": "29864901a501e867e0e1153cb788f1e4c3e2a88b92ed7ca03d96349d5c2b9f50"
+  }
+ ],
+ "collection_id": {
+  "did": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+  "metadata_collection_id": "ae43c809-0000-4000-8000-000000000000",
+  "id": "70277e60875aad1416c8b1168eee2b6715e3a43f917f448259303aa78d165630"
+ },
+ "leaves": [
+  {
+   "distributor_id": "62b6d18800000000000000000000000000000000000000000000000000000000",
+   "campaign_id": "a29d87b187857a3b5eeca4305bc23f51fa001556606d6727e6c4d07fb724f2c7",
+   "puzzle_hash": "48f11c43457e0bcc18329c376c76b09e1d678da7386d9d67e2895daff345d94b",
+   "cumulative": 1,
+   "leaf": "91605337efdb06b6254fcfa72f3e0e32c7fe1932ec202212207d96be247203c4"
+  },
+  {
+   "distributor_id": "62b6d18800000000000000000000000000000000000000000000000000000000",
+   "campaign_id": "a29d87b187857a3b5eeca4305bc23f51fa001556606d6727e6c4d07fb724f2c7",
+   "puzzle_hash": "48f11c43457e0bcc18329c376c76b09e1d678da7386d9d67e2895daff345d94b",
+   "cumulative": 123456789,
+   "leaf": "eb4e1915c0ba158a2810f1560da18863315eb88cf713e2a134890b6d44b29581"
+  },
+  {
+   "distributor_id": "62b6d18800000000000000000000000000000000000000000000000000000000",
+   "campaign_id": "a29d87b187857a3b5eeca4305bc23f51fa001556606d6727e6c4d07fb724f2c7",
+   "puzzle_hash": "c22504fb627bcdfe2a9c12a31418368b753106cfc55b5afcf52676f79e3be6ee",
+   "cumulative": 987654321000,
+   "leaf": "54280f3da5d69ea4c2df3f2e6a674a8656f42ee5045b3eb8362c4694173c5afc"
+  },
+  {
+   "distributor_id": "62b6d18800000000000000000000000000000000000000000000000000000000",
+   "campaign_id": "29864901a501e867e0e1153cb788f1e4c3e2a88b92ed7ca03d96349d5c2b9f50",
+   "puzzle_hash": "c22504fb627bcdfe2a9c12a31418368b753106cfc55b5afcf52676f79e3be6ee",
+   "cumulative": 42,
+   "leaf": "bff86f3e68c497bc2cecf5029bc7df9f9fc946c1f0b66c4b95874691006df4de"
+  }
+ ],
+ "claim_stand_in": {
+  "pairs": [
+   {
+    "public_key": "970e87fb24bfe00b2591781397fb86c631711ef4b652e90ac26851ffa5a25cfa8eb135107333340ced91c63cc9b4f345",
+    "leaf": "eb4e1915c0ba158a2810f1560da18863315eb88cf713e2a134890b6d44b29581"
+   },
+   {
+    "public_key": "a940b5954f64560629f950d3158df0f253765c9e1eb37b831f38a818a8fec465652beec8b81a9a6eab9c1d2efb31d334",
+    "leaf": "54280f3da5d69ea4c2df3f2e6a674a8656f42ee5045b3eb8362c4694173c5afc"
+   }
+  ],
+  "parent_coin_info": "c5e1aa35980d76389a6693801a5edba62748753c0eb1b53e6f150cf2ed7feebc",
+  "amount": 0,
+  "solution": "80",
+  "puzzle_reveal": "ff01ffff31ffb0970e87fb24bfe00b2591781397fb86c631711ef4b652e90ac26851ffa5a25cfa8eb135107333340ced91c63cc9b4f345ffa0eb4e1915c0ba158a2810f1560da18863315eb88cf713e2a134890b6d44b2958180ffff31ffb0a940b5954f64560629f950d3158df0f253765c9e1eb37b831f38a818a8fec465652beec8b81a9a6eab9c1d2efb31d334ffa054280f3da5d69ea4c2df3f2e6a674a8656f42ee5045b3eb8362c4694173c5afc8080",
+  "puzzle_hash": "23aa769c56aa6b6f4e1c4f401849975734abe12c82e86f47cfc8b1eb04f51289"
+ }
+}

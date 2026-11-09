@@ -67,7 +67,7 @@ The engine on its own needs only the standard library (Python 3.10+). The chain 
   addresses are refused at claim; `NFT_HOLD` pays one share per NFT, by minter DID or `col1` collection.
   Proven on testnet11 (fourth and fifth distributors, `docs/TESTNET.md` §5). 378 tests.
 - **Phase 1 (in progress):** live LP holders of every V16 pool are built (`LiveLpSource`, time share
-  only), and NFT holders read from a node (`NodeReader`). Still open: `forge_resync` fee events and the
-  V15 and V14 pools.
+  only), and NFT holders read from a node (`NodeReader`). Still open: fee events. Only Forge V16 (and newer) pools are
+  supported.
 - **Phase 3 (in progress):** `scripts/deploy_testnet.py` with real keys runs the distributor on testnet11.
   Still open: operator / watcher bots, API, interface tab. See [`docs/TESTNET.md`](docs/TESTNET.md).

@@ -129,6 +129,11 @@ driver all read it. `build.py` also enforces the upstream source sha256 pins.
   LP and NFT Merkl campaigns on this distributor come first.
 - **Reclaim guard:** our tools refuse a reclaim while holders could not yet claim the final root
   (`reclaim_blockers()`, `--force` overrides). Operator policy, not a puzzle rule.
+- **Forge V16 and newer only (2026-11-09).** `LP_HOLD` campaigns target pools of the latest Forge
+  revision (V16, protocol 17) or a newer one; V15 and V14 pools are not supported, even while they stay
+  live on testnet11. A new Forge revision is added by pinning its replay lane, never by keeping old ones.
+- **Site (2026-11-09):** campaigns live on forge.awizard.dev as their own tab, labelled with the treasure
+  chest emoji (🪎, U+1FA8E); `docs/FORGE_SITE_TAB.md` is the integration plan.
 - Puzzles live in this repo, not `forge-puzzles`.
 
 ## Testnet11: where the work starts

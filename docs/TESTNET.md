@@ -70,9 +70,9 @@ The engine alone (`flpcr/` minus `flpcr/chain/`) needs only the standard library
      spend from the dev multisig itself.
    - Meanwhile check that `veto` and `post` are refused while the dispute is open, and that a `claim`
      against the previous active root still pays.
-4. **Live Source** for the engine against every live Forge pool (V16, plus the V15 and V14 pools kept live), listed from the registries; check that two replays from scratch produce
+4. **Live Source** for the engine against every Forge V16 (or newer) pool, listed from the registry (V15 and V14 pools are not supported); check that two replays from scratch produce
    identical roots. *Partly built:* LP holders of every V16 pool (`post --source live`, §6); fee
-   events and the V15/V14 pools are not.
+   events are not.
 5. **Operator bot.** Post a root whenever the previous one is active, and post the root covering a
    campaign's `end` within a few blocks of it. It must notice an open dispute (`ChainState.dispute`):
    posting is refused until it is resolved.
