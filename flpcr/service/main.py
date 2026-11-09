@@ -11,6 +11,10 @@ Environment (the host's service variables):
     FLPCR_EVERY          blocks between roots while campaigns run (default 180, ~1 h)
     FLPCR_LOOP_SECONDS   seconds between operator checks (default 60)
     FLPCR_CACHE_DIR      where the LP crawl cache lives (a mounted volume; default ./data)
+    FLPCR_WATCH          1: also run the watcher (flpcr.service.watcher) as an observer each loop,
+                         alerting on a pending root that does not replay (default 0: off)
+    FLPCR_WATCH_WEBHOOK  POST each watcher alert's JSON here (with FLPCR_WATCH=1)
+    FLPCR_MANIFESTS      where published root manifests are: a folder or a URL template
     PORT                 HTTP port (default 8080)
 
 Boot resyncs from chain; nothing else is needed on disk. The guardian and the admin
@@ -35,6 +39,7 @@ from .chain import NodeChain
 from .core import CampaignService, OperatorKey
 from .http import serve
 from .sequencer import ClaimSequencer
+from .watcher import AlertSink, Watcher, manifest_lookup
 
 NODES = {"mainnet": "https://api.coinset.org", "testnet11": "https://testnet11.api.coinset.org"}
 ROUTERS = {"mainnet": "https://api.forge.awizard.dev", "testnet11": "https://testnet-api.forge.awizard.dev"}
@@ -78,10 +83,15 @@ def main() -> int:
     port = int(env.get("PORT", "8080"))
 
     chain = NodeChain(node)
-    service = CampaignService(chain, bytes.fromhex(launcher), network, live_source_factory(network, node, api, cache),
-                              operator=operator, every=every)
+    source_for = live_source_factory(network, node, api, cache)
+    service = CampaignService(chain, bytes.fromhex(launcher), network, source_for, operator=operator, every=every)
     sequencer = ClaimSequencer(service)
-    server = serve(service, port, sequencer)
+    watcher = sink = None
+    if env.get("FLPCR_WATCH", "0").strip() == "1":  # an observer: the service holds no guardian key or bond
+        watcher = Watcher(chain, bytes.fromhex(launcher), source_for, network=network,
+                          manifests=manifest_lookup(env.get("FLPCR_MANIFESTS", "").strip()))
+        sink = AlertSink(env.get("FLPCR_WATCH_WEBHOOK", "").strip() or None)
+    server = serve(service, port, sequencer, watcher)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     print(f"flpcr-service: {network} distributor {launcher[:12]}…, node {node}, port {port}, "
           f"operator {'set (' + operator.puzzle_hash.hex()[:12] + '…)' if operator else 'not set: reads and claims only'}",
@@ -104,6 +114,8 @@ def main() -> int:
             paid = sequencer.run_batch()
             if paid:
                 print(f"claims: {paid}", flush=True)
+            if watcher is not None:
+                sink(watcher.check())
         except Exception:  # noqa: BLE001
             traceback.print_exc()
             try:  # resync: the record may be behind the chain (another builder spent the distributor)

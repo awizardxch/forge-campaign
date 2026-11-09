@@ -58,6 +58,30 @@ def params_from_program(clvm: Clvm, hex_value: str) -> Params:
                   boost_cap_bps=ints(v[8]), fee_window=ints(v[9]), collection=collection)
 
 
+def campaigns_from(got: Resynced, clvm: Clvm) -> Dict[bytes, Campaign]:
+    """Every campaign the chain created, rebuilt from its create solution; each must hash to its id."""
+    d = got.distributor
+    campaigns: Dict[bytes, Campaign] = {}
+    for cid, rec in got.campaigns.items():
+        c = Campaign(d.launcher_id, bytes.fromhex(rec["creator"]), d.cfg.reward_asset, rec["amount"], rec["start"],
+                     rec["end"], Kind(rec["kind"]), bytes.fromhex(rec["target"]),
+                     params=params_from_program(clvm, rec["params"]), nonce=rec["nonce"],
+                     fee_bps=d.cfg.fee_bps, claim_window=rec["claim_window"])
+        if c.id.hex() != cid:
+            raise ValueError(f"campaign {cid[:12]} does not rebuild to its id from the chain's fields")
+        campaigns[c.id] = c
+    return campaigns
+
+
+def chain_root_ids(got: Resynced) -> List[str]:
+    """The posted roots the chain still stands on, in order: through the pending root, or the
+    active one. A root vetoed (or revoked by an upheld dispute) and not yet reposted is left
+    out, since the next post reuses its id and starts where the active root ended."""
+    st = got.distributor.chain_state
+    current = max(st.pending.root_id if st.pending else 0, st.active.root_id if st.active else 0)
+    return [rid for rid in sorted(got.roots, key=int) if int(rid) <= current]
+
+
 @dataclass
 class OperatorKey:
     secret: SecretKey  # the synthetic key whose standard puzzle hash is the engine
@@ -102,18 +126,10 @@ class CampaignService:
             puzzles = self.puzzles_factory()
             got = resync(self.chain.reader, puzzles, self.launcher_id)
             d = got.distributor
-            campaigns: Dict[bytes, Campaign] = {}
-            for cid, rec in got.campaigns.items():
-                c = Campaign(d.launcher_id, bytes.fromhex(rec["creator"]), d.cfg.reward_asset, rec["amount"], rec["start"],
-                             rec["end"], Kind(rec["kind"]), bytes.fromhex(rec["target"]),
-                             params=params_from_program(puzzles.clvm, rec["params"]), nonce=rec["nonce"],
-                             fee_bps=d.cfg.fee_bps, claim_window=rec["claim_window"])
-                if c.id.hex() != cid:
-                    raise ValueError(f"campaign {cid[:12]} does not rebuild to its id from the chain's fields")
-                campaigns[c.id] = c
+            campaigns = campaigns_from(got, puzzles.clvm)
             start = min((c.start for c in campaigns.values()), default=0)
             state = ServiceState(got, campaigns, EngineState(d.launcher_id, height=start))
-            for rid in sorted(got.roots, key=int):
+            for rid in chain_root_ids(got):
                 posted = got.roots[rid]
                 covered = [campaigns[bytes.fromhex(k)] for k in posted["totals"] if bytes.fromhex(k) in campaigns]
                 try:

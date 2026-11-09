@@ -78,6 +78,19 @@ The engine alone (`flpcr/` minus `flpcr/chain/`) needs only the standard library
    posting is refused until it is resolved.
 6. **Watcher.** Replay each pending root and alert or veto on a mismatch; anyone else's watcher disputes
    instead, and the guardian's resolves.
+   *Built:* `flpcr/service/watcher.py` resyncs the distributor, replays every root the chain stands on
+   with the engine and the service's own `Source`, and compares the pending root's id, start, end, root,
+   totals and manifest hash (and, when the root commits a manifest, the published file's hash, fields,
+   tree, link-log commitment and every holder's cumulative). The verdict is `MATCH`, `MISMATCH` with the
+   diff, or `UNVERIFIABLE` (source failure, empty replay, committed manifest not published, or none
+   under `--require-manifest`), which alerts but never acts. On a mismatch it prepares, unsigned, the
+   role's remedy through the driver: `--role disputer` a `dispute` (with `Prepared.creations` and the
+   disputer coin it picked), `--role guardian` a `veto`, or `resolve` (upheld on a mismatch, rejected
+   on a match) once a dispute is open; it reports `blocks_remaining` before `activates_at` and
+   prepares nothing at zero. Run `python -m flpcr.service.watcher --state state-testnet11.json --once`
+   (exit 0 match, 1 mismatch, 3 unverifiable; `--json` prints the remedy's spends, `--manifests` names a
+   folder or URL template, `--webhook` posts each alert once), or set `FLPCR_WATCH=1` on the service to
+   run it as an observer each loop (`GET /api/v1/watch`). Tests: `tests/test_watcher.py`.
 7. **API and the forge-ui tab** (`API.md`, SPEC §9).
 
 ## 4. Things to keep in mind

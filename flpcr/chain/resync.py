@@ -295,8 +295,9 @@ def _note(out: Resynced, leaf: str, sol: List[Program], height: int) -> None:
     elif leaf == "post_root":
         root_id = to_int(sol[1])
         totals = {to_bytes(t.first()).hex(): to_int(t.rest()) for t in to_list(sol[5])} if sol[5].is_pair() else {}
+        manifest = to_bytes(sol[6]).hex() if len(sol) > 6 else bytes(32).hex()
         out.roots[str(root_id)] = {"start": to_int(sol[2]), "end": to_int(sol[3]), "root": to_bytes(sol[4]).hex(),
-                                   "totals": totals, "posted_at": height}
+                                   "totals": totals, "manifest_hash": manifest, "posted_at": height}
 
 
 def _check_slots(reader, d: Distributor) -> None:
