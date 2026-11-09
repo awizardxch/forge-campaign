@@ -218,13 +218,16 @@ class Weights:
 
     def lookback_share(self, height: int) -> Balances:
         """Each holder's share of eligible weight, averaged block by block over
-        the `fee_window` blocks ending at `height` (inclusive). Blocks with no
-        eligible weight are left out of the average. A deposit held for one
-        block adds at most one block's share, whatever its size."""
+        the `fee_window` blocks BEFORE `height`: [height - fee_window, height).
+        The event's own block is never read, so a position opened in the block
+        of a swap is worth nothing to it, and one held for k blocks adds at most
+        k/fee_window of its weight, whatever its size (the owner's rule: past
+        holdings, time-averaged, never the live block). Blocks with no eligible
+        weight are left out of the average."""
         if height not in self._shares:
             acc: Balances = defaultdict(Fraction)
-            lo = max(0, height + 1 - self.campaign.params.fee_window)
-            for a, b, bal in self.segments(lo, height + 1):
+            lo = max(0, height - self.campaign.params.fee_window)
+            for a, b, bal in (self.segments(lo, height) if lo < height else []):
                 total = sum(bal.values())
                 if total:
                     for ph, x in bal.items():

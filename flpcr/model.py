@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from fractions import Fraction
 from enum import IntEnum
 import hashlib
 from typing import FrozenSet, Optional, Tuple
@@ -44,6 +45,13 @@ MAX_BOOST_CAP_BPS = 100_000  # 10x
 # deposit is worth a negligible share of a swap's fee weight, short enough that
 # the fee half of the budget is credited (at each bucket's end) within a day.
 DEFAULT_FEE_WINDOW = BLOCKS_PER_DAY
+# The shortest fee window any campaign may commit to (one hour). The lookback
+# excludes the event's own block, so a position held for k blocks adds at most
+# k/fee_window of a swap's weight: under 0.53% for one block at this floor, and
+# 1/4608 at the default. Production's router asks for a day
+# (`RouterRules.min_fee_window`); this floor is what every network, testnet
+# included, and every engine replay refuses below.
+MIN_FEE_WINDOW = BLOCKS_PER_DAY // 24
 # Chia's burn address: Forge pools burn their locked LP floor to it. Never a
 # position; no campaign pays it (claim.rue refuses it too).
 BURN_PUZZLE_HASH = bytes.fromhex("000000000000000000000000000000000000000000000000000000000000dead")
@@ -123,8 +131,10 @@ class Params:
                 raise ValueError("collection is (32-byte minting DID launcher id, metadata collection id)")
         if not BPS <= self.boost_cap_bps <= MAX_BOOST_CAP_BPS:
             raise ValueError("boost_cap_bps must be between 10000 (1x) and 100000 (10x)")
-        if isinstance(self.fee_window, bool) or not isinstance(self.fee_window, int) or self.fee_window < 1:
-            raise ValueError("fee_window must be a whole number of blocks, at least 1")
+        if isinstance(self.fee_window, bool) or not isinstance(self.fee_window, int):
+            raise ValueError("fee_window must be a whole number of blocks")
+        if self.fee_window < MIN_FEE_WINDOW:
+            raise ValueError(f"fee_window must be at least {MIN_FEE_WINDOW} blocks (one hour)")
 
     def multiplier_bps(self, satisfied: Tuple[bool, ...]) -> int:
         """Weight multiplier for a holder meeting the boosts flagged in `satisfied`."""
@@ -265,6 +275,10 @@ class Campaign:
         h = min(max(height, self.start), self.end)
         return self.budget * (h - self.start) // self.length
 
+    def emitted_between(self, a: int, b: int) -> int:
+        """Mojos the schedule releases in [a, b)."""
+        return self.emittable(b) - self.emittable(a)
+
     def active_in(self, a: int, b: int) -> Optional[tuple]:
         """The part of [a, b) this campaign emits in, or None."""
         lo, hi = max(a, self.start), min(b, self.end)
@@ -277,3 +291,13 @@ class Campaign:
         if p.whitelist and puzzle_hash not in p.whitelist:
             return False
         return balance > 0 and balance >= p.min_balance
+
+
+def daily_emission(campaign: Campaign) -> Fraction:
+    """What the campaign releases per day, the same every day: the budget
+    (the deposit less the creation fee) over the length in days. The schedule
+    is linear per block (`Campaign.emittable`), so day `d` releases
+    `emittable(start + (d+1)*BLOCKS_PER_DAY) - emittable(start + d*BLOCKS_PER_DAY)`
+    mojos, which is this value floored or ceiled (whole mojos), never further off.
+    Exact; the interface rounds for display."""
+    return Fraction(campaign.budget * BLOCKS_PER_DAY, campaign.length)

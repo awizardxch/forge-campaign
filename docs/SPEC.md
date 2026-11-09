@@ -518,7 +518,10 @@ arithmetic is exact rational; the only rounding is a floor of a holder's cumulat
   the gitignored `lp-crawl-<network>.json`. `LiveLpSource` takes the pool → LP asset map from the Forge
   responder's `/api/pools` (`lpCatAssetId`). On all 8 V16 testnet pools, crawled holdings plus the 1-LP
   burned floor equal each pool's `total_lp` exactly; the first crawl took 16 s, later updates under 1 s.
-  It serves holder events only for now, so campaigns on it are time-share only (`[10000, 0]`).
+  It also serves fee events (below), from the same cache file (`{"lp": ..., "fees": ...}`). Only Forge
+  V16 pools (protocol 17) are served: `LiveLpSource.lp_asset` refuses (`UnsupportedPool`) a pool the
+  responder lists at another `poolVersion`, or whose LP asset is not the V16 LP TAIL curried with
+  `(launcher id, 17)`, which the chain fixes whatever the responder says. No V15 or V14 pool is read.
 - **NFT holdings** for `NFT_HOLD` (`Source.nft_events`): one event per NFT changing owner, read from the
   DID's own spends, filtered to a `col1` collection by verified metadata (§6.8). `ChainNftSource` reads
   them through any `ChainReader`: the simulator, or `flpcr/chain/node_reader.py` `NodeReader`, which
@@ -528,15 +531,26 @@ arithmetic is exact rational; the only rounding is a floor of a holder's cumulat
   coins (transient, created and spent within a route), the burn address `0x…dead` (the `LOCKED_BURN`
   floor) and the dev fee address. They are derived from the Forge build and registry, never configured
   by hand. The burn address is excluded from NFT holders too.
-- **Fee events** for `LP_HOLD`: each pool generation is replayed with `forge_resync`, which picks the lane by
-  protocol (V16 = 17; V15 and V14 pools stay live). Resolve each action's leaf through its selector, not
-  `zip(puzzles, solutions)` (`forge_v16_resync.py`; first written up in `forgePuzzleV14.md` §5). Each
-  `swap` action yields `(h, weight)`, where weight is the LP fee it paid, valued in XCH at the pool's
-  **pre-spend** spot price (the price the oracle accumulates in the prologue). The valuation is an
-  **exact rational**: the fee in mojos times the spot price as the ratio the pool's integer reserves
-  (and weights) define, `Fraction(...)`, never a float, so every replay gets the same weight. A fee paid
-  in XCH is its mojos. The `Source` boundary accepts an `int` or a `Fraction` and refuses a float
-  (`flpcr.sources.fee_weight`); in JSON a weight is an integer or `[numerator, denominator]`.
+- **Fee events** for `LP_HOLD` (`flpcr/v16_fees.py`, served by `LiveLpSource.fee_events`):
+  `PoolFeeWalk` follows the pool singleton from its launcher, one spend at a time (the successor is the
+  spend's one odd child), and reads each spent pool coin's puzzle reveal and solution. Nothing is
+  replayed: the reveal carries the **pre-spend** state curried into the action layer, and the solution
+  names the leaves run. Each action's leaf is resolved through its selector, not
+  `zip(puzzles, solutions)`, which drops a repeated leaf (forge-puzzles `forge_v16_resync.py`). Each
+  `swap` action yields `(h, weight)`, `h` the block the spend was included in. Its LP fee is the input
+  the curve does not credit, `gross − ⌊gross · (10000 − fee_bps) / 10000⌋` (protocol and DAO fees are
+  slices of the output and are not the LPs'), valued in the pool's asset 0 at the pre-spend spot,
+  `fee · (r₀/w₀) / (rᵢ/wᵢ)` (the price the oracle accumulates in the prologue). V16 asset ids are
+  strictly ascending, so asset 0 is XCH whenever the pool holds XCH, and a fee paid in XCH is its mojos;
+  a CAT/CAT pool's fees are valued in its own asset 0, since a campaign's fee weights are compared only
+  with each other, inside one pool. The valuation is an **exact rational** (`Fraction`), never a float,
+  so every replay gets the same weight. The leaf, action layer and LP TAIL hashes are pinned from
+  awizardxch/forge-puzzles at `v16_fees.FORGE_PUZZLES_COMMIT` (`37f3199`); the engine needs neither
+  chia-blockchain nor a forge-puzzles checkout to run. The `Source` boundary accepts an `int` or a
+  `Fraction` and refuses a float (`flpcr.sources.fee_weight`); in JSON a weight is an integer or
+  `[numerator, denominator]`. `fixtures/v16_pool_spends.json` holds real V16 pool spends built by
+  forge-puzzles' driver and accepted by its validator (`scripts/record_v16_fee_fixture.py`; coins and
+  heights fabricated), which `tests/test_v16_fees.py` reads through the same node calls.
 - **Address links** for gates and boosts: the operator's append-only link log (§6.8).
 - **Forwarders:** Forge vault pools whose reserves include this pool's LP, mapped to the vault's own LP
   asset.
@@ -552,19 +566,23 @@ credit_u   += budget(s,t) · B_u / Σ B
 ```
 
 Each block's emission is split by share of eligible supply, the same as Merkl's variable rate and
-MasterChef. A segment with no eligible holder credits no one, and its budget comes back to the creator
+MasterChef. `E` is linear per block, so every day of a campaign releases the same amount:
+`model.daily_emission(c) = budget · 4608 / length`, which is the deposit less the 3% fee over the
+length in days. A day's release in whole mojos is that value floored or ceiled, and the days sum to
+the budget exactly. A segment with no eligible holder credits no one, and its budget comes back to the creator
 at reclaim. Splitting a segment in two splits its budget exactly (`E` telescopes), so time credit does
 not depend on where roots are cut.
 
 ### 6.3 Fee weighting (`LP_HOLD` only)
 
 The fee share is settled per **fee bucket**, a fixed, campaign-relative stretch of `W = fee_window`
-blocks (a campaign param, default 4608 = one day): bucket `k` is
-`[start + k·W, min(start + (k+1)·W, end))`. Each event's LP share is averaged over the `W` blocks that
-end at the event (`[h_e − W + 1, h_e]`, clipped at height 0, reaching back before the campaign's start):
+blocks (a campaign param, default 4608 = one day, at least `MIN_FEE_WINDOW` = 192 = one hour): bucket
+`k` is `[start + k·W, min(start + (k+1)·W, end))`. Each event's LP share is averaged over the `W` blocks
+**before** the event, `[h_e − W, h_e)`, clipped at height 0 and reaching back before the campaign's
+start. The event's own block is never read: holdings are past holdings, never the live block.
 
 ```
-share_u(h)  = Σ_{x in (h−W, h]} B_u(x)/ΣB(x)  /  (number of those blocks with ΣB(x) > 0)
+share_u(h)  = Σ_{x in [h−W, h)} B_u(x)/ΣB(x)  /  (number of those blocks with ΣB(x) > 0)
 budget(k)   = (E(be) − E(bs)) · fees_bps / 10000              for bucket k = [bs, be)
 credit_u   += budget(k) · Σ_e w_e · share_u(h_e)  /  Σ_e w_e   over events e in bucket k
 ```
@@ -580,12 +598,17 @@ their LP share, so weighting by fees moves rewards toward the days when the liqu
   depends on the chain alone; any set of root boundaries gives the same cumulatives at the heights they
   share. Root boundaries are still posted on chain (`start`, `end`), but they no longer move value.
 - **Why average shares, not balances:** each block contributes at most `1/W` of a share, whatever the
-  size of the balance in it. A deposit held for one block (the attack in review FLPCR-01: add LP, swap
-  dust, leave) earns one block's share of the fee weight, not its LP share of the whole fee budget.
+  size of the balance in it. A deposit made in the block of a swap (the attack in review FLPCR-01: add
+  LP, swap dust, leave) earns nothing of that swap's weight, and a position held `k` blocks before it at
+  most `k/W`, not its LP share of the whole fee budget.
 - **Why one day:** the lookback must be long next to a single block, so a flash deposit is worth about
   `1/W` of a swap (`1/4608`); a creator who wants fee weighting to follow activity more closely can pick
   a shorter `fee_window`. The bucket shares the length so one number describes the rule, and so the fee
   half of the budget is never more than a day behind the time half.
+- **The floor:** `Params` refuses `fee_window < 192` (one hour: a one-block position is under 0.53% of a
+  swap's weight, two blocks under 1.1%) on every network and in every replay, since the id commits to
+  it. The router asks for more at quote time, `RouterRules.min_fee_window`: one day (4608) by default,
+  which is production's; a testnet router may set it as low as 192.
 
 ### 6.4 Forwarding
 
@@ -631,9 +654,10 @@ campaigns would make price load-bearing, and must use the TWAP only.
 
 ### 6.7 Anti-gaming
 
-Time weighting per block makes a flash deposit worth one block's share. Fee weighting does the same
-through the lookback (§6.3): a one-block deposit counts for one block out of `fee_window`, so pairing it
-with a dust swap no longer takes the fee half of a bucket. The minimum balance and the blacklist apply.
+Time weighting per block makes a flash deposit worth one block's share. Fee weighting is stricter
+through the lookback (§6.3): a deposit in the swap's own block counts for nothing, and one made `k`
+blocks earlier for at most `k` blocks out of `fee_window`, so pairing it with a dust swap no longer
+takes the fee half of a bucket. The minimum balance and the blacklist apply.
 Self-trading to farm fee weight costs the trader the full pool fee for a share of a **fixed** budget, and
 the extra weight goes to the LPs of the trailing day in proportion to their averaged shares, so it pays
 only to someone who already held a large share for most of that day. The create form should show
