@@ -6,6 +6,7 @@
                                          message to sign and the proof (xch1/txch1 or hex)
     POST /api/v1/claims                  the sequencer (flpcr.service.sequencer): signed claims
     GET  /api/v1/claims/<request id>     a submitted claim's progress
+    GET  /api/v1/watch                   the watcher's last report on the pending root (FLPCR_WATCH=1)
     POST /api/v1/campaigns/quote         the create intake (flpcr.service.intake): a campaign's
                                          terms, the creator's conditions and a lease
     POST /api/v1/campaigns/create        the creator's signed bundle for a quote; the router co-signs
@@ -35,7 +36,7 @@ def puzzle_hash_of(text: str) -> bytes:
     return raw
 
 
-def make_handler(service, sequencer=None, intake=None):
+def make_handler(service, sequencer=None, intake=None, watcher=None):
     class Handler(BaseHTTPRequestHandler):
         server_version = "flpcr-service/1.0"
 
@@ -74,6 +75,9 @@ def make_handler(service, sequencer=None, intake=None):
                 if path.startswith("/api/v1/claimable/"):
                     ph = puzzle_hash_of(path.rsplit("/", 1)[1])
                     return self.send_json(200, {"success": True, "puzzle_hash": ph.hex(), **service.claimable(ph)})
+                if path == "/api/v1/watch" and watcher is not None:
+                    last = watcher.last
+                    return self.send_json(200 if last else 503, {"success": bool(last), **(last.alert() if last else {"error": "no check yet"})})
                 if path.startswith("/api/v1/claims/") and sequencer is not None:
                     found = sequencer.status_of(path.rsplit("/", 1)[1])
                     return self.send_json(200 if found else 404, {"success": bool(found), **(found or {"error": "unknown request"})})
@@ -114,5 +118,5 @@ def make_handler(service, sequencer=None, intake=None):
     return Handler
 
 
-def serve(service, port: int, sequencer=None, intake=None) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer(("0.0.0.0", port), make_handler(service, sequencer, intake))
+def serve(service, port: int, sequencer=None, intake=None, watcher=None) -> ThreadingHTTPServer:
+    return ThreadingHTTPServer(("0.0.0.0", port), make_handler(service, sequencer, intake, watcher))
