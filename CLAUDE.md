@@ -8,9 +8,14 @@ for this project is `docs/skills/forgeCampaigns.md` in `awizardxch/aWizard-Famil
 ## Open review
 
 `reviews/2026-10-19/FINDINGS.md` is the pre-testnet review of `dea1d7d`. Read it before changing a leaf or
-launching anything. Its probes are in `reviews/2026-10-19/probes/` (run from the repo root with
-`PYTHONPATH=.:reviews/2026-10-19/probes/<lane>`); they were written against the old pins and need a
-rerun against the new ones.
+launching anything. The original probes (`reviews/2026-10-19/probes/`) are the record of `dea1d7d`; every one was ported
+to the current driver and rerun on 2026-11-09 (`reviews/2026-10-19/rerun/`, `python
+reviews/2026-10-19/rerun/run_all.py`; status table at the top of `FINDINGS.md`). 16 of 17 findings are
+refused for their own reason. **Open, being fixed:** FLPCR-08 (the claim-window floor is too short with a
+root pending across `end`), and three new findings from the rerun: NEW-1 (anyone can redirect a dispute
+bond: the bond launcher's destination is an unsigned solution value), NEW-2 (`disputer_ph`, where an upheld
+bond is refunded, is unsigned) and NEW-3 (`reclaim` ignores an open dispute or a pending root, so a
+creator can dispute its own final root and reclaim the holders' accrual).
 
 - **Applied on `fix/review-2026-10-19-onchain`, in one re-pin of every leaf:** FLPCR-02 (delegation
   slot list), -03 (dispute window from `h + 32`), -04 (admin reclaim), -05 (height guards pinned), -06
@@ -145,7 +150,8 @@ driver all read it. `build.py` also enforces the upstream source sha256 pins.
 - **The open pool (balance/365 per day) is a separate puzzle, for later** (`docs/OPEN_POOLS_DESIGN.md`).
   LP and NFT Merkl campaigns on this distributor come first.
 - **Reclaim guard:** our tools refuse a reclaim while holders could not yet claim the final root
-  (`reclaim_blockers()`, `--force` overrides). Operator policy, not a puzzle rule.
+  (`reclaim_blockers()`, `--force` overrides). Operator policy, not a puzzle rule, so a creator's own
+  wallet bypasses it (NEW-3, FLPCR-08: the puzzle fix is in progress).
 - **Forge V16 and newer only (2026-11-09).** `LP_HOLD` campaigns target pools of the latest Forge
   revision (V16, protocol 17) or a newer one; V15 and V14 pools are not supported, even while they stay
   live on testnet11. A new Forge revision is added by pinning its replay lane, never by keeping old ones.

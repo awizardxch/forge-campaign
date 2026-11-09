@@ -57,7 +57,8 @@ The engine on its own needs only the standard library (Python 3.10+). The chain 
 - **Pre-testnet review (2026-10-19):** [`reviews/2026-10-19/FINDINGS.md`](reviews/2026-10-19/FINDINGS.md). It found five High
   findings, none a drain, plus 12 more. The on-chain fixes (FLPCR-02 to -08 and -12 to -16, and the
   driver restructure) are applied in one re-pin of every leaf; the off-chain ones (engine, links, NFT
-  reader) are on a separate branch. Its probes still need a rerun against the new pins.
+  reader) are on a separate branch. Every probe was rerun on the current pins on 2026-11-09 (`reviews/2026-10-19/rerun/`): 16 of 17 are
+  refused; FLPCR-08 and three new dispute-bond and reclaim findings (NEW-1 to NEW-3) are open and being fixed.
 - **Phase 0 ✅:** spec, engine, reference model, router rules.
 - **Phase 2 ✅ on the simulator:** distributor puzzles (ten leaves: init, create, post_root, veto, claim,
   reclaim, rotate, delegate, dispute, resolve), driver, chain, differential and mutation suites, for

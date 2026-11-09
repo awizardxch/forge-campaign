@@ -26,7 +26,7 @@ reader), merged in `75e2d70`.
 
 | Finding | Risk | Status | Where (commit / test) | Rerun result |
 |---|---|---|---|---|
-| FLPCR-01 | High | Fixed | `9f26520` `engine.Weights.lookback_share`, `fee_buckets`; `test_engine.py::TestFeeGaming` | `r01_09_17_engine.py` PASS: attacker 99.0 of 100,000 (was 49,549.5) |
+| FLPCR-01 | High | Fixed | `9f26520` `engine.Weights.lookback_share`, `fee_buckets`; `test_engine.py::TestFeeGaming` | `r01_09_17_engine.py` PASS: attacker 99.0 of 100,000 (was 49,549.5); after the live-block fix (`f979762`, lookback `[h - W, h)`, `fee_window` ≥ 192) the attacker earns nothing of the fee half (49.5 of 100,000 is its one block of time share) |
 | FLPCR-02 | High | Fixed | `a11b9f4` delegation slot list with use counter (`shared.rue` `authorize_or_delegate`); `TestDelegatedClaims::test_ungranted_delegate_cannot_prove_itself_with_this_spends_slot` | `r02_ungranted_delegate.py` PASS: claim and reclaim with the ephemeral slot `MessageNotSentOrReceived` |
 | FLPCR-03 | High | Fixed | `a11b9f4` `post_root.rue` `activates_at = h + 32 + dispute_blocks`; `TestDisputeWindow` | `r03_dispute_window.py` PASS: lagged h, first claim P+10 (D=8), P+40 (D=38) |
 | FLPCR-04 | High | Fixed differently | `a11b9f4` admin reclaim (`reclaim.rue` `AUTH_ADMIN`), start horizon (`create.rue`); `RouterRules` (`9f26520`); `TestOnlyTheCreatorReclaims::test_admin_reclaims_paid_to_creator`, `TestAdminWaitsForTheWindow`, `TestStartAndWindow::test_start_horizon`, `test_router.py::test_rules_floor_and_creator_cap` | `r04_table_fill.py` PASS: the admin drains griefer rows (paid to their creator); `RouterRules()` defaults set no floor yet |

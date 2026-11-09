@@ -58,12 +58,16 @@ r = accrue(c, flash, 0, 1000)
 check("ATTACK one root [0,1000): attacker <= 1% (was 49549.5)", r[ATK] <= 1000, str(show(r)))
 r = accrue(c, vs_honest, 0, 1000)
 check("ATTACK vs an honest swap of equal fee: attacker <= 1% (was 24799.5)", r[ATK] <= 1000, str(show(r)))
-r1 = accrue(camp(time_bps=5000, fees_bps=5000, fee_window=1), flash, 0, 1000)
-check("fee_window = 1 (no floor): still about one block's share", r1[ATK] <= 1000, str(show(r1)))
-r2 = accrue(camp(time_bps=5000, fees_bps=5000, fee_window=2), flash, 0, 1000)
-check("fee_window = 2: still about one block's share", r2[ATK] <= 1000, str(show(r2)))
-print("  [NOTE] the deposit lands in the swap's own block (999) and still counts 1/fee_window of that swap: "
-      "the lookback includes the current block")
+for w in (1, 2, 191):
+    try:
+        camp(time_bps=5000, fees_bps=5000, fee_window=w)
+        check(f"fee_window = {w} refused (floor 192, owner rule 2026-11-09)", False, "accepted")
+    except ValueError as e:
+        check(f"fee_window = {w} refused (floor 192, owner rule 2026-11-09)", True, str(e))
+r1 = accrue(camp(time_bps=5000, fees_bps=5000, fee_window=192), flash, 0, 1000)
+check("fee_window = 192 (the floor): a deposit in the swap's own block earns nothing of the fee half "
+      "(the lookback is [h - W, h)); the attacker keeps only its one block of time share",
+      r1[ATK] <= 50, str(show(r1)))
 
 print("\nFLPCR-09: where roots are cut")
 s = EngineState(D)
