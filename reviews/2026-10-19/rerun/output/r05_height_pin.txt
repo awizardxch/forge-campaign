@@ -1,0 +1,21 @@
+
+XCH
+  [PASS] ATTACK creator reclaim at 121 naming h = end + window = 135: REFUSED AssertHeightAbsoluteFailed   (want refuse (AssertHeightAbsoluteFailed))
+  [PASS] ATTACK stale h = tip - 32 (create): REFUSED AssertBeforeHeightAbsoluteFailed   (want refuse (AssertBeforeHeightAbsoluteFailed))
+  [PASS] control: the same create at h = tip: ACCEPTED    (want accept)
+
+CAT
+  [PASS] ATTACK creator reclaim at 121 naming h = end + window = 135: REFUSED AssertHeightAbsoluteFailed   (want refuse (AssertHeightAbsoluteFailed))
+  [PASS] ATTACK stale h = tip - 32 (create): REFUSED AssertBeforeHeightAbsoluteFailed   (want refuse (AssertBeforeHeightAbsoluteFailed))
+  [PASS] control: the same create at h = tip: ACCEPTED    (want accept)
+
+FLPCR-05 (current pins): 6/6 as expected
+
+mutant without `AssertHeightAbsolute {`:
+  [PASS] the probe is ACCEPTED on the mutant (XCH and CAT): 2/2
+  [PASS] TestHeightPin on the mutant fails (killed): 4 failed, 2 passed, 244 deselected in 0.34s
+mutant without `AssertBeforeHeightAbsolute {`:
+  [PASS] the probe is ACCEPTED on the mutant (XCH and CAT): 2/2
+  [PASS] TestHeightPin on the mutant fails (killed): 2 failed, 4 passed, 244 deselected in 0.24s
+
+FLPCR-05: all as expected

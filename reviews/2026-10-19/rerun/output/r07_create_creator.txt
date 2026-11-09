@@ -1,0 +1,32 @@
+
+XCH
+  [PASS] ATTACK Alice's coin funds a campaign recorded with creator = mallory: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK the router alone (it also sends the creator's part), deposit supplied: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK creator consent by signature only (no coin spend): REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] ATTACK 0-byte creator: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] ATTACK 31-byte creator: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] ATTACK 33-byte creator: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] control: 32-byte creator, its own coin spend: ACCEPTED    (want accept)
+  [PASS] recorded creator is the one that consented 
+  [PASS] control: the creator reclaims (bob never claimed): ACCEPTED 970000   (want accept)
+  [PASS] rotate to a 31-byte key: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] delegate with a 31-byte owner: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] rotate to a 33-byte key: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] delegate with a 33-byte owner: REFUSED clvm raise   (want refuse (clvm raise))
+
+CAT
+  [PASS] ATTACK Alice's coin funds a campaign recorded with creator = mallory: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK the router alone (it also sends the creator's part), deposit supplied: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK creator consent by signature only (no coin spend): REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] ATTACK 0-byte creator: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] ATTACK 31-byte creator: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] ATTACK 33-byte creator: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] control: 32-byte creator, its own coin spend: ACCEPTED    (want accept)
+  [PASS] recorded creator is the one that consented 
+  [PASS] control: the creator reclaims (bob never claimed): ACCEPTED 970000   (want accept)
+  [PASS] rotate to a 31-byte key: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] delegate with a 31-byte owner: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] rotate to a 33-byte key: REFUSED clvm raise   (want refuse (clvm raise))
+  [PASS] delegate with a 33-byte owner: REFUSED clvm raise   (want refuse (clvm raise))
+
+FLPCR-07: 26/26 as expected

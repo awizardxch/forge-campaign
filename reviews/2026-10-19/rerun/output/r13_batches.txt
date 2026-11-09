@@ -1,0 +1,30 @@
+
+XCH
+  [PASS] two first claims sharing a neighbour: driver: REFUSED BundleCollision: two actions touch the claim slot 0000000000000000; split them across spends   (want refuse (slot))
+  [PASS]   ... driver check off: consensus: REFUSED DoubleSpend   (want refuse (DoubleSpend))
+  [PASS]   ... sequenced in one bundle (Distributor.sequence): ACCEPTED    (want accept)
+  [PASS] setup: equal increments 242500 and 242500 
+  [PASS] one holder, two campaigns, equal payouts: driver: REFUSED BundleCollision: two reserve payments of 242500 to 9606c803f93a595b are one coin id; split them across spends   (want refuse (payments))
+  [PASS]   ... driver check off: consensus: REFUSED DuplicateOutput   (want refuse (DuplicateOutput))
+  [PASS]   ... split across spends: first: ACCEPTED 242500   (want accept)
+  [PASS]   ... split across spends: second: ACCEPTED 242500   (want accept)
+  [PASS] a delegate claiming two campaigns for one holder: driver: REFUSED BundleCollision: two actions touch the delegation slot a1622a368bba8325; split them across spends   (want refuse (BundleCollision))
+  [PASS]   ... driver check off: consensus: REFUSED DuplicateOutput   (want refuse (any))
+  [PASS] a grant plus a delegated claim (different delegates, adjacent slots): driver: REFUSED BundleCollision: two actions touch the delegation slot a1622a368bba8325; split them across spends   (want refuse (any))
+  [PASS] two creates with the same amount (identical dev-fee outputs): driver: REFUSED BundleCollision: two reserve payments of 30 to 5e5415d43bc8b6ac are one coin id; split them across spends   (want refuse (payments))
+
+CAT
+  [PASS] two first claims sharing a neighbour: driver: REFUSED BundleCollision: two actions touch the claim slot 0000000000000000; split them across spends   (want refuse (slot))
+  [PASS]   ... driver check off: consensus: REFUSED DoubleSpend   (want refuse (DoubleSpend))
+  [PASS]   ... sequenced in one bundle (Distributor.sequence): ACCEPTED    (want accept)
+  [PASS] setup: equal increments 242500 and 242500 
+  [PASS] one holder, two campaigns, equal payouts: driver: REFUSED BundleCollision: two reserve payments of 242500 to 9606c803f93a595b are one coin id; split them across spends   (want refuse (payments))
+  [PASS]   ... driver check off: consensus: REFUSED DuplicateOutput   (want refuse (DuplicateOutput))
+  [PASS]   ... split across spends: first: ACCEPTED 242500   (want accept)
+  [PASS]   ... split across spends: second: ACCEPTED 242500   (want accept)
+  [PASS] a delegate claiming two campaigns for one holder: driver: REFUSED BundleCollision: two actions touch the claim slot 4273dbdfdf2fda99; split them across spends   (want refuse (BundleCollision))
+  [PASS]   ... driver check off: consensus: REFUSED DuplicateOutput   (want refuse (any))
+  [PASS] a grant plus a delegated claim (different delegates, adjacent slots): driver: REFUSED BundleCollision: two actions touch the delegation slot a1622a368bba8325; split them across spends   (want refuse (any))
+  [PASS] two creates with the same amount (identical dev-fee outputs): driver: REFUSED BundleCollision: two reserve payments of 30 to 5e5415d43bc8b6ac are one coin id; split them across spends   (want refuse (payments))
+
+FLPCR-13: 24/24 as expected

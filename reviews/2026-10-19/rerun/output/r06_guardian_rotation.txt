@@ -1,0 +1,22 @@
+
+XCH
+  [PASS] negative control: guardian post_root without rotate: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK guardian rotate(self) + post_root(self-paying) in one spend: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK guardian rotate(self) now, post next block: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] the rotation is public and pending (effective at 136, now 81)
+  [PASS] guardian cannot cancel its own rotation (admin only): REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] FIX: admin cancels the pending rotation: ACCEPTED    (want accept)
+  [PASS] after the delay, the cancelled guardian still cannot post: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] control: operator posts, alice claims the honest root: ACCEPTED 970000   (want accept)
+
+CAT
+  [PASS] negative control: guardian post_root without rotate: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK guardian rotate(self) + post_root(self-paying) in one spend: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK guardian rotate(self) now, post next block: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] the rotation is public and pending (effective at 136, now 81)
+  [PASS] guardian cannot cancel its own rotation (admin only): REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] FIX: admin cancels the pending rotation: ACCEPTED    (want accept)
+  [PASS] after the delay, the cancelled guardian still cannot post: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] control: operator posts, alice claims the honest root: ACCEPTED 970000   (want accept)
+
+FLPCR-06: 16/16 as expected

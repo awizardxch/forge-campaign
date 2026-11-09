@@ -1,0 +1,24 @@
+
+XCH: claims
+  [PASS] ungranted delegated claim, no slot: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK ungranted claim + ephemeral spend of the slot this spend creates (uses+1): REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK ungranted claim + 'ephemeral' slot at the value the leaf spends (uses 0): REFUSED UnknownUnspent   (want refuse (UnknownUnspent))
+  [PASS] control: granted delegate claims for the holder (paid to holder): ACCEPTED 485000   (want accept)
+
+XCH: reclaims
+  [PASS] stranger reclaim as creator's delegate, no slot: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK stranger reclaim + ephemeral spend of the slot this spend creates: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] control: creator's granted delegate reclaims (paid to creator): ACCEPTED 970000   (want accept)
+
+CAT: claims
+  [PASS] ungranted delegated claim, no slot: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK ungranted claim + ephemeral spend of the slot this spend creates (uses+1): REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK ungranted claim + 'ephemeral' slot at the value the leaf spends (uses 0): REFUSED UnknownUnspent   (want refuse (UnknownUnspent))
+  [PASS] control: granted delegate claims for the holder (paid to holder): ACCEPTED 485000   (want accept)
+
+CAT: reclaims
+  [PASS] stranger reclaim as creator's delegate, no slot: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] ATTACK stranger reclaim + ephemeral spend of the slot this spend creates: REFUSED MessageNotSentOrReceived   (want refuse (MessageNotSentOrReceived))
+  [PASS] control: creator's granted delegate reclaims (paid to creator): ACCEPTED 970000   (want accept)
+
+FLPCR-02: 14/14 as expected

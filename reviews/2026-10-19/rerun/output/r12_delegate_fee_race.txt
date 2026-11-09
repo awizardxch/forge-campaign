@@ -1,0 +1,18 @@
+
+XCH
+  [PASS] ATTACK free delegate spend (no fee in the bundle): REFUSED ReserveFeeConditionFailed   (want refuse (ReserveFee))
+  [PASS] ATTACK delegate spend one mojo short of delegate_fee: REFUSED ReserveFeeConditionFailed   (want refuse (ReserveFee))
+  [PASS] the spammer's paid grant lands first (delegate_fee paid): ACCEPTED    (want accept)
+  [PASS] prebuilt bundle against the old generation (still loses the race): REFUSED DoubleSpend   (want refuse (DoubleSpend))
+  [PASS] rebuilt against the new generation: accepted: ACCEPTED 485000   (want accept)
+  [PASS] FIX: alice's claim message, sent before two other spends, still lands (generation-free): ACCEPTED 485000   (want accept)
+
+CAT
+  [PASS] ATTACK free delegate spend (no fee in the bundle): REFUSED ReserveFeeConditionFailed   (want refuse (ReserveFee))
+  [PASS] ATTACK delegate spend one mojo short of delegate_fee: REFUSED ReserveFeeConditionFailed   (want refuse (ReserveFee))
+  [PASS] the spammer's paid grant lands first (delegate_fee paid): ACCEPTED    (want accept)
+  [PASS] prebuilt bundle against the old generation (still loses the race): REFUSED DoubleSpend   (want refuse (DoubleSpend))
+  [PASS] rebuilt against the new generation: accepted: ACCEPTED 485000   (want accept)
+  [PASS] FIX: alice's claim message, sent before two other spends, still lands (generation-free): ACCEPTED 485000   (want accept)
+
+FLPCR-12: 12/12 as expected

@@ -9,9 +9,54 @@
 > - Cursor's thermo-nuclear code quality review (pointer in Familiar `docs/skills/thermoNuclearCodeReview.md`),
 >   for the maintainability lane.
 >
-> **Status: findings only.** No fix has been applied, so the runbook's completion gate is **not met**. Each
-> remediation below is a proposal that needs sign-off. Several touch decisions already made (§ Decisions
-> needed).
+> **Status (rerun 2026-11-09, `3b4600c`, ten leaves, fingerprint `bb2781ff…`):** every finding has a fix or a
+> recorded decision, and every probe was ported to the current driver and rerun (`rerun/`, see
+> `rerun/README.md`). 16 of 17 attacks are now refused for their own reason. **FLPCR-08 still gets through**
+> at the claim-window floor, and the rerun found **three new issues in the dispute bond and reclaim**
+> (NEW-1 to NEW-3 below). The completion gate is therefore **not met** until those are fixed and rerun. The
+> body below is the historical record of `dea1d7d`.
+
+## Status after the rerun (2026-11-09)
+
+The rerun scripts are in `reviews/2026-10-19/rerun/` (run `python reviews/2026-10-19/rerun/run_all.py`);
+the original probes in `probes/` are unchanged and no longer run against the current API. PASS means the
+attack is refused for the finding's own reason and the honest control is accepted, for XCH and CAT rewards.
+Fixes landed in `a11b9f4` (on chain, one re-pin of every leaf), `9f26520` and `4170368` (engine and NFT
+reader), merged in `75e2d70`.
+
+| Finding | Risk | Status | Where (commit / test) | Rerun result |
+|---|---|---|---|---|
+| FLPCR-01 | High | Fixed | `9f26520` `engine.Weights.lookback_share`, `fee_buckets`; `test_engine.py::TestFeeGaming` | `r01_09_17_engine.py` PASS: attacker 99.0 of 100,000 (was 49,549.5) |
+| FLPCR-02 | High | Fixed | `a11b9f4` delegation slot list with use counter (`shared.rue` `authorize_or_delegate`); `TestDelegatedClaims::test_ungranted_delegate_cannot_prove_itself_with_this_spends_slot` | `r02_ungranted_delegate.py` PASS: claim and reclaim with the ephemeral slot `MessageNotSentOrReceived` |
+| FLPCR-03 | High | Fixed | `a11b9f4` `post_root.rue` `activates_at = h + 32 + dispute_blocks`; `TestDisputeWindow` | `r03_dispute_window.py` PASS: lagged h, first claim P+10 (D=8), P+40 (D=38) |
+| FLPCR-04 | High | Fixed differently | `a11b9f4` admin reclaim (`reclaim.rue` `AUTH_ADMIN`), start horizon (`create.rue`); `RouterRules` (`9f26520`); `TestOnlyTheCreatorReclaims::test_admin_reclaims_paid_to_creator`, `TestAdminWaitsForTheWindow`, `TestStartAndWindow::test_start_horizon`, `test_router.py::test_rules_floor_and_creator_cap` | `r04_table_fill.py` PASS: the admin drains griefer rows (paid to their creator); `RouterRules()` defaults set no floor yet |
+| FLPCR-05 | High | Fixed | `a11b9f4` `TestHeightPin`; `scripts/mutate.py` `GUARDS` | `r05_height_pin.py` PASS: `AssertHeightAbsoluteFailed` / `AssertBeforeHeightAbsoluteFailed`; both guard mutants killed |
+| FLPCR-06 | Medium | Fixed (delayed, cancellable rotation) | `a11b9f4` `rotate.rue`, prologue `adopt`; `TestRotation` | `r06_guardian_rotation.py` PASS: rotate + post `MessageNotSentOrReceived` |
+| FLPCR-07 | Medium | Fixed (creator's coin spend, 32-byte checks) | `a11b9f4` `create.rue` `authorize_by_spend`; `TestCreatorConsents`, `test_holder_must_be_32_bytes`, `test_owner_and_delegate_are_32_bytes` | `r07_create_creator.py` PASS: `MessageNotSentOrReceived`; malformed lengths `clvm raise` |
+| FLPCR-08 | Medium | **Partly fixed: attack still works** | `a11b9f4` floor `3 × dispute_blocks + 32`; `TestStartAndWindow::test_claim_window_floor`; tools only: `reclaim_blockers()` | `r08_final_root.py` **FAIL**: at the floor the creator reclaims while the final root is pending (testnet in every cadence with a root pending across `end`; production with a late veto) |
+| FLPCR-09 | Medium | Fixed | `9f26520` fixed campaign-relative fee buckets; `TestCutIndependence` | `r01_09_17_engine.py` PASS: cuts give identical cumulatives |
+| FLPCR-10 | Medium | Fixed | `4170368` `nfts.collection` evidence rules; `test_nfts.py::TestCollectionEvidence`, `TestNftEnds` | `r10_nft_reader.py` PASS |
+| FLPCR-11 | Medium | Fixed (links v2) | `9f26520` `links.py`, `engine.committed_links`, manifest; `test_links.py` | `r11_links.py` PASS |
+| FLPCR-12 | Medium (provisional) | Fixed (delegate fee); race not modelled | `a11b9f4` `delegate.rue` `ReserveFee`; `TestDelegateFee`; generation-free claims | `r12_delegate_fee_race.py` PASS: `ReserveFeeConditionFailed` |
+| FLPCR-13 | Medium | Fixed (driver) | `a11b9f4` `BundleCollision`, `Distributor.sequence`; `TestBatches`, `TestSequencer` | `r13_batches.py` PASS |
+| FLPCR-14 | Low | Fixed | `a11b9f4` one slot per delegation key; `test_grant_twice_revoke_once_revokes` | `r14_double_grant.py` PASS: `MessageNotSentOrReceived` |
+| FLPCR-15 | Low | Fixed | `a11b9f4` `start >= h + 32`; `TestStartAndWindow::test_start_lead` | `r15_retro_start.py` PASS: `clvm raise` |
+| FLPCR-16 | Low | Fixed | `a11b9f4` `refused(expect=)`, whale in the first-claim test, pinned height probe | `r16_refusal_hygiene.py` PASS |
+| FLPCR-17 | Low (provisional) | Fixed | `9f26520` `sources.fee_weight`; `TestExactWeights` | `r01_09_17_engine.py` PASS |
+| FLPCR-18 D-6 late veto | Info | Accepted by decision (documented, SPEC §5) | — | `r03_dispute_window.py`: still present, as documented |
+| FLPCR-18 C-3 CAT excess | Info | Accepted (the caller adds change) | — | `r18_informational.py`: `AssertCoinAnnouncementFailed` without change, accepted with |
+| FLPCR-18 E-7 wrapper | Info | Fixed | `9f26520`; `test_blacklisted_wrapper_is_not_forwarded` | `r01_09_17_engine.py` PASS |
+| FLPCR-18 B-2 decoy slots | Info | Safe | resync replays generations | `r18_informational.py` PASS: `AssertMyParentIdFailed`; resync ignores it |
+| FLPCR-18 NFT melt | Info | Fixed | `4170368`; `TestNftEnds` | `r10_nft_reader.py` PASS (stand-in) |
+| **NEW-1** | **High** | **Open** | `bond_launcher.rue`: destination is a solution field | `n_new_surface.py` C5 **FAIL**: the disputer's signed funding spend + a launcher spend paying the thief is accepted; the thief takes the whole bond |
+| **NEW-2** | **Medium** | **Open** | `dispute.rue`: `disputer_ph` is not bound | `n_new_surface.py` C6 **FAIL**: the rewritten dispute refunds the thief when upheld |
+| **NEW-3** | **High** | **Open** | `reclaim.rue` ignores a pending or disputed root | `n_new_surface.py` C7 **FAIL**: the creator disputes its final root, reclaims the holders' accrual while it is disputed |
+
+New surface that holds (`n_new_surface.py` A and B): the ephemeral-slot trick against the new delegation
+list (revoked pair, created value, stale `uses`, the attacker's own insert in the same spend), replayed or
+reused `AGG_SIG_UNSAFE` claim signatures (`clvm raise` / `BadAggregateSignature`), and excluded or burn
+addresses claiming directly, with an empty list, or through a delegate (`clvm raise`). Costs on the current
+leaves, XCH and CAT, are in `rerun/README.md` (every action under about 2% of a block).
 
 ## Summary
 

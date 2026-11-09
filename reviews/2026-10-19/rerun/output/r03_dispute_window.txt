@@ -1,0 +1,16 @@
+
+XCH
+  [PASS] D=8 honest h=P: first claim at P+41 
+  [PASS] D=8 ATTACK h=P-31: first claim at P+10 (old build: P+1) (paid 970000; must be >= P+8)
+  [PASS] D=38 honest h=P: first claim at P+71 
+  [PASS] D=38 ATTACK h=P-31: first claim at P+40 (old build: P+7) (paid 970000; must be >= P+38)
+  [PASS] info D-6 (still present, documented): guardian vetoes 10 blocks after activates_at with h lagged 31: ACCEPTED 10   (want accept)
+
+CAT
+  [PASS] D=8 honest h=P: first claim at P+41 
+  [PASS] D=8 ATTACK h=P-31: first claim at P+10 (old build: P+1) (paid 970000; must be >= P+8)
+  [PASS] D=38 honest h=P: first claim at P+71 
+  [PASS] D=38 ATTACK h=P-31: first claim at P+40 (old build: P+7) (paid 970000; must be >= P+38)
+  [PASS] info D-6 (still present, documented): guardian vetoes 10 blocks after activates_at with h lagged 31: ACCEPTED 10   (want accept)
+
+FLPCR-03: 10/10 as expected

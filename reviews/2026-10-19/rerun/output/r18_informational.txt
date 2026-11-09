@@ -1,0 +1,14 @@
+
+C-3 CAT deposit excess
+  [PASS] CAT deposit of amount + 5, no change output: REFUSED AssertCoinAnnouncementFailed   (want refuse (AssertCoinAnnouncementFailed))
+  [PASS] CAT deposit of amount + 5, change of 5 to the creator: ACCEPTED    (want accept)
+
+B-2 decoy slots
+  [PASS] XCH decoy exists at the live slot's puzzle hash 
+  [PASS] XCH resync ignores the decoy (same claim slot record as the live driver) 
+  [PASS] XCH ATTACK spend the decoy as alice's slot (singleton lineage claimed): REFUSED AssertMyParentIdFailed   (want refuse (AssertMyParentIdFailed))
+  [PASS] CAT decoy exists at the live slot's puzzle hash 
+  [PASS] CAT resync ignores the decoy (same claim slot record as the live driver) 
+  [PASS] CAT ATTACK spend the decoy as alice's slot (singleton lineage claimed): REFUSED AssertMyParentIdFailed   (want refuse (AssertMyParentIdFailed))
+
+informational: 8/8 as expected
