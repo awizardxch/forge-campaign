@@ -409,9 +409,12 @@ def source_for(args, wallet: "Wallet", campaigns: Sequence[Campaign]):
         return holders_source(wallet, pools, [c.target for c in campaigns if c.kind == Kind.NFT_HOLD])
     src = LiveLpSource.connect(FORGE_API, NODE, CRAWL_CACHE)
     src.refresh([src.lp_asset(t) for t in pools])
+    src.refresh_fees([c.target for c in campaigns if c.kind == Kind.LP_HOLD and c.params.fees_bps])
     for t in pools:
         bal = src.crawls[src.lp_asset(t)].balances()
-        print(f"  live source: pool {t.hex()[:12]} LP {src.lp_asset(t).hex()[:12]}: {len(bal)} holders, {sum(bal.values()):,} LP")
+        walk = src.fee_walks.get(t)
+        fees = f", {len(walk.swaps)} swaps in {walk.spends} pool spends" if walk else ""
+        print(f"  live source: pool {t.hex()[:12]} LP {src.lp_asset(t).hex()[:12]}: {len(bal)} holders, {sum(bal.values()):,} LP{fees}")
     collections = {bytes.fromhex(r["target"]): (bytes.fromhex(r["collection"][0]), r["collection"][1])
                    for r in campaign_records(load()).values() if r.get("collection")}
     nfts = ChainNftSource(NodeReader.connect(NODE), collections=collections)

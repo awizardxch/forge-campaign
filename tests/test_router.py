@@ -1,6 +1,7 @@
 import unittest
 
-from flpcr import Campaign, Kind
+from flpcr import Campaign, Kind, Params
+from flpcr.model import BLOCKS_PER_DAY, MIN_FEE_WINDOW
 from flpcr.router import XCH, ForgeRegistry, NotRoutable, RouterRules, check_campaign
 
 DIST = b"\xd1" * 32
@@ -45,6 +46,29 @@ class TestRouter(unittest.TestCase):
         with self.assertRaises(NotRoutable):
             check_campaign(campaign(XCH, Kind.LP_HOLD, POOL), REGISTRY, rules, live_for_creator=2)
         check_campaign(campaign(WUSDC, Kind.LP_HOLD, POOL), REGISTRY, rules)  # no floor set for WUSDC
+
+
+class TestFeeWindowFloor(unittest.TestCase):
+    """The owner's rule: a short-held position averages to about zero. The
+    fee window sets how close to zero; Params refuses under an hour on every
+    network, and the production router signs for a day or more."""
+
+    def lp(self, window):
+        return Campaign(DIST, CREATOR, XCH, 1000, 100, 200, Kind.LP_HOLD, POOL,
+                        Params(time_bps=5000, fees_bps=5000, fee_window=window))
+
+    def test_production_router_wants_a_day(self):
+        check_campaign(self.lp(BLOCKS_PER_DAY), REGISTRY)
+        with self.assertRaises(NotRoutable):
+            check_campaign(self.lp(BLOCKS_PER_DAY - 1), REGISTRY)
+
+    def test_a_testnet_router_may_go_down_to_the_protocol_floor(self):
+        testnet = RouterRules(min_fee_window=MIN_FEE_WINDOW)
+        check_campaign(self.lp(MIN_FEE_WINDOW), REGISTRY, testnet)
+        with self.assertRaises(ValueError):
+            RouterRules(min_fee_window=MIN_FEE_WINDOW - 1)
+        with self.assertRaises(ValueError):
+            self.lp(MIN_FEE_WINDOW - 1)
 
 
 class TestNetworks(unittest.TestCase):

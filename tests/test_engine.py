@@ -13,9 +13,9 @@ from flpcr import (
     root_from_proof,
     run_epoch,
 )
-from flpcr.engine import fee_buckets
+from flpcr.engine import Holdings, Requirements, Weights, fee_buckets
 from flpcr.manifest import root_to_json, state_from_json, state_to_json
-from flpcr.model import BLOCKS_PER_DAY
+from flpcr.model import BLOCKS_PER_DAY, MIN_FEE_WINDOW, daily_emission
 
 DIST = b"\xd1" * 32
 POOL = b"\xb0" * 32
@@ -91,9 +91,10 @@ class TestCampaign(unittest.TestCase):
             Campaign(DIST, CREATOR, REWARD, 10, 0, 10, Kind.CAT_HOLD, LP, Params(time_bps=0, fees_bps=10000), fee_bps=0)
         with self.assertRaises(ValueError):
             lp_campaign(end=100)
-        for bad in (0, -1, 1.5, True):
+        for bad in (0, -1, 1.5, True, MIN_FEE_WINDOW - 1):
             with self.assertRaises(ValueError):
                 Params(fee_window=bad)
+        self.assertEqual(Params(fee_window=MIN_FEE_WINDOW).fee_window, 192)
         self.assertEqual(Params().fee_window, BLOCKS_PER_DAY)
 
 
@@ -126,30 +127,30 @@ class TestAccrual(unittest.TestCase):
         self.assertEqual(credit, {ALICE: 500})
 
     def test_fee_share_is_averaged_over_the_lookback(self):
-        # Alice holds throughout; Bob is in only for [150, 200). Every fee is paid at 160.
+        # Alice holds throughout; Bob is in only for [600, 800). Every fee is paid at 640.
         src = source(
-            [HolderEvent(0, ALICE, 10), HolderEvent(150, BOB, 10)],
-            fees=[(160, 7)],
+            [HolderEvent(0, ALICE, 10), HolderEvent(600, BOB, 10)],
+            fees=[(640, 7)],
         )
-        params = Params(time_bps=5000, fees_bps=5000, fee_window=50)
-        credit = accrue(lp_campaign(params=params), src, 100, 200)
+        params = Params(time_bps=5000, fees_bps=5000, fee_window=200)
+        credit = accrue(lp_campaign(start=400, end=800, params=params), src, 400, 800)
         # time half: Alice 250 + 125, Bob 125.
-        # fee bucket [100, 150): no swap, so time weighted: Alice 250.
-        # fee bucket [150, 200): 250 for the swap at 160, by the share averaged
-        # over [111, 161): Alice alone for 39 blocks, half for 11: 44.5/50.
-        self.assertEqual(credit[ALICE], 375 + 250 + Fraction(250 * 445, 500))
-        self.assertEqual(credit[BOB], 125 + Fraction(250 * 55, 500))
+        # fee bucket [400, 600): no swap, so time weighted: Alice 250.
+        # fee bucket [600, 800): 250 for the swap at 640, by the share averaged
+        # over [440, 640), the 200 blocks before it: Alice alone for 160, half for 40.
+        self.assertEqual(credit[ALICE], 375 + 250 + Fraction(250 * 180, 200))
+        self.assertEqual(credit[BOB], 125 + Fraction(250 * 20, 200))
 
     def test_fee_share_waits_for_its_bucket_to_close(self):
-        src = source([HolderEvent(0, ALICE, 10)], fees=[(110, 1)])
-        c = lp_campaign(params=Params(time_bps=5000, fees_bps=5000, fee_window=40))
-        # Buckets [100,140), [140,180), [180,200). A window to 150 holds the
+        src = source([HolderEvent(0, ALICE, 10)], fees=[(550, 1)])
+        c = lp_campaign(start=500, end=1000, params=Params(time_bps=5000, fees_bps=5000, fee_window=200))
+        # Buckets [500,700), [700,900), [900,1000). A window to 750 holds the
         # first bucket's fee share, not the second's.
-        self.assertEqual(accrue(c, src, 100, 150), {ALICE: 250 + 200})
-        self.assertEqual(accrue(c, src, 150, 200), {ALICE: 250 + 300})
-        self.assertEqual(fee_buckets(c, 100, 150), [(100, 140)])
-        self.assertEqual(fee_buckets(c, 150, 200), [(140, 180), (180, 200)])
-        self.assertEqual(fee_buckets(c, 141, 179), [])
+        self.assertEqual(accrue(c, src, 500, 750), {ALICE: 250 + 200})
+        self.assertEqual(accrue(c, src, 750, 1000), {ALICE: 250 + 300})
+        self.assertEqual(fee_buckets(c, 500, 750), [(500, 700)])
+        self.assertEqual(fee_buckets(c, 750, 1000), [(700, 900), (900, 1000)])
+        self.assertEqual(fee_buckets(c, 705, 895), [])
 
     def test_quiet_pool_falls_back_to_time(self):
         src = source([HolderEvent(0, ALICE, 10), HolderEvent(150, BOB, 10)])
@@ -298,11 +299,12 @@ class TestFeeGaming(unittest.TestCase):
 
     def test_flash_deposit_and_dust_swap(self):
         credit = accrue(flash_campaign(), flash_world([(999, 1)]), 0, 1000)
-        # Before the fix: {HONEST: 50450.5, ATTACKER: 49549.5}.
+        # Before FLPCR-01: {HONEST: 50450.5, ATTACKER: 49549.5}.
         self.assertLessEqual(credit[ATTACKER], Fraction(100_000, 100))  # at most 1% of the budget
-        # Exactly one block's share, both halves: 99% of block 999's 50 of time
-        # budget, and 0.99 block-shares of the 1000 in the swap's lookback.
-        self.assertEqual(credit[ATTACKER], Fraction(99 * 50, 100) + Fraction(50_000 * 99, 100 * 1000))
+        # One block of the time half (99% of block 999's 50) and nothing of the
+        # fee half: the swap's lookback ends the block before it, never the live
+        # block, so a deposit in the swap's own block is no part of its share.
+        self.assertEqual(credit[ATTACKER], Fraction(99 * 50, 100))
         self.assertEqual(sum(credit.values()), 100_000)
 
     def test_flash_deposit_against_an_honest_swap(self):
@@ -322,7 +324,7 @@ class TestFeeGaming(unittest.TestCase):
         c = Campaign(DIST, CREATOR, REWARD, 100_000, 5000, 6000, Kind.LP_HOLD, POOL,
                      Params(time_bps=5000, fees_bps=5000), fee_bps=0)
         credit = accrue(c, src, 5000, 6000)
-        self.assertEqual(credit[ATTACKER], Fraction(99 * 50, 100) + Fraction(50_000 * 99, 100 * BLOCKS_PER_DAY))
+        self.assertEqual(credit[ATTACKER], Fraction(99 * 50, 100))  # one block of time, no fee share
 
 
 class TestCutIndependence(unittest.TestCase):
@@ -342,9 +344,9 @@ class TestCutIndependence(unittest.TestCase):
         fees = [(rng.randint(0, 999), rng.randint(1, 60)) for _ in range(30)]
         campaigns = [
             lp_campaign(amount=10**9 + seed, start=40, end=910, fee_bps=300,
-                        params=Params(time_bps=4000, fees_bps=6000, fee_window=37)),
+                        params=Params(time_bps=4000, fees_bps=6000, fee_window=MIN_FEE_WINDOW)),
             lp_campaign(amount=7 * 10**8, start=120, end=700, nonce=1, fee_bps=300,
-                        params=Params(time_bps=7000, fees_bps=3000, fee_window=150)),
+                        params=Params(time_bps=7000, fees_bps=3000, fee_window=300)),
             lp_campaign(amount=5 * 10**8, start=0, end=1000, nonce=2, fee_bps=300,
                         params=Params(time_bps=5000, fees_bps=5000)),
         ]
@@ -388,11 +390,88 @@ class TestCutIndependence(unittest.TestCase):
         self.assertEqual(one[1000], two[1000])
 
 
+class TestLookbackExcludesTheLiveBlock(unittest.TestCase):
+    """The owner's rule (2026-10-19): shares come from past holdings,
+    time-averaged, never the live block; a position held for one or two blocks
+    averages to about zero."""
+
+    W = MIN_FEE_WINDOW
+
+    def campaign(self):
+        return Campaign(DIST, CREATOR, REWARD, 10**9, 1000, 2000, Kind.LP_HOLD, POOL,
+                        Params(time_bps=5000, fees_bps=5000, fee_window=self.W), fee_bps=0)
+
+    def share(self, events, h):
+        c = self.campaign()
+        src = FixtureSource(lp_assets={POOL: LP}, events={LP: events})
+        return Weights(c, Holdings(src, LP, h + 1, True), Requirements(c, src, h + 1)).lookback_share(h)
+
+    def test_a_deposit_in_the_swaps_block_is_worth_nothing_to_it(self):
+        share = self.share([HolderEvent(0, HONEST, 1000), HolderEvent(1500, ATTACKER, 10**9)], 1500)
+        self.assertEqual(share, {HONEST: 1})
+        # and nothing of the fee half in accrual, however large the deposit
+        src = FixtureSource(lp_assets={POOL: LP}, fees={POOL: [(1500, 10**6)]},
+                            events={LP: [HolderEvent(0, HONEST, 1000), HolderEvent(1500, ATTACKER, 10**9),
+                                         HolderEvent(1501, ATTACKER, -10**9)]})
+        credit = accrue(self.campaign(), src, 1000, 2000)
+        time_only = Fraction(10**9 // 2 // 1000) * Fraction(10**9, 10**9 + 1000)  # its one block of the time half
+        self.assertEqual(credit[ATTACKER], time_only)
+
+    def test_the_block_before_counts(self):
+        share = self.share([HolderEvent(0, HONEST, 1), HolderEvent(1499, ATTACKER, 1)], 1500)
+        self.assertEqual(share[ATTACKER], Fraction(1, 2 * self.W))
+
+    def test_one_or_two_blocks_average_to_about_zero(self):
+        for held in (1, 2):
+            # a position a million times the honest LP's, opened `held` blocks before the swap
+            share = self.share([HolderEvent(0, HONEST, 1), HolderEvent(1500 - held, ATTACKER, 10**6),
+                                HolderEvent(1500, ATTACKER, -10**6)], 1500)
+            self.assertLess(share[ATTACKER], Fraction(held, self.W))
+            self.assertLess(share[ATTACKER], Fraction(11, 1000))  # under 1.1% even at the floor
+        # and at the default window, under 1/2000
+        self.W = BLOCKS_PER_DAY
+        share = self.share([HolderEvent(0, HONEST, 1), HolderEvent(9998, ATTACKER, 10**6)], 10_000)
+        self.assertLess(share[ATTACKER], Fraction(1, 2000))
+
+    def test_an_event_at_height_zero_has_no_past(self):
+        self.assertEqual(self.share([HolderEvent(0, HONEST, 1)], 0), {})
+
+
+class TestDailyEmission(unittest.TestCase):
+    """The owner's rule: the front end sets the total and the length in days;
+    emission per day is total / days, equal every day."""
+
+    def test_every_day_releases_the_same(self):
+        for amount, days in ((1_000_000_007, 30), (10**12, 7), (999, 365), (5 * 10**12 + 3, 1)):
+            c = Campaign(DIST, CREATOR, REWARD, amount, 10_000, 10_000 + days * BLOCKS_PER_DAY, Kind.LP_HOLD, POOL)
+            per_day = daily_emission(c)
+            self.assertEqual(per_day, Fraction(c.budget, days))
+            released = [c.emitted_between(c.start + d * BLOCKS_PER_DAY, c.start + (d + 1) * BLOCKS_PER_DAY)
+                        for d in range(days)]
+            self.assertEqual(sum(released), c.budget)
+            for r in released:
+                self.assertLess(abs(r - per_day), 1)  # whole mojos: the floor or the ceiling of total / days
+
+    def test_the_budget_is_the_total_less_the_creation_fee(self):
+        c = Campaign(DIST, CREATOR, REWARD, 1_000_000, 0, 10 * BLOCKS_PER_DAY, Kind.LP_HOLD, POOL)
+        self.assertEqual(daily_emission(c), Fraction(970_000, 10))
+
+    def test_equal_days_are_paid_whoever_holds(self):
+        # Two holders trading places mid-day: each day still pays out exactly its release.
+        events = [HolderEvent(0, ALICE, 5), HolderEvent(BLOCKS_PER_DAY + 77, BOB, 20),
+                  HolderEvent(2 * BLOCKS_PER_DAY + 5, ALICE, -5)]
+        c = Campaign(DIST, CREATOR, REWARD, 3 * 10**9, 0, 3 * BLOCKS_PER_DAY, Kind.LP_HOLD, POOL, fee_bps=0)
+        src = source(events)
+        for d in range(3):
+            day = accrue(c, src, d * BLOCKS_PER_DAY, (d + 1) * BLOCKS_PER_DAY)
+            self.assertEqual(sum(day.values()), 10**9)
+
+
 class TestExactWeights(unittest.TestCase):
     """FLPCR-17: fee weights are exact rationals; a float is refused at the Source boundary."""
 
     def campaign(self):
-        return lp_campaign(amount=10**12, start=0, end=1000, params=Params(time_bps=5000, fees_bps=5000, fee_window=100))
+        return lp_campaign(amount=10**12, start=0, end=1000, params=Params(time_bps=5000, fees_bps=5000, fee_window=200))
 
     def test_float_weight_refused(self):
         src = source([HolderEvent(0, ALICE, 3)], fees=[(100, 0.1)])
