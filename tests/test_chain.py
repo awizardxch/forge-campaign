@@ -1562,7 +1562,7 @@ class TestDisputes(ChainTest):
         call = w.d.dispute(w.h, 1, ph, coin.coin_id())
         p = w.d.prepare([call])
         launcher_ph, amount, memo = p.creations[0]
-        self.assertEqual(launcher_ph, w.d.bond_launcher_ph(ph))
+        self.assertEqual(launcher_ph, w.d.bond_launcher_ph(ph, w.d.pending_root()))
         funding = w.create_from(coin, launcher_ph, amount, memo)
         launcher_spend = [s for s in p.spends if s.coin.puzzle_hash == launcher_ph]
         launcher = launcher_spend[0].coin
@@ -1570,11 +1570,54 @@ class TestDisputes(ChainTest):
         refused(self, w.sim.spend_coins, funding + launcher_spend, [], expect="MessageNotSentOrReceived")
         # The thief runs a launcher curried for itself at the launcher coin: its puzzle hash is fixed.
         thief = w.keys.ph("thief")
-        evil = CoinSpend(launcher, w.d.bond_launcher_puzzle(thief).serialize(), launcher_spend[0].solution)
+        evil = CoinSpend(launcher, w.d.bond_launcher_puzzle(thief, w.d.pending_root()).serialize(), launcher_spend[0].solution)
         refused(self, w.sim.spend_coins, funding + [evil], [], expect="WrongPuzzleHash")
         self.assertEqual(w.xch_balance("thief"), 0)
         w.push([call])  # control: the bundle as built
         self.assertEqual(w.state().dispute.disputer_ph, ph)
+
+    def test_the_funding_spend_cannot_be_lifted_out_of_the_bundle(self):
+        """NEW-4: built as the driver says (`Prepared.concurrent`), the
+        disputer's funding spend asserts the singleton's spend, so it is not
+        valid alone and cannot leave a funded launcher behind."""
+        w = self.w
+        ph, coin = self._disputer_coin()
+        p = w.d.prepare([w.d.dispute(w.h, 1, ph, coin.coin_id())])
+        self.assertEqual(p.concurrent, [w.d.coin.coin_id()])
+        launcher_ph, amount, memo = p.creations[0]
+        funding = w.create_from(coin, launcher_ph, amount, memo, p.concurrent)
+        refused(self, w.sim.spend_coins, funding, [], expect="AssertConcurrentSpendFailed")
+        w.push([w.d.dispute(w.h, 1, ph, coin.coin_id())])  # control
+        self.assertEqual(w.state().dispute.root_id, 1)
+
+    def test_a_stranded_launcher_disputes_only_its_own_root(self):
+        """NEW-4: a wallet that did not bind its funding spend leaves a funded
+        launcher behind when the spend is lifted. Nobody can use it against a
+        corrected root (which would forfeit the disputer's bond), even though
+        that root reuses the id: the launcher is curried with the Merkle root
+        it was funded against."""
+        w = self.w
+        ph, coin = self._disputer_coin()
+        contested = w.d.pending_root()
+        launcher_ph = w.d.bond_launcher_ph(ph, contested)
+        w.sim.spend_coins(w.create_from(coin, launcher_ph, self.bond, w.launcher_id), [])  # lifted: no dispute
+        self.assertIsNone(w.state().dispute)
+        w.veto(1)
+        _, corrected = self.root_at(self.engine(), self.camp.start + 30)
+        w.post(corrected)
+        self.assertEqual(w.state().pending.root_id, 1)
+        self.assertNotEqual(w.d.pending_root(), contested)
+        stranded = Coin(coin.coin_id(), launcher_ph, self.bond)
+
+        def use(curried_for):
+            call = w.d.dispute(w.h, 1, ph, coin.coin_id())
+            call.creations = []
+            call.extra_spends = [w.d.bond_launcher_spend(stranded, ph, curried_for)]
+            return w.push([call])
+
+        refused(self, use, contested, expect="MessageNotSentOrReceived")  # the leaf messages the corrected root's launcher
+        refused(self, use, w.d.pending_root(), expect="WrongPuzzleHash")  # which is not the stranded coin
+        self.assertIsNone(w.state().dispute)
 
     def test_the_refund_address_is_the_one_the_disputer_funded(self):
         """NEW-2: rewriting `disputer_ph` in the leaf derives a launcher nobody

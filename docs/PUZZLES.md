@@ -49,7 +49,7 @@ claim slot   = slot(SingletonInfo, nonce 1)(sha256tree(ClaimSlot))
 delegation   = slot(SingletonInfo, nonce 2)(sha256tree(DelegationSlot))
 bond coin    = p2_delegated_by_singleton(SINGLETON_MOD_HASH, struct_hash, nonce 3), bare XCH, holding
                exactly dispute_bond; its puzzle hash is Config.bond_puzzle_hash (driver BOND_NONCE = 3)
-bond launcher= bond_launcher.rue curried with (bond_puzzle_hash, distributor_id, disputer_ph), a
+bond launcher= bond_launcher.rue curried with (bond_puzzle_hash, distributor_id, disputer_ph, root), a
                plain coin the disputer's own spend creates with exactly dispute_bond mojos; its mod
                hash is Config.bond_launcher_hash
 LEAVES_ROOT  = merkle root of the ten curried leaf hashes, in this order (flpcr/leaves.py):
@@ -85,7 +85,7 @@ DelegationSlot (key . (active . (uses . (left . right))))       key = sha256tree
 XCH whatever the reward asset (production 5 XCH = 5,000,000,000,000; testnet 0.1 TXCH =
 100,000,000,000); `bond_puzzle_hash` is the distributor's `p2_delegated_by_singleton` at nonce 3, where a
 bond sits; `bond_launcher_hash` is the mod hash of `bond_launcher.rue`, the only puzzle a bond coin may
-be born from (curried per dispute with `bond_puzzle_hash`, `distributor_id` and `disputer_ph`). `Dispute.bond_parent` is the bond launcher's coin id, from which `resolve` derives the bond
+be born from (curried per dispute with `bond_puzzle_hash`, `distributor_id`, `disputer_ph` and the pending Merkle root). `Dispute.bond_parent` is the bond launcher's coin id, from which `resolve` derives the bond
 coin.
 
 A leaf receives `(Truth . solution)` and returns `(Truth' . conditions)`. A condition `(-42 . c)` is
@@ -283,23 +283,28 @@ Anyone; no authorization. The bond is the authorization, and `disputer_ph` is on
 1. After the prologue's promotion: `pending` is not nil and `pending.root_id == root_id` (a root past its
    window is already active and can no longer be disputed); `dispute` is nil (one open dispute at a
    time); `disputer_ph` is 32 bytes; `bond_grandparent != 0x00..`.
-2. Derive `L = curry_tree_hash(bond_launcher_hash, [bond_puzzle_hash, distributor_id, disputer_ph])` and
-   `bond_parent = coinid(bond_grandparent, L, dispute_bond)`: the bond launcher, a child of the
+2. Derive `L = curry_tree_hash(bond_launcher_hash, [bond_puzzle_hash, distributor_id, disputer_ph,
+   pending.root])` and `bond_parent = coinid(bond_grandparent, L, dispute_bond)`: the bond launcher, a child of the
    disputer's own coin, with exactly `dispute_bond` mojos.
 3. Emit `SEND_MESSAGE` mode 23 to `bond_parent` with `"flpcr-bond-v1" + sha256tree([bond_puzzle_hash,
    dispute_bond, distributor_id])`. The launcher must receive it, so a bond that was never funded, funded
    with the wrong amount, sent elsewhere, or with a rewritten `disputer_ph` (a launcher nobody created)
    cannot open a dispute; and the launcher, which waits for this message, cannot be spent from a lifted
-   funding spend to redirect or strand the bond (review 2026-11-09, NEW-1, NEW-2).
+   funding spend to redirect the bond (review 2026-11-09, NEW-1, NEW-2). Because `L` names the pending
+   Merkle root, a launcher funded against one root cannot dispute a later one (NEW-4); the root is used,
+   not the id, because a corrected root reuses the id.
 4. Set `dispute = (root_id, disputer_ph, bond_parent)`. `pending` is unchanged and stays pending: the
    prologue skips promotion while a dispute is open, so the root cannot activate until `resolve` lands.
 
-### `bond_launcher` curried `[BOND_PUZZLE_HASH, DISTRIBUTOR_ID, DISPUTER_PH]`, solution `[amount, singleton_inner_puzzle_hash]` (not a leaf)
+### `bond_launcher` curried `[BOND_PUZZLE_HASH, DISTRIBUTOR_ID, DISPUTER_PH, ROOT]`, solution `[amount, singleton_inner_puzzle_hash]` (not a leaf)
 A plain coin puzzle, compiled and pinned beside the leaves (`EXTRA` in `flpcr/leaves.py`). The disputer's
 own coin spend creates it, curried, with exactly `dispute_bond` mojos of bare XCH, hinted with the
-distributor id, in the same bundle as the `dispute` action. Its puzzle hash commits to all three curried
-values, so the disputer's signature over that spend commits to them too. `DISPUTER_PH` is not read; it
-is curried only so the launcher's id names it.
+distributor id, in the same bundle as the `dispute` action. Its puzzle hash commits to all four curried
+values, so the disputer's signature over that spend commits to them too. `DISPUTER_PH` and `ROOT` are not
+read; they are curried only so the launcher's id names them. The funding spend must also carry
+`ASSERT_CONCURRENT_SPEND` of the singleton coin (`Prepared.concurrent`): without it the signed spend is
+valid alone, and a lifted one strands the launcher until that same root is pending again (NEW-4). The
+puzzle cannot enforce that condition on the disputer's coin; our tools add it.
 - `amount > 0`; `ASSERT_MY_AMOUNT amount`.
 - `CREATE_COIN BOND_PUZZLE_HASH amount (DISTRIBUTOR_ID)`: the bond coin (`p2_delegated_by_singleton`,
   nonce 3), for the whole amount. Bare XCH even for a CAT distributor; it never enters the reserve.
@@ -370,12 +375,13 @@ outright; claims against the previous active root continue. Only one dispute at 
   - For a CAT reward, the reserve and any deposit are spent in one CAT ring (`Clvm.spend_cats`).
 - **Bonds (`BOND_NONCE = 3`):**
   - `Distributor.dispute(h, root_id, disputer_ph, disputer_coin_id)` names the disputer's coin as the
-    bond grandparent. Its `creations` lists the bond launcher `(bond_launcher_ph(disputer_ph),
+    bond grandparent. Its `creations` lists the bond launcher `(bond_launcher_ph(disputer_ph, pending_root()),
     dispute_bond, launcher_id)` that the disputer's own spend of that coin must create, and its
-    `extra_spends` holds the launcher's spend (`bond_launcher_puzzle(disputer_ph)`, solution
+    `extra_spends` holds the launcher's spend (`bond_launcher_puzzle(disputer_ph, root)`, solution
     `[dispute_bond, singleton_inner_ph]` of the generation it is built against), which creates the bond
     coin on the leaf's message. The driver never spends the disputer's coin; `SimWorld.dispute` and
-    `scripts/deploy_testnet.py` build that spend from `Prepared.creations`.
+    `scripts/deploy_testnet.py` build that spend from `Prepared.creations` and add `[64, coin_id]` for
+    each id in `Prepared.concurrent`.
   - `Distributor.resolve(h, upheld, sender)` (sender defaults to the guardian) reads the open dispute
     from `chain_state`, carries the `"s"` message, and adds the bond coin's spend to `extra_spends`:
     `Coin(bond_parent, bond_ph, dispute_bond)` with the bond puzzle and the solution

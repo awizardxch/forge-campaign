@@ -10,6 +10,11 @@
 > - commit the record of each step to `docs/TESTNET.md` §5, never the state files.
 >
 > Tick a box only with evidence: a coin id, a `push_tx` result, or a balance change.
+>
+> **Start with a new distributor.** The 2026-11-09 re-pins (NEW-1 to NEW-4, FLPCR-08) moved every
+> distributor's puzzle hash. Run `launch` on current `main` (`python contracts/build.py --check` clean,
+> compiled fingerprint `6a987d3c…`) with a fresh `FLPCR_STATE`, and use it for every step below. The
+> claim-window floor on testnet is now 160 blocks.
 
 ## A. Signatures (TESTNET.md §3 step 4)
 
@@ -32,6 +37,15 @@
   router's message. Check that a stale singleton coin makes Sage's signed spend fail, and that a re-sign
   against the current coin succeeds. That re-sign is the case the create intake's lease exists for.
 
+- [ ] **A5. Dispute funding spend (NEW-4).** Run `dispute` on the new distributor, then `resolve
+  --upheld 1`, repost, `dispute`, `resolve --upheld 0`. Check:
+  - Sage signs the disputer's spend with `ASSERT_CONCURRENT_SPEND` (64) of the singleton coin in it;
+  - the launcher sits at `bond_launcher_ph(disputer_ph, pending root)` and the bond coin appears at
+    nonce 3 with exactly 0.1 TXCH;
+  - the upheld bond returns to the disputer and the rejected one reaches the dev multisig;
+  - pushing the funding spend alone (without the singleton spend) is refused with
+    `ASSERT_CONCURRENT_SPEND_FAILED` (the simulator names it `AssertConcurrentSpendFailed`).
+
 ## B. Paths that have never run live
 
 - [ ] **B1. CAT rewards.**
@@ -44,7 +58,7 @@
 - [ ] **B2. Lock claim.** From a 🔐 Forge lock, execute a proposal whose spend sends mode-16
   `"k" + leaf` for a campaign the lock earned in. Submit the bundle to the service's `POST
   /api/v1/claims`. The reward must pay the lock's address.
-- [ ] **B3. Fee-weighted LP campaign.** This needs the `engine-v16-fees` branch merged. Run a
+- [ ] **B3. Fee-weighted LP campaign.** Run a
   `fees_bps > 0` campaign on a V16 pool with swaps. Post twice from a fresh engine state, and check that
   both roots are identical. Check that a one-block LP deposit plus a dust swap earns about nothing
   (FLPCR-01, live).
@@ -62,9 +76,14 @@
 - [ ] **C3. Sequencer under load.** Submit claim requests from several wallets in one batch interval.
   Check that one bundle pays them all and that a bad request is refused on its own without sinking the
   batch.
-- [ ] **C4. Watcher.** This needs the `watcher` branch merged. Post a deliberately wrong root from a
+- [ ] **C4. Watcher.** Post a deliberately wrong root from a
   test operator key. The watcher must report MISMATCH before `activates_at`, and its prepared dispute
-  (signed by the `disputer` role) must stop the root activating.
+  (signed by the `disputer` role, with the `assert_concurrent_spend` ids from its JSON) must stop the
+  root activating.
+- [ ] **C5. Create intake.** `POST /api/v1/campaigns/quote`, sign the creator's spend in Sage within the
+  lease, `POST /api/v1/campaigns/create`. Check that a lapsed lease is refused and a re-quote succeeds.
+- [ ] **C6. Follow.** While the service runs, spend the singleton from `deploy_testnet.py` (a claim).
+  The service must follow the foreign spend without a restart and keep `status` equal to the chain.
 
 ## D. Before mainnet (owner)
 

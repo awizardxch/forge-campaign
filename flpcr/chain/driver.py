@@ -213,6 +213,10 @@ class Prepared:
     delegation_updates: Dict[bytes, DelegationUpdate]
     # (puzzle hash, amount, memo) the caller's own spend must create.
     creations: List[Tuple[bytes, int, bytes]] = field(default_factory=list)
+    # Coin ids the spend that makes `creations` must assert are spent with it
+    # (ASSERT_CONCURRENT_SPEND, 64): the singleton's coin. Without it the
+    # signed funding spend is valid alone and strands what it created (NEW-4).
+    concurrent: List[bytes] = field(default_factory=list)
     # Slot puzzle hashes a leaf messaged that no known record matches. The
     # bundle is still built: consensus then refuses it for want of a
     # receiver, which is the refusal a probe observes. A real builder should
@@ -528,37 +532,47 @@ class Distributor:
     def bond_message(bond_ph: bytes, amount: int, distributor_id: bytes) -> bytes:
         return b"flpcr-bond-v1" + sha256tree([bond_ph, amount, distributor_id])
 
-    def bond_launcher_puzzle(self, disputer_ph: bytes) -> Program:
-        """bond_launcher.rue curried for this distributor and one disputer: its
-        puzzle hash commits to where the bond sits and where an upheld dispute
-        refunds it (review 2026-11-09, NEW-1 and NEW-2)."""
+    def bond_launcher_puzzle(self, disputer_ph: bytes, root: bytes) -> Program:
+        """bond_launcher.rue curried for this distributor, one disputer and one
+        Merkle root: its puzzle hash commits to where the bond sits, where an upheld
+        dispute refunds it (review 2026-11-09, NEW-1 and NEW-2) and which root
+        it disputes (NEW-4)."""
         c = self.clvm
-        return self.p.mods["bond_launcher"].curry([c.atom(self.bond_ph), c.atom(self.launcher_id), c.atom(disputer_ph)])
+        return self.p.mods["bond_launcher"].curry([c.atom(self.bond_ph), c.atom(self.launcher_id), c.atom(disputer_ph),
+                                                   c.atom(root)])
 
-    def bond_launcher_ph(self, disputer_ph: bytes) -> bytes:
+    def bond_launcher_ph(self, disputer_ph: bytes, root: bytes) -> bytes:
         return curry_tree_hash(self.bond_launcher_hash, [sha256tree(self.bond_ph), sha256tree(self.launcher_id),
-                                                         sha256tree(disputer_ph)])
+                                                         sha256tree(disputer_ph), sha256tree(root)])
 
-    def bond_launcher_spend(self, launcher_coin: Coin, disputer_ph: bytes) -> CoinSpend:
+    def bond_launcher_spend(self, launcher_coin: Coin, disputer_ph: bytes, root: bytes) -> CoinSpend:
         """The bond launcher creating the bond coin for its whole amount. It
         receives the dispute leaf's message from this singleton, so it names the
         inner puzzle hash of the generation the dispute is spent in (now)."""
         solution = to_program(self.clvm, [launcher_coin.amount, self.inner_puzzle(self.state).tree_hash()])
-        return CoinSpend(launcher_coin, self.bond_launcher_puzzle(disputer_ph).serialize(), solution.serialize())
+        return CoinSpend(launcher_coin, self.bond_launcher_puzzle(disputer_ph, root).serialize(), solution.serialize())
+
+    def pending_root(self) -> bytes:
+        """The pending Merkle root a bond launcher is curried with (zeros when
+        nothing is pending: the leaf refuses that dispute anyway)."""
+        pending = self.chain_state.pending
+        return pending.root if pending is not None else bytes(32)
 
     def dispute(self, h: int, root_id: int, disputer_ph: bytes, disputer_coin_id: bytes) -> LeafCall:
         """Contest the pending root. The caller's spend of `disputer_coin_id`
-        must create the bond launcher, curried with `disputer_ph` (see
-        `creations`); the driver spends the launcher, which creates the bond
+        must create the bond launcher, curried with `disputer_ph` and the pending Merkle root
+        (see `creations`), and assert the singleton's spend (`Prepared.concurrent`),
+        so the funding cannot be lifted out of the bundle; the driver spends the launcher, which creates the bond
         coin when the leaf's message reaches it. Build it against the
         generation it is spent in: the launcher names that generation."""
         bond = self.cfg.dispute_bond
-        launcher_ph = self.bond_launcher_ph(disputer_ph)
+        root = self.pending_root()
+        launcher_ph = self.bond_launcher_ph(disputer_ph, root)
         launcher = Coin(disputer_coin_id, launcher_ph, bond)
         return LeafCall(
             Action("dispute", [h, root_id, disputer_ph, disputer_coin_id]),
             creations=[(launcher_ph, bond, self.launcher_id)],
-            extra_spends=[self.bond_launcher_spend(launcher, disputer_ph)],
+            extra_spends=[self.bond_launcher_spend(launcher, disputer_ph, root)],
         )
 
     def resolve(self, h: int, upheld: int, sender: Optional[bytes] = None) -> LeafCall:
@@ -777,6 +791,7 @@ class Distributor:
             signatures=[s for call in calls for s in call.signatures],
             fee=sum(call.fee for call in calls),
             creations=[x for call in calls for x in call.creations],
+            concurrent=[self.coin.coin_id()] if any(call.creations for call in calls) else [],
             claim_updates=claim_updates,
             delegation_updates=delegation_updates,
             unresolved=unresolved,

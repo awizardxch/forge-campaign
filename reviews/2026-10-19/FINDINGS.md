@@ -56,6 +56,18 @@ reader), merged in `75e2d70`.
 | NEW-1 | High | Fixed (`fix-bond-reclaim`) | `bond_launcher.rue` curried with `bond_puzzle_hash`, `distributor_id`, `disputer_ph`, and creates the bond only on a mode-23 message from a generation of this distributor; `dispute.rue` derives the curried launcher and sends that message (was: asserts its announcement); `TestDisputes::test_a_published_bond_launcher_cannot_be_taken` | `n_new_surface.py` C5 PASS: a launcher paying the thief at the funded coin `WrongPuzzleHash`; the lifted launcher spent alone (stranding the bond) `MessageNotSentOrReceived`; thief received 0. On 6b8c027: FAIL, the thief took the whole bond |
 | NEW-2 | Medium | Fixed (`fix-bond-reclaim`) | the leaf derives the launcher's id from its `disputer_ph`, so a rewrite names a coin nobody created; `TestDisputes::test_the_refund_address_is_the_one_the_disputer_funded` | `n_new_surface.py` C6 PASS: `MessageNotSentOrReceived`. On 6b8c027: FAIL, the upheld bond refunded the thief |
 | NEW-3 | High | Fixed (`fix-bond-reclaim`) | `reclaim.rue` refuses while a dispute is open or while the pending root raises the campaign's total over the active root's (a pending root that leaves it unchanged does not block); `distributor.py` mirrors it; `TestReclaimWaitsForTheFinalRoot` (4 tests, XCH and CAT) | `n_new_surface.py` C7 PASS: reclaim during the creator's dispute and during the restarted window `clvm raise`; alice then claims 970,000 and the creator reclaims what is left. On 6b8c027: FAIL, the creator took alice's whole accrual |
+| NEW-4 | High | Fixed (second re-pin of `dispute`, `bond_launcher`, 2026-11-09) | found reviewing the NEW-1 fix: the disputer's signed funding spend was valid alone (the dispute and launcher spends need no signature), so it could be lifted to strand a funded launcher, then used against a later honest root, forfeiting the bond and stalling that root. The launcher is curried with the pending Merkle root (the root, not the id: a corrected root reuses the id), and `Prepared.concurrent` makes the funding spend `ASSERT_CONCURRENT_SPEND` the singleton coin; `TestDisputes::test_the_funding_spend_cannot_be_lifted_out_of_the_bundle`, `::test_a_stranded_launcher_disputes_only_its_own_root` | `n_new_surface.py` ok |
+
+**Residual, accepted as Low (2026-11-09):**
+- **R-1.** After a veto or an upheld dispute nothing is pending until the operator reposts, so a reclaim
+  that is already due can land in that gap. `reclaim_blockers()` (tools) covers our own callers; the
+  claim-window floor's fourth cycle is the on-chain margin.
+- **R-2.** An operator can keep posting roots that each raise a campaign's total, which blocks its
+  reclaim (NEW-3's guard) for as long as it keeps posting. The emission ceiling bounds the totals, and the
+  guardian can veto or rotate the operator.
+- **R-3.** A third-party wallet that omits condition 64 can still have its funding spend lifted. The
+  launcher is then stuck unless that same Merkle root is pending again: there is no refund path. Our
+  tools always add the condition; `docs/AGENT_TOOLS.md` states it as a requirement.
 
 New surface that holds (`n_new_surface.py` A and B): the ephemeral-slot trick against the new delegation
 list (revoked pair, created value, stale `uses`, the attacker's own insert in the same spend), replayed or

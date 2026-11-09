@@ -19,7 +19,17 @@ refund address), NEW-3 (`reclaim` refuses while a dispute is open or while the p
 campaign's total), FLPCR-08 (floor `4 × (dispute_blocks + 32)`). `Config`/`State` shapes are unchanged,
 but `Config.bond_launcher_hash` (now the curried launcher's mod hash) moved, so every distributor's
 puzzle hash moved: launched distributors keep the old, vulnerable dispute path (`docs/TESTNET.md` §5).
-`run_all.py` is all ok; 461 tests pass.
+`run_all.py` is all ok.
+
+**NEW-4 (2026-11-09, found reviewing that fix, second re-pin of `dispute` and `bond_launcher`):** the
+disputer's signed funding spend was valid on its own, so anyone could lift it out of the bundle and strand a
+funded launcher, then spend it against a later honest root (bond forfeited, root stalled). Two layers: the
+launcher is now curried with the pending Merkle root as a fourth value (`Distributor.pending_root()`; the
+root, not the id, because a corrected root reuses the id), so a launcher disputes only the root its funder
+saw; and `Prepared.concurrent` lists the coin ids the caller's own spend must `ASSERT_CONCURRENT_SPEND`
+(the singleton coin), which `SimWorld`, `deploy_testnet.py` and the watcher's remedy JSON all carry.
+476 tests pass; mutation on `dispute` and `bond_launcher`: "5 killed, 0 unargued survivors, 1 did not
+build". Residual Lows are in `FINDINGS.md`. Distributors launched before this re-pin keep the old path.
 
 - **Applied on `fix/review-2026-10-19-onchain`, in one re-pin of every leaf:** FLPCR-02 (delegation
   slot list), -03 (dispute window from `h + 32`), -04 (admin reclaim), -05 (height guards pinned), -06
@@ -66,7 +76,7 @@ puzzle hash moved: launched distributors keep the old, vulnerable dispute path (
 cargo install rue-cli --version 0.8.4 --locked       # exactly 0.8.4: reproduces upstream's pinned hashes
 pip install chia-wallet-sdk==0.36.0 pytest clvm
 python contracts/build.py --check   # compiled/ matches the sources and every pin; run before trusting anything
-.venv/Scripts/python.exe -m pytest tests -q   # 461 tests (5 skip without Sage RPC), all on the in-process simulator
+.venv/Scripts/python.exe -m pytest tests -q   # 476 tests (5 skip without Sage RPC), all on the in-process simulator
 python scripts/mutate.py            # optional, ~3 min; must end "0 unargued survivors"
 ```
 
@@ -92,7 +102,8 @@ driver all read it. `build.py` also enforces the upstream source sha256 pins.
   reason.
 - **Build spends through the driver.** A per-leaf builder on `Distributor` returns a `LeafCall`;
   `prepare(calls)` returns the spends (a call's `extra_spends` included: the bond launcher, the bond
-  coin) plus the messages, signatures, fee and `creations` (coins the caller's own spend must create)
+  coin) plus the messages, signatures, fee, `creations` (coins the caller's own spend must create) and
+  `concurrent` (coin ids that same spend must assert with `ASSERT_CONCURRENT_SPEND`)
   the bundle must carry; `apply(prepared)` after it confirms. `BundleCollision` means split the batch
   across spends.
 - **`Clvm.alloc([83, 5])` encodes a byte string, not a list.** Build values with `flpcr/chain/values.py`.

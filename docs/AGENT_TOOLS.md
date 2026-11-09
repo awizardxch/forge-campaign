@@ -189,20 +189,24 @@ with the stake as a coin.
   disputer's own choice), and the disputer's coin that will fund the bond (at least `dispute_bond` plus
   the network fee).
 - **Signs:** **the disputer**, a spend of their own coin that creates the **bond launcher**: a coin at
-  `bond_launcher_hash` holding exactly `dispute_bond` mojos of XCH (production 5 XCH =
+  `Distributor.bond_launcher_ph(disputer_ph, pending_root())` holding exactly `dispute_bond` mojos of XCH (production 5 XCH =
   5,000,000,000,000, testnet 0.1 TXCH = 100,000,000,000), hinted with the distributor id, with the rest
-  as change. XCH whatever the reward asset. The launcher's own spend and the singleton's are built by the
-  driver and ride in the same bundle: the launcher creates the bond coin at the distributor's
-  `bond_puzzle_hash` (`p2_delegated_by_singleton`, nonce 3) and announces it, and the `dispute` action
-  asserts that announcement from the launcher id it derives from the disputer's coin. A bond that was
-  never funded, or funded with the wrong amount, is refused on chain.
+  as change. **That spend must also carry `ASSERT_CONCURRENT_SPEND` (condition 64) of every coin id in
+  `Prepared.concurrent`** (the singleton coin): without it the signed spend is valid alone, and anyone
+  can lift it out of the bundle and strand the funded launcher (NEW-4). XCH whatever the reward asset.
+  The launcher's own spend and the singleton's are built by the driver and ride in the same bundle: the
+  `dispute` action sends a mode-23 message to the launcher id it derives from the disputer's coin, the
+  refund address and the pending Merkle root, and the launcher, on receiving it, creates the bond coin at
+  the distributor's `bond_puzzle_hash` (`p2_delegated_by_singleton`, nonce 3). A bond that was never
+  funded, funded with the wrong amount, or funded against another root is refused on chain.
 - **Check:** the root is pending (`ChainState.pending.root_id == root_id`; a root past its window is
   promoted by the next spend and can no longer be disputed), no dispute is open (`ChainState.dispute`
   is nil; one at a time), and the disputer has replayed the root (`flpcr.watch`) and found a mismatch:
   a rejected dispute forfeits the bond.
 - **Out:** the unsigned bundle (`Prepared.spends`, which includes the launcher's spend) plus
-  `Prepared.creations`, the `(bond_launcher_hash, dispute_bond, distributor_id)` coin the disputer's spend
-  must create. After confirmation `ChainState.dispute = (root_id, disputer_ph, bond_parent)` and the root
+  `Prepared.creations`, the `(launcher puzzle hash, dispute_bond, distributor_id)` coin the disputer's spend
+  must create, and `Prepared.concurrent`, the coin ids it must assert. The watcher's remedy JSON carries
+  the same list as `assert_concurrent_spend`. After confirmation `ChainState.dispute = (root_id, disputer_ph, bond_parent)` and the root
   stays pending; it cannot activate until `flpcr.resolve` lands. Veto is refused meanwhile, and so is
   posting; claims against the previous active root continue.
 - **Code:** `Distributor.dispute(h, root_id, disputer_ph, disputer_coin_id)` (a `LeafCall` with

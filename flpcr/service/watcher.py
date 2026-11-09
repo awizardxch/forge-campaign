@@ -111,6 +111,8 @@ class Remedy:
             out["creations"] = [{"puzzle_hash": ph.hex(), "amount": amt, "memo": memo.hex(),
                                  "from_coin": self.disputer_coin.coin_id().hex() if self.disputer_coin else None}
                                 for ph, amt, memo in p.creations]
+            # The spend that makes `creations` must carry ASSERT_CONCURRENT_SPEND (64) of each.
+            out["assert_concurrent_spend"] = [c.hex() for c in p.concurrent]
             out["signatures_needed"] = len(p.signatures)
             out["reserved_fee"] = p.fee
         return out

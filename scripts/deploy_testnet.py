@@ -326,7 +326,8 @@ def push_calls(wallet: Wallet, d: Distributor, calls: Sequence[LeafCall], label:
         # The coin named when the call was built (a dispute's disputer coin) creates it.
         coin = creator_coin
         assert coin is not None, "a creation needs the coin that was named when the call was built"
-        wallet_spends.append(wallet.spend(coin, [[51, ph, amount, [memo]], [51, coin.puzzle_hash, coin.amount - amount, [coin.puzzle_hash]]]))
+        wallet_spends.append(wallet.spend(coin, [[51, ph, amount, [memo]], [51, coin.puzzle_hash, coin.amount - amount, [coin.puzzle_hash]],
+                                                *[[64, c] for c in prepared.concurrent]]))
     successor = Coin(d.coin.coin_id(), d.full_puzzle(prepared.new_state).tree_hash(), 1)
     result = push_and_wait(wallet, prepared.spends, wallet_spends, successor.coin_id(), label,
                            extra_signature=claim_signature)

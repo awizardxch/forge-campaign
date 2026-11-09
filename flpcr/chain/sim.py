@@ -160,10 +160,12 @@ class SimWorld:
 
     creator_coin: Optional[Coin] = None  # the coin a `creations` entry is made from (set by `dispute`)
 
-    def create_from(self, coin: Coin, ph: bytes, amount: int, memo: bytes) -> List[CoinSpend]:
-        """`coin` (a Keys coin) creates `amount` at `ph` and keeps the rest."""
+    def create_from(self, coin: Coin, ph: bytes, amount: int, memo: bytes,
+                    concurrent: Sequence[bytes] = ()) -> List[CoinSpend]:
+        """`coin` (a Keys coin) creates `amount` at `ph` and keeps the rest,
+        asserting each coin in `concurrent` is spent with it."""
         label = self.keys.label_of(coin.puzzle_hash)
-        conditions = [[51, ph, amount, [memo]]]
+        conditions = [[51, ph, amount, [memo]]] + [[64, c] for c in concurrent]
         if coin.amount > amount:
             conditions.append([51, coin.puzzle_hash, coin.amount - amount, [coin.puzzle_hash]])
         return [self.keys.spend(coin, label, conditions)]
@@ -191,7 +193,7 @@ class SimWorld:
             spends.extend(self.send(sender, m.message, m.mode))
             add_key(self.wallets.get(sender))  # a wallet signs for its own coin spend
         for ph, amount, memo in prepared.creations:
-            spends.extend(self.create_from(self.creator_coin, ph, amount, memo))
+            spends.extend(self.create_from(self.creator_coin, ph, amount, memo, prepared.concurrent))
         if prepared.fee:
             spends.extend(self.fee_spend(prepared.fee))
         for build in extra_builders:
@@ -316,9 +318,10 @@ class SimWorld:
         call = self.d.dispute(self.h, root_id, ph, self.creator_coin.coin_id())
         if bond is not None and bond != self.cfg.dispute_bond:
             # A short or long bond: the launcher is created with the wrong amount.
-            launcher_ph = self.d.bond_launcher_ph(ph)
+            root = self.d.pending_root()
+            launcher_ph = self.d.bond_launcher_ph(ph, root)
             call.creations = [(launcher_ph, amount, self.launcher_id)]
-            call.extra_spends = [self.d.bond_launcher_spend(Coin(self.creator_coin.coin_id(), launcher_ph, amount), ph)]
+            call.extra_spends = [self.d.bond_launcher_spend(Coin(self.creator_coin.coin_id(), launcher_ph, amount), ph, root)]
         return self.push([call])
 
     def resolve(self, upheld: int, sender: str = "guardian"):

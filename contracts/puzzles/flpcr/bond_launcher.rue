@@ -7,9 +7,10 @@
 //   BOND_PUZZLE_HASH  the distributor's bond puzzle hash (nonce 3)
 //   DISTRIBUTOR_ID    the distributor's launcher id
 //   DISPUTER_PH       where an upheld dispute refunds the bond
+//   ROOT              the Merkle root this bond disputes
 //
 // so the disputer's signed spend, which creates this coin at its curried
-// puzzle hash, commits to all three (review 2026-11-09, NEW-1 and NEW-2: an
+// puzzle hash, commits to all four (review 2026-11-09, NEW-1 and NEW-2: an
 // uncurried launcher took its destination from its unsigned solution, and
 // anyone who saw a dispute bundle could spend the launcher to themselves).
 //
@@ -20,8 +21,14 @@
 // `disputer_ph`, and sends that message to it. A message must be both sent
 // and received, so the bond is created exactly when the dispute it pays for
 // is recorded: the launcher cannot be spent on its own to strand the bond.
-// DISPUTER_PH is not read here: it is curried only so the launcher's id
-// commits to it.
+// DISPUTER_PH and ROOT are not read here: they are curried only so the
+// launcher's id commits to them. ROOT (not the root id, which a corrected
+// root reuses) keeps a launcher that was funded but
+// never spent (its funding spend lifted out of a bundle that did not land)
+// from being used by anyone else against a later, honest root, which would
+// forfeit the disputer's bond (NEW-4). The disputer's funding spend should
+// also assert the singleton's spend (ASSERT_CONCURRENT_SPEND), so it cannot
+// be lifted at all: `Prepared.concurrent` in the driver.
 //
 // solution: amount, singleton_inner_puzzle_hash (the distributor's inner
 // puzzle hash in the spend that records the dispute)
@@ -35,6 +42,7 @@ fn main(
     BOND_PUZZLE_HASH: Bytes32,
     DISTRIBUTOR_ID: Bytes32,
     _DISPUTER_PH: Bytes32,
+    _ROOT: Bytes32,
     amount: Int,
     singleton_inner_puzzle_hash: Bytes32,
 ) -> List<Condition> {

@@ -165,7 +165,7 @@ def honest_dispute_bundle(w, root_id, disputer):
     bond = w.cfg.dispute_bond
     cl = w.clvm
     coin = disputer.coin
-    launcher_ph = w.d.bond_launcher_ph(disputer.puzzle_hash)
+    launcher_ph = w.d.bond_launcher_ph(disputer.puzzle_hash, w.d.pending_root())
     cl.spend_standard_coin(coin, disputer.pk, cl.delegated_spend([
         to_program(cl, [51, launcher_ph, bond, [w.launcher_id]]),
         to_program(cl, [51, disputer.puzzle_hash, coin.amount - bond]),
@@ -191,7 +191,7 @@ def section_c(tag, asset):
     attempt("C1 dispute with no bond launcher in the bundle", w.sim.new_transaction,
             SpendBundle([s for s in p.spends if s.coin.coin_id() != launcher.coin_id()], Signature.infinity()),
             expect="refuse", reason="MessageNotSentOrReceived")
-    wrong = CoinSpend(launcher, w.d.bond_launcher_puzzle(disputer.puzzle_hash).serialize(),
+    wrong = CoinSpend(launcher, w.d.bond_launcher_puzzle(disputer.puzzle_hash, w.d.pending_root()).serialize(),
                       to_program(w.clvm, [bond, b"\x42" * 32]).serialize())
     attempt("C2 dispute whose launcher names another sender (not this distributor's generation)", w.sim.new_transaction,
             SpendBundle([s for s in p.spends if s.coin.coin_id() != launcher.coin_id()] + [wrong] + funding, sig),
@@ -199,7 +199,7 @@ def section_c(tag, asset):
 
     # C5: the thief takes the published funding spend and signature, and spends the launcher to itself.
     thief = w.keys.ph("thief")
-    evil = CoinSpend(launcher, w.d.bond_launcher_puzzle(thief).serialize(),
+    evil = CoinSpend(launcher, w.d.bond_launcher_puzzle(thief, w.d.pending_root()).serialize(),
                      next(s for s in p.spends if s.coin.coin_id() == launcher.coin_id()).solution)
     before = w.xch_balance(thief)
     attempt("C5 ATTACK (NEW-1) reuse the disputer's signed funding spend; a launcher that pays the thief",

@@ -8,6 +8,8 @@
 > **Fix rerun (branch `fix-bond-reclaim`, 2026-11-09):** compiled fingerprint
 > `c730114474886304d045a2b8db807f10adf992e568d8231fbe1e7f53e0e7a422`; 461 passed, 5 skipped; `run_all.py` all
 > ok. The outputs in `output/` and the cost table are from this rerun.
+> **NEW-4 re-pin (2026-11-09):** compiled fingerprint
+> `6a987d3cefc1755eb0a3a2926c9f8d2a4f595ba77169a6c6fbdb50ebaa21e8f1`; 476 passed, 5 skipped; `run_all.py` all ok.
 
 The original probes in `../probes/` are the historical record and are left as they were: they target the
 eight-leaf build of `dea1d7d` and its `Distributor.spend` API, which no longer exist. Each script here ports

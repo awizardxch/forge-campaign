@@ -73,7 +73,7 @@ class WatcherTest(unittest.TestCase):
         for m in p.messages:
             spends.extend(w.send(m.sender, m.message, m.mode))
         for ph, amount, memo in p.creations:
-            spends.extend(w.create_from(remedy.disputer_coin, ph, amount, memo))
+            spends.extend(w.create_from(remedy.disputer_coin, ph, amount, memo, p.concurrent))
         w.sim.spend_coins(spends, [])
         w.d.apply(p)
 
@@ -158,7 +158,7 @@ class TestRemedies(WatcherTest):
         self.assertIn("root", {d["field"] for d in r.diff})
         self.assertIsNone(r.holders)  # no manifest: the posted leaves are unknown
         self.assertEqual(r.remedy.action, "dispute")
-        self.assertEqual(r.remedy.prepared.creations, [(w.d.bond_launcher_ph(w.keys.ph("disputer")), bond, w.launcher_id)])
+        self.assertEqual(r.remedy.prepared.creations, [(w.d.bond_launcher_ph(w.keys.ph("disputer"), w.d.pending_root()), bond, w.launcher_id)])
         self.assertEqual(r.remedy.to_json()["creations"][0]["from_coin"], r.remedy.disputer_coin.coin_id().hex())
         self.assertGreater(r.blocks_remaining, 0)
         self.push_remedy(r.remedy)

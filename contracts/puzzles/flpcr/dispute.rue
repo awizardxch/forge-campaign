@@ -3,18 +3,20 @@
 // What Merkl does with a dispute token, on Chia coins. The disputer's bundle
 // spends a coin that creates a bond launcher (bond_launcher.rue) holding
 // exactly `dispute_bond` mojos, curried with this distributor's bond puzzle
-// hash, its id and `disputer_ph`; the launcher creates the bond coin at
+// hash, its id, `disputer_ph` and the pending Merkle root; the launcher creates the bond coin at
 // `bond_puzzle_hash` (p2_delegated_by_singleton, nonce 3). This leaf is given
 // the launcher's GRANDPARENT (the disputer's coin), derives the launcher's id
 //
-//     L = curry_tree_hash(bond_launcher_hash, [bond_puzzle_hash, distributor_id, disputer_ph])
+//     L = curry_tree_hash(bond_launcher_hash, [bond_puzzle_hash, distributor_id, disputer_ph, pending.root])
 //     P = coinid(grandparent, L, dispute_bond)
 //
 // and sends P the bond message. The launcher receives it, so a bond that was
 // never funded cannot open a dispute, and the launcher can never be spent
 // without this dispute being recorded. The disputer's signed spend created P,
 // so it fixed both where the bond sits and `disputer_ph` (review 2026-11-09,
-// NEW-1, NEW-2): rewriting either here derives a coin nobody created. The pending root then cannot activate until `resolve` lands:
+// NEW-1, NEW-2): rewriting either here derives a coin nobody created. It
+// fixed the root too (NEW-4): a launcher funded against one Merkle root cannot open
+// a dispute on another, even one that reuses the root id. The pending root then cannot activate until `resolve` lands:
 // upheld, the root is revoked and the bond refunded to `disputer_ph`;
 // rejected, the bond is forfeited to the dev multisig and the window restarts.
 //
@@ -44,7 +46,7 @@ fn main(
 
     let launcher_hash = curry_tree_hash(
         CONFIG.bond_launcher_hash,
-        [tree_hash_atom(CONFIG.bond_puzzle_hash), tree_hash_atom(CONFIG.distributor_id), tree_hash_atom(disputer_ph)],
+        [tree_hash_atom(CONFIG.bond_puzzle_hash), tree_hash_atom(CONFIG.distributor_id), tree_hash_atom(disputer_ph), tree_hash_atom(state.pending.root)],
     );
     let bond_parent = coinid(bond_grandparent, launcher_hash, CONFIG.dispute_bond);
 
