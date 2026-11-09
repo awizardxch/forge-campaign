@@ -1,27 +1,55 @@
 // bond_launcher.rue: the coin a dispute bond is born from.
 //
 // Not a leaf of the distributor: a plain coin the disputer's spend creates
-// with exactly `amount` mojos. It creates one coin, the bond, at the puzzle
-// hash it is told (the distributor's bond puzzle hash), for its whole
-// amount, hinted with the distributor id, and makes a COIN announcement
-// saying so. `dispute` derives this coin's id from the disputer's coin and
-// asserts that announcement: a coin id commits to its puzzle hash, so the
-// only coin that can make it runs this puzzle, and this puzzle does nothing
-// but create the bond. The Forge registry proves reserves the same way.
+// with exactly `amount` mojos, curried with everything that decides where the
+// bond goes and who it is refunded to:
 //
-// solution: created_puzzle_hash, amount, distributor_id
+//   BOND_PUZZLE_HASH  the distributor's bond puzzle hash (nonce 3)
+//   DISTRIBUTOR_ID    the distributor's launcher id
+//   DISPUTER_PH       where an upheld dispute refunds the bond
+//
+// so the disputer's signed spend, which creates this coin at its curried
+// puzzle hash, commits to all three (review 2026-11-09, NEW-1 and NEW-2: an
+// uncurried launcher took its destination from its unsigned solution, and
+// anyone who saw a dispute bundle could spend the launcher to themselves).
+//
+// It creates one coin, the bond, at BOND_PUZZLE_HASH for its whole amount,
+// hinted with the distributor id, and only when the distributor singleton
+// sends it the bond message in the same bundle. `dispute` derives this coin's
+// id from the disputer's coin, BOND_PUZZLE_HASH, DISTRIBUTOR_ID and its own
+// `disputer_ph`, and sends that message to it. A message must be both sent
+// and received, so the bond is created exactly when the dispute it pays for
+// is recorded: the launcher cannot be spent on its own to strand the bond.
+// DISPUTER_PH is not read here: it is curried only so the launcher's id
+// commits to it.
+//
+// solution: amount, singleton_inner_puzzle_hash (the distributor's inner
+// puzzle hash in the spend that records the dispute)
 
-import shared::bond_message;
+import shared::{bond_message, MODE_PUZZLE_TO_COIN};
 
-fn main(created_puzzle_hash: Bytes32, amount: Int, distributor_id: Bytes32) -> List<Condition> {
+const SINGLETON_MOD_HASH: Bytes32 = 0x7faa3253bfddd1e0decb0906b2dc6247bbc4cf608f58345d173adb63e8b47c9f;
+const SINGLETON_LAUNCHER_HASH: Bytes32 = 0xeff07522495060c066f66f32acc2a77e3a3e737aca8baea4d1a64ea4cdc13da9;
+
+fn main(
+    BOND_PUZZLE_HASH: Bytes32,
+    DISTRIBUTOR_ID: Bytes32,
+    _DISPUTER_PH: Bytes32,
+    amount: Int,
+    singleton_inner_puzzle_hash: Bytes32,
+) -> List<Condition> {
     assert amount > 0;
+    let distributor = curry_tree_hash(
+        SINGLETON_MOD_HASH,
+        [tree_hash((SINGLETON_MOD_HASH, (DISTRIBUTOR_ID, SINGLETON_LAUNCHER_HASH))), singleton_inner_puzzle_hash],
+    );
     [
         AssertMyAmount { amount: amount },
         CreateCoin {
-            puzzle_hash: created_puzzle_hash,
+            puzzle_hash: BOND_PUZZLE_HASH,
             amount: amount,
-            memos: Memos { value: [distributor_id] },
+            memos: Memos { value: [DISTRIBUTOR_ID] },
         },
-        CreateCoinAnnouncement { message: bond_message(created_puzzle_hash, amount, distributor_id) },
+        ReceiveMessage { mode: MODE_PUZZLE_TO_COIN, message: bond_message(BOND_PUZZLE_HASH, amount, DISTRIBUTOR_ID), sender: [distributor] },
     ]
 }

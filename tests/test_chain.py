@@ -29,7 +29,7 @@ except (ImportError, FileNotFoundError):  # pragma: no cover
 from flpcr import EngineState, FixtureSource, HolderEvent, Kind, run_epoch
 
 POOL, LP = b"\xb0" * 32, b"\x1b" * 32
-WINDOW = 56  # the testnet floor: 3 * dispute_blocks + HEIGHT_WINDOW
+WINDOW = 160  # the testnet floor: 4 * (dispute_blocks + HEIGHT_WINDOW)
 LEAD = 32  # a campaign starts at least HEIGHT_WINDOW blocks after its create's `h`
 CAT_ASSET = b"\xa5" * 32  # a reward CAT; every test class also runs with it below
 
@@ -1543,6 +1543,117 @@ class TestDisputes(ChainTest):
         refused(self, w.push, [call], expect="MessageNotSentOrReceived")
         self.assertEqual(w.xch_balance("thief"), 0)
 
+
+    # --- review 2026-11-09: NEW-1 and NEW-2 -------------------------------------------
+
+    def _disputer_coin(self):
+        w = self.w
+        ph = w.keys.ph("disputer")
+        w.creator_coin = w.sim.new_coin(ph, self.bond + 1)
+        return ph, w.creator_coin
+
+    def test_a_published_bond_launcher_cannot_be_taken(self):
+        """NEW-1: the disputer's funding spend, lifted from a published dispute
+        bundle, is valid on its own. The launcher it creates is curried with
+        the bond puzzle hash, so it cannot pay anyone else, and it creates the
+        bond only on the dispute leaf's message, so it cannot strand it either."""
+        w = self.w
+        ph, coin = self._disputer_coin()
+        call = w.d.dispute(w.h, 1, ph, coin.coin_id())
+        p = w.d.prepare([call])
+        launcher_ph, amount, memo = p.creations[0]
+        self.assertEqual(launcher_ph, w.d.bond_launcher_ph(ph))
+        funding = w.create_from(coin, launcher_ph, amount, memo)
+        launcher_spend = [s for s in p.spends if s.coin.puzzle_hash == launcher_ph]
+        launcher = launcher_spend[0].coin
+        # The funding and the launcher alone: the launcher waits for the singleton's message.
+        refused(self, w.sim.spend_coins, funding + launcher_spend, [], expect="MessageNotSentOrReceived")
+        # The thief runs a launcher curried for itself at the launcher coin: its puzzle hash is fixed.
+        thief = w.keys.ph("thief")
+        evil = CoinSpend(launcher, w.d.bond_launcher_puzzle(thief).serialize(), launcher_spend[0].solution)
+        refused(self, w.sim.spend_coins, funding + [evil], [], expect="WrongPuzzleHash")
+        self.assertEqual(w.xch_balance("thief"), 0)
+        w.push([call])  # control: the bundle as built
+        self.assertEqual(w.state().dispute.disputer_ph, ph)
+
+    def test_the_refund_address_is_the_one_the_disputer_funded(self):
+        """NEW-2: rewriting `disputer_ph` in the leaf derives a launcher nobody
+        created, so the funded launcher's message never comes."""
+        w = self.w
+        ph, coin = self._disputer_coin()
+        call = w.d.dispute(w.h, 1, ph, coin.coin_id())
+        call.action.solution[2] = w.keys.ph("thief")
+        refused(self, w.push, [call], expect="MessageNotSentOrReceived")
+        w.push([w.d.dispute(w.h, 1, ph, coin.coin_id())])
+        self.assertEqual(w.state().dispute.disputer_ph, ph)
+        before = w.xch_balance("disputer")
+        w.resolve(1)
+        self.assertEqual(w.xch_balance("disputer"), before + self.bond)
+        self.assertEqual(w.xch_balance("thief"), 0)
+
+
+class TestReclaimWaitsForTheFinalRoot(ChainTest):
+    """NEW-3: reclaim is refused while a dispute is open, and while the
+    pending root raises the campaign's total over the active root's: the
+    holders' accrual is still in flight. Admin reclaim waits the same way."""
+
+    def setUp(self):
+        super().setUp()
+        self.created()
+        self.opens = self.camp.end + WINDOW
+
+    def test_a_pending_final_root_blocks_reclaim(self):
+        w, c = self.w, self.camp
+        _, r = self.root_at(self.engine(), c.end)
+        w.advance_to(self.opens - 1)
+        w.post(r)  # the final root lands just before reclaiming opens
+        w.advance_to(self.opens)
+        refused(self, w.reclaim, c.id, expect=CLVM_RAISE)
+        refused(self, w.reclaim, c.id, admin=True, expect=CLVM_RAISE)
+        w.advance_to(w.state().pending.activates_at)
+        self.assertEqual(w.claim(r, c.id, "alice"), 727_500)
+        self.assertEqual(w.reclaim(c.id), 242_500)  # only Bob's unclaimed share
+
+    def test_the_creator_cannot_freeze_its_final_root_and_reclaim(self):
+        w, c = self.w, self.camp
+        _, r = self.root_at(self.engine(), c.end)
+        w.post(r)
+        w.advance_to(w.state().pending.activates_at - 1)
+        w.dispute(r.root_id, disputer="creator")
+        w.advance_to(self.opens)
+        refused(self, w.reclaim, c.id, expect=CLVM_RAISE)
+        w.resolve(0)  # rejected: the bond is forfeited, the window restarts
+        refused(self, w.reclaim, c.id, expect=CLVM_RAISE)  # still pending
+        self.settle()
+        self.assertEqual(w.claim(r, c.id, "alice"), 727_500)
+        self.assertEqual(w.reclaim(c.id), 242_500)
+
+    def _second_root(self):
+        """The final root active, then a later root with the same totals pending
+        (as when another campaign's accrual moves the tree on)."""
+        w, c = self.w, self.camp
+        _, r1 = self.root_at(self.engine(), c.end)
+        self.active(r1)
+        w.advance_to(self.opens - 1)
+        w.post(r1, root_id=r1.root_id + 1, start=r1.end, end=r1.end + 10)
+        w.advance_to(self.opens)
+        return r1.root_id + 1
+
+    def test_an_open_dispute_blocks_reclaim(self):
+        w, c = self.w, self.camp
+        w.dispute(self._second_root())
+        refused(self, w.reclaim, c.id, expect=CLVM_RAISE)
+        refused(self, w.reclaim, c.id, admin=True, expect=CLVM_RAISE)
+        w.resolve(1)
+        self.assertEqual(w.reclaim(c.id), 970_000)
+
+    def test_a_pending_root_that_owes_nothing_more_does_not_block(self):
+        """Roots keep naming every live campaign; one that does not raise the
+        total cannot hold a finished campaign's reclaim."""
+        w, c = self.w, self.camp
+        self._second_root()
+        self.assertIsNotNone(w.state().pending)
+        self.assertEqual(w.reclaim(c.id), 970_000)
 
 # --- the CAT twins: every class above, paying rewards in a CAT -----------------------------
 

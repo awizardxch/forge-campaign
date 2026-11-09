@@ -5,17 +5,20 @@ B. Claims with AUTH_SIGNATURE (AGG_SIG_UNSAFE, generation-free): replayed
    signatures, signatures reused for another cumulative, excluded addresses.
 C. The bond coin and the dispute / resolve leaves.
 
-Attacks are expected REFUSED. Three in section C are ACCEPTED on the current
-build; they are real findings (see the README and FINDINGS.md status):
-  C5 NEW-1  anyone who sees a dispute bundle steals the whole bond: the bond
-            launcher is anyone-can-spend and its destination comes from its
-            solution, which nothing signs.
-  C6 NEW-2  ... or keeps the dispute but redirects its refund: `disputer_ph`
-            is a free solution field, bound by nothing the disputer signed.
-  C7 NEW-3  the creator disputes the final root just before it activates and
-            reclaims once the claim window opens; reclaim.rue does not wait
-            for a pending or disputed root.
-The script exits non-zero while they get through."""
+Attacks are expected REFUSED. Three in section C were ACCEPTED on 6b8c027 and
+are fixed on fix-bond-reclaim (see the README and FINDINGS.md status):
+  C5 NEW-1  anyone who saw a dispute bundle stole the whole bond: the bond
+            launcher was anyone-can-spend and its destination came from its
+            solution. Now the launcher is curried with the bond puzzle hash,
+            the distributor id and disputer_ph, and creates the bond only on
+            the dispute leaf's message.
+  C6 NEW-2  ... or kept the dispute but redirected its refund: `disputer_ph`
+            was a free solution field. Now the leaf derives the launcher's id
+            from it, so a rewrite names a coin nobody created.
+  C7 NEW-3  the creator disputed the final root just before it activated and
+            reclaimed once the claim window opened. Now reclaim.rue refuses
+            while a dispute is open or the pending root raises the total.
+The script exits non-zero if any gets through."""
 
 from chia_wallet_sdk import Coin, CoinSpend, Signature, SpendBundle
 
@@ -127,7 +130,7 @@ def section_b(tag, asset):
     from common import POOL, LEAD
     w, _ = world(asset)
     ex = w.bls()
-    c = w.campaign("creator", 1_000_000, w.h + LEAD + 2, w.h + LEAD + 42, Kind.LP_HOLD, POOL, claim_window=56,
+    c = w.campaign("creator", 1_000_000, w.h + LEAD + 2, w.h + LEAD + 42, Kind.LP_HOLD, POOL, claim_window=160,
                    params=Params(blacklist=frozenset({ex.puzzle_hash})))
     w.create(c, "creator")
     burn = bytes(30) + b"\xde\xad"
@@ -162,13 +165,14 @@ def honest_dispute_bundle(w, root_id, disputer):
     bond = w.cfg.dispute_bond
     cl = w.clvm
     coin = disputer.coin
+    launcher_ph = w.d.bond_launcher_ph(disputer.puzzle_hash)
     cl.spend_standard_coin(coin, disputer.pk, cl.delegated_spend([
-        to_program(cl, [51, w.d.bond_launcher_hash, bond, [w.launcher_id]]),
+        to_program(cl, [51, launcher_ph, bond, [w.launcher_id]]),
         to_program(cl, [51, disputer.puzzle_hash, coin.amount - bond]),
     ]))
     funding = list(cl.coin_spends())
     sig = KeySigner([disputer.sk], SIM_DATA).sign(funding)
-    launcher = Coin(coin.coin_id(), w.d.bond_launcher_hash, bond)
+    launcher = Coin(coin.coin_id(), launcher_ph, bond)
     return funding, sig, launcher
 
 
@@ -186,20 +190,24 @@ def section_c(tag, asset):
     p = w.d.prepare([call])
     attempt("C1 dispute with no bond launcher in the bundle", w.sim.new_transaction,
             SpendBundle([s for s in p.spends if s.coin.coin_id() != launcher.coin_id()], Signature.infinity()),
-            expect="refuse", reason="AssertCoinAnnouncementFailed")
-    wrong = CoinSpend(launcher, w.d.p.mods["bond_launcher"].serialize(),
-                      to_program(w.clvm, [b"\x42" * 32, bond, w.launcher_id]).serialize())
-    attempt("C2 dispute whose launcher announces another bond puzzle hash", w.sim.new_transaction,
+            expect="refuse", reason="MessageNotSentOrReceived")
+    wrong = CoinSpend(launcher, w.d.bond_launcher_puzzle(disputer.puzzle_hash).serialize(),
+                      to_program(w.clvm, [bond, b"\x42" * 32]).serialize())
+    attempt("C2 dispute whose launcher names another sender (not this distributor's generation)", w.sim.new_transaction,
             SpendBundle([s for s in p.spends if s.coin.coin_id() != launcher.coin_id()] + [wrong] + funding, sig),
-            expect="refuse", reason="AssertCoinAnnouncementFailed")
+            expect="refuse", reason="MessageNotSentOrReceived")
 
     # C5: the thief takes the published funding spend and signature, and spends the launcher to itself.
     thief = w.keys.ph("thief")
-    evil = CoinSpend(launcher, w.d.p.mods["bond_launcher"].serialize(),
-                     to_program(w.clvm, [thief, bond, w.launcher_id]).serialize())
+    evil = CoinSpend(launcher, w.d.bond_launcher_puzzle(thief).serialize(),
+                     next(s for s in p.spends if s.coin.coin_id() == launcher.coin_id()).solution)
     before = w.xch_balance(thief)
-    attempt("C5 ATTACK (NEW-1) reuse the disputer's signed funding spend; launcher pays the thief",
-            w.sim.new_transaction, SpendBundle(funding + [evil], sig), expect="refuse")
+    attempt("C5 ATTACK (NEW-1) reuse the disputer's signed funding spend; a launcher that pays the thief",
+            w.sim.new_transaction, SpendBundle(funding + [evil], sig), expect="refuse", reason="WrongPuzzleHash")
+    alone = [s for s in p.spends if s.coin.coin_id() == launcher.coin_id()]
+    attempt("C5b ATTACK (NEW-1) reuse the funding spend and spend the launcher alone (strand the bond)",
+            w.sim.new_transaction, SpendBundle(funding + alone, sig), expect="refuse",
+            reason="MessageNotSentOrReceived")
     stolen = w.xch_balance(thief) - before
     check(f"C5 the thief holds none of the disputer's bond", stolen == 0, f"(thief received {stolen} of {bond})")
 
@@ -210,14 +218,16 @@ def section_c(tag, asset):
     w.post(r)
     disputer = w.bls(bond + 10)
     funding, sig, launcher = honest_dispute_bundle(w, r.root_id, disputer)
-    rewritten = w.d.prepare([w.d.dispute(w.h, r.root_id, thief, disputer.coin.coin_id())])
+    call = w.d.dispute(w.h, r.root_id, disputer.puzzle_hash, disputer.coin.coin_id())
+    call.action.solution[2] = thief  # the leaf's refund address; the launcher spend stays as published
+    rewritten = w.d.prepare([call])
 
     def redirect():
         w.sim.new_transaction(SpendBundle(list(rewritten.spends) + funding, sig))
         w.d.apply(rewritten)
         return w.state().dispute.disputer_ph == thief
     attempt("C6 ATTACK (NEW-2) the disputer's published bundle rewritten with disputer_ph = thief",
-            redirect, expect="refuse")
+            redirect, expect="refuse", reason="MessageNotSentOrReceived")
     if w.state().dispute is not None:
         before = w.xch_balance(thief)
         w.resolve(1)
@@ -257,17 +267,18 @@ def section_c(tag, asset):
     w.dispute(r.root_id, disputer="creator")
     w.advance_to(c.end + c.claim_window)
     got = attempt(f"C7 ATTACK (NEW-3) creator disputes its final root, then reclaims at end + window "
-                  f"({c.claim_window}) while the root is disputed", w.reclaim, c.id, expect="refuse")
+                  f"({c.claim_window}) while the root is disputed", w.reclaim, c.id, expect="refuse",
+                  reason="clvm raise")  # reclaim.rue `assert state.dispute is nil`
     if got:
-        w.resolve(0)  # the guardian rejects the dispute; the bond is forfeited
+        print(f"      the creator took {got}, alice's whole accrual, for a forfeited bond of {bond}")
+    else:
+        w.resolve(0)  # the guardian rejects the dispute; the bond is forfeited, the window restarts
+        attempt("C7 ATTACK (NEW-3) ... and reclaims while the restarted root is pending", w.reclaim, c.id,
+                expect="refuse", reason="clvm raise")  # reclaim.rue: the pending root raises the total
         settle(w)
-        try:
-            w.claim(r, c.id, "alice")
-            print("      alice still claimed after the root activated")
-        except ValueError:
-            print(f"      after the guardian rejected the dispute and the root activated, alice's claim is refused "
-                  f"(campaign gone): the creator took {got}, alice's whole accrual, for a forfeited bond of {bond}")
-
+        got = attempt("C7 control: alice claims the final root once it activates", w.claim, r, c.id, "alice")
+        check("C7 alice was paid her accrual", bool(got), f"({got})")
+        attempt("C7 control: the creator reclaims what is left", w.reclaim, c.id)
 
 for tag, asset in ASSETS:
     section_a(tag, asset)

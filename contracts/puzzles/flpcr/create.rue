@@ -80,9 +80,13 @@ fn main(
     assert params.time_bps + params.fees_bps == BPS;
     assert (kind == 1) | (params.fees_bps == 0);
     assert count_hashes(params.blacklist) <= MAX_EXCLUDED;
-    // Room for the previous root's window, one veto and repost of the final
-    // root, and the HEIGHT_WINDOW slack, before reclaiming opens.
-    assert claim_window >= 3 * CONFIG.dispute_blocks + HEIGHT_WINDOW;
+    // Four root cycles of HEIGHT_WINDOW + dispute_blocks (a root posted at the
+    // node's peak activates one cycle after it lands): the root pending across
+    // `end`, the final root, one late veto and repost of it, and one more
+    // cycle for holders to claim the final root before reclaiming opens
+    // (review 2026-11-09, FLPCR-08). reclaim.rue also waits for an open
+    // dispute or a pending root that raises the campaign's total.
+    assert claim_window >= 4 * (CONFIG.dispute_blocks + HEIGHT_WINDOW);
     assert claim_window <= CONFIG.max_campaign_length;
     assert count(state.campaigns) < CONFIG.max_campaigns;
     assert find_campaign(state.campaigns, id) is nil;

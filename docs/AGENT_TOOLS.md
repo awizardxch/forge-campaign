@@ -33,7 +33,7 @@
    `Simulator error` / mempool error names its consensus rule (for example
    `AssertHeightAbsoluteFailed`); report that name. Never retry a refused bundle unchanged.
 6. **Testnet first.** Use `Config.testnet` distributors (8-block disputes, campaigns from 16 blocks,
-   claim windows from 56 blocks, starts at least 32 blocks after the tip). Nothing goes to mainnet
+   claim windows from 160 blocks, starts at least 32 blocks after the tip). Nothing goes to mainnet
    before an external review.
 
 ## User tools
@@ -61,8 +61,8 @@ Validates a campaign and prices it. Nothing is signed.
     - `tip + 32 <= start <= tip + max_campaign_length` (`Config.min_start_lead`); quote against the
       tip, and leave margin for the time the bundle takes to land;
     - `min_campaign_length <= end − start <= max_campaign_length`;
-    - `3 × dispute_blocks + 32 <= claim_window <= max_campaign_length` (`Config.min_claim_window`:
-      testnet 56, production 146);
+    - `4 × (dispute_blocks + 32) <= claim_window <= max_campaign_length` (`Config.min_claim_window`:
+      testnet 160, production 280);
     - `creator` is a 32-byte puzzle hash.
 - **Out:**
   - `campaign_id`, `fee` (3%, paid to the dev multisig at creation), `budget`, per-day emission,

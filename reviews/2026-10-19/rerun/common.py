@@ -31,7 +31,7 @@ from flpcr.chain.values import to_program  # noqa: F401
 POOL, LP = b"\xb0" * 32, b"\x1b" * 32
 CAT_ASSET = b"\xa5" * 32
 ASSETS = (("XCH", bytes(32)), ("CAT", CAT_ASSET))
-WINDOW = 56  # the testnet claim-window floor: 3 * dispute_blocks + HEIGHT_WINDOW
+WINDOW = 160  # the testnet claim-window floor: 4 * (dispute_blocks + HEIGHT_WINDOW)
 LEAD = 32  # a campaign starts at least HEIGHT_WINDOW blocks after its create's `h`
 CLVM_RAISE = "clvm raise"
 
@@ -96,7 +96,7 @@ def world(asset=bytes(32), **kw):
     one standard campaign of 1,000,000 (budget 970,000), not yet created."""
     w = SimWorld(reward_asset=asset, **kw)
     w.advance_to(w.h + 3)
-    window = kw.get("dispute_blocks", 8) * 3 + HEIGHT_WINDOW
+    window = w.cfg.min_claim_window  # 4 * (dispute_blocks + HEIGHT_WINDOW)
     camp = w.campaign("creator", 1_000_000, w.h + LEAD + 2, w.h + LEAD + 42, Kind.LP_HOLD, POOL, claim_window=window)
     return w, camp
 

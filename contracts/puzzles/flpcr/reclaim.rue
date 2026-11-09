@@ -9,8 +9,29 @@
 // admin_ph, the dev multisig, sends "k" + message), so a fully claimed or
 // abandoned campaign cannot hold a table slot forever. The payment always
 // goes to the creator, whoever authorizes it.
+//
+// Not while holders' accrual is still in flight (review 2026-11-09, NEW-3):
+// a reclaim is refused while a dispute is open (its outcome may be a
+// corrected root that owes holders more), and while the pending root raises
+// this campaign's total above the active root's. Otherwise a creator could
+// dispute its own final root, or simply time the reclaim inside the final
+// root's dispute window, and take what that root owes holders. A pending root
+// that leaves the campaign's total where it was does not block: roots keep
+// naming every live campaign, so blocking on any mention would let a steady
+// stream of roots hold a finished campaign forever.
 
 import shared::*;
+
+// What the pending root owes holders of `id` beyond the active root: nothing
+// when no root is pending. Totals never fall (post_root), so > 0 means more.
+fn pending_raise(state: State, id: Bytes32) -> Int {
+    if state.pending is nil {
+        0
+    } else {
+        let before = if state.active is nil { 0 } else { total_for(state.active.totals, id) };
+        total_for(state.pending.totals, id) - before
+    }
+}
 
 fn main(
     CONFIG: Config,
@@ -24,6 +45,8 @@ fn main(
     let state = pinned.state;
     let campaign = get_campaign(state.campaigns, campaign_id);
     assert h >= campaign.end + campaign.claim_window;
+    assert state.dispute is nil;
+    assert pending_raise(state, campaign_id) == 0;
 
     let message = tree_hash(["flpcr-reclaim-v1", CONFIG.distributor_id, campaign_id]);
     let authorization = if auth == AUTH_ADMIN {

@@ -95,7 +95,7 @@ class TestLifecycle(unittest.TestCase):
     def test_claim_window_is_the_creators_and_bounded(self):
         d, c, src = setup()
         self.assertEqual(c.reclaim_from, 200 + WINDOW)
-        floor = 3 * DISPUTE + HEIGHT_WINDOW
+        floor = 4 * (DISPUTE + HEIGHT_WINDOW)
         self.assertEqual(d.config.min_claim_window, floor)
         short = Campaign(DIST, CREATOR, REWARD, 1000, 100, 200, Kind.LP_HOLD, POOL, nonce=1, claim_window=floor - 1)
         with self.assertRaises(Refused):
@@ -122,19 +122,19 @@ class TestConfig(unittest.TestCase):
     def test_testnet_allows_minute_scale_campaigns(self):
         cfg = Config.testnet(DIST, REWARD, DEV, ADMIN, GUARDIAN, ROUTER)
         self.assertEqual((cfg.dispute_blocks, cfg.min_campaign_length), (8, 16))  # ~2.5 min, ~5 min
-        self.assertEqual(cfg.min_claim_window, 56)
+        self.assertEqual(cfg.min_claim_window, 160)
         d = Distributor(cfg, ENGINE)
-        d.create(50, ROUTER, Campaign(DIST, CREATOR, REWARD, 1000, 100, 116, Kind.LP_HOLD, POOL, claim_window=56),
+        d.create(50, ROUTER, Campaign(DIST, CREATOR, REWARD, 1000, 100, 116, Kind.LP_HOLD, POOL, claim_window=160),
                  1000, CREATOR)
         with self.assertRaises(Refused):
-            d.create(50, ROUTER, Campaign(DIST, CREATOR, REWARD, 1000, 100, 115, Kind.LP_HOLD, POOL, claim_window=56),
+            d.create(50, ROUTER, Campaign(DIST, CREATOR, REWARD, 1000, 100, 115, Kind.LP_HOLD, POOL, claim_window=160),
                      1000, CREATOR)
 
     def test_production_defaults(self):
         cfg = Config(DIST, REWARD, DEV, ADMIN, GUARDIAN, ROUTER)
         self.assertEqual((cfg.fee_bps, cfg.dispute_blocks, cfg.min_campaign_length), (300, 38, 77))
         self.assertEqual(cfg.max_campaign_length, 365 * 4608)
-        self.assertEqual(cfg.min_claim_window, 3 * 38 + 32)
+        self.assertEqual(cfg.min_claim_window, 4 * (38 + 32))  # 280
         self.assertGreater(cfg.rotate_delay, cfg.dispute_blocks)
         d = Distributor(cfg, ENGINE)
         win = cfg.min_claim_window
@@ -157,7 +157,7 @@ class TestConfig(unittest.TestCase):
         cfg = Config.testnet(DIST, REWARD, DEV, ADMIN, GUARDIAN, ROUTER, fee_bps=0)
         after = HEIGHT_WINDOW + cfg.dispute_blocks
         d = Distributor(cfg, ENGINE)
-        c = Campaign(DIST, CREATOR, REWARD, 1000, 100, 150, Kind.LP_HOLD, POOL, fee_bps=0, claim_window=56)
+        c = Campaign(DIST, CREATOR, REWARD, 1000, 100, 150, Kind.LP_HOLD, POOL, fee_bps=0, claim_window=160)
         src = FixtureSource(lp_assets={POOL: LP}, events={LP: [HolderEvent(0, ALICE, 1), HolderEvent(0, BOB, 1)]})
         d.create(50, ROUTER, c, 1000, CREATOR)
         state, alice, h = EngineState(DIST, height=100), 0, 100

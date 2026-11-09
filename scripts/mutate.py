@@ -56,6 +56,8 @@ GUARDS = (
     "authorize_claim(",
     "spend_claim_slot(",
     "spend_delegation_slot(",
+    "SendMessage {",     # a one-line message: dispute's bond message (2026-11-09)
+    "ReceiveMessage {",  # ... and the bond launcher's receipt of it
 )
 
 

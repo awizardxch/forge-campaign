@@ -528,21 +528,37 @@ class Distributor:
     def bond_message(bond_ph: bytes, amount: int, distributor_id: bytes) -> bytes:
         return b"flpcr-bond-v1" + sha256tree([bond_ph, amount, distributor_id])
 
-    def bond_launcher_spend(self, launcher_coin: Coin) -> CoinSpend:
-        """The bond launcher creating the bond coin for its whole amount."""
-        solution = to_program(self.clvm, [self.bond_ph, launcher_coin.amount, self.launcher_id])
-        return CoinSpend(launcher_coin, self.p.mods["bond_launcher"].serialize(), solution.serialize())
+    def bond_launcher_puzzle(self, disputer_ph: bytes) -> Program:
+        """bond_launcher.rue curried for this distributor and one disputer: its
+        puzzle hash commits to where the bond sits and where an upheld dispute
+        refunds it (review 2026-11-09, NEW-1 and NEW-2)."""
+        c = self.clvm
+        return self.p.mods["bond_launcher"].curry([c.atom(self.bond_ph), c.atom(self.launcher_id), c.atom(disputer_ph)])
+
+    def bond_launcher_ph(self, disputer_ph: bytes) -> bytes:
+        return curry_tree_hash(self.bond_launcher_hash, [sha256tree(self.bond_ph), sha256tree(self.launcher_id),
+                                                         sha256tree(disputer_ph)])
+
+    def bond_launcher_spend(self, launcher_coin: Coin, disputer_ph: bytes) -> CoinSpend:
+        """The bond launcher creating the bond coin for its whole amount. It
+        receives the dispute leaf's message from this singleton, so it names the
+        inner puzzle hash of the generation the dispute is spent in (now)."""
+        solution = to_program(self.clvm, [launcher_coin.amount, self.inner_puzzle(self.state).tree_hash()])
+        return CoinSpend(launcher_coin, self.bond_launcher_puzzle(disputer_ph).serialize(), solution.serialize())
 
     def dispute(self, h: int, root_id: int, disputer_ph: bytes, disputer_coin_id: bytes) -> LeafCall:
         """Contest the pending root. The caller's spend of `disputer_coin_id`
-        must create the bond launcher (see `creations`); the driver spends the
-        launcher, which creates the bond coin the leaf asserts."""
+        must create the bond launcher, curried with `disputer_ph` (see
+        `creations`); the driver spends the launcher, which creates the bond
+        coin when the leaf's message reaches it. Build it against the
+        generation it is spent in: the launcher names that generation."""
         bond = self.cfg.dispute_bond
-        launcher = Coin(disputer_coin_id, self.bond_launcher_hash, bond)
+        launcher_ph = self.bond_launcher_ph(disputer_ph)
+        launcher = Coin(disputer_coin_id, launcher_ph, bond)
         return LeafCall(
             Action("dispute", [h, root_id, disputer_ph, disputer_coin_id]),
-            creations=[(self.bond_launcher_hash, bond, self.launcher_id)],
-            extra_spends=[self.bond_launcher_spend(launcher)],
+            creations=[(launcher_ph, bond, self.launcher_id)],
+            extra_spends=[self.bond_launcher_spend(launcher, disputer_ph)],
         )
 
     def resolve(self, h: int, upheld: int, sender: Optional[bytes] = None) -> LeafCall:

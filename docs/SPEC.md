@@ -148,8 +148,8 @@ by both the reference model (`model.py`, `distributor.py`) and the `create` leaf
 - `blacklist ∩ whitelist = ∅`: reference model and router only. The leaf never parses the whitelist; it
   commits to it through `params_hash`;
 - `fee_bps` equals the distributor's: the leaf takes it from its `Config`, so the id commits to it;
-- `3 · dispute_blocks + 32 <= claim_window <= max_campaign_length` (testnet floor 56 blocks, production
-  146). The floor is technical only (§5.5); the creator otherwise picks freely.
+- `4 · (dispute_blocks + 32) <= claim_window <= max_campaign_length` (testnet floor 160 blocks,
+  production 280). The floor is technical only (§5.5); the creator otherwise picks freely.
 
 The full `params` value sits in the `create` solution, so it is on chain and recoverable from the hash.
 The leaf reads `time_bps, fees_bps, min_balance, blacklist, ...rest` (the order of `Params.as_clvm`) and
@@ -223,7 +223,8 @@ These are the exact layouts in `contracts/puzzles/flpcr/shared.rue` (proper list
 dotted). `admin_ph` is the dev multisig, normally the same address as `dev_fee_ph`. `dispute_bond` is
 mojos of XCH whatever the reward asset (production 5 XCH = 5,000,000,000,000 mojos, testnet 0.1 TXCH =
 100,000,000,000); `bond_puzzle_hash` is the distributor's `p2_delegated_by_singleton` at nonce 3, where a
-bond sits; `bond_launcher_hash` is the one puzzle a bond coin may be born from (`bond_launcher.rue`).
+bond sits; `bond_launcher_hash` is the mod hash of the one puzzle a bond coin may be born from (`bond_launcher.rue`,
+curried per dispute with `bond_puzzle_hash`, `distributor_id` and `disputer_ph`).
 `Dispute.bond_parent` is that launcher's coin id. `init` checks the `Config` once:
 `rotate_delay > dispute_blocks`, `delegate_fee >= 0`, `dispute_bond > 0`, and `bond_puzzle_hash`,
 `bond_launcher_hash`, `admin_ph` and `dev_fee_ph` are 32 bytes.
@@ -240,10 +241,10 @@ leaf's job (the Forge rule, `chip0050ActionLayer.md`).
 | `create` | the router (mode-23 message `"c" + campaign_id` from a coin at `router_ph`) **and** the creator (`"k" + campaign_id` from a coin at `creator_ph`, by message only; a signature is refused) | Requires `initialized == 1` and a 32-byte `creator_ph`. Validates the struct (§3.1) and derives the id; **prepends** the campaign with `claimed = 0`; `reserve += budget`, and the reserve pays `fee` to `dev_fee_ph` (hinted) **in the same spend**: the dev fee, in the reward asset. The deposit is enforced by **conservation**, not by naming a coin: the reserve is recreated `budget` larger and also pays out `fee`, so the bundle (for a CAT, the reserve's CAT ring) must supply the whole `amount` or it is invalid. For XCH any excess is ordinary bundle slack (network fee); a CAT ring carries no slack, so a CAT deposit coin returns any excess as a CAT change output |
 | `post_root` | operator (mode-23 message `"p" + sha256tree([root_id, start, end, root, totals, manifest_hash])` from `engine_ph`) | Sets `pending`. Checks §5.3. `activates_at = h + 32 + dispute_blocks`, so a root is claimable at least `dispute_blocks` after the block that includes it |
 | `veto` | guardian (mode-23 message `"v" + sha256tree(root_id)` from `guardian_ph`) | Clears `pending` while it is still in its dispute window. Refused while a dispute is open: a disputed root is settled by `resolve` |
-| `dispute` | **anyone**; no authorization. The bond is the authorization | `[h, root_id, disputer_ph, bond_grandparent]`. Requires a pending root with that id, no open dispute, a 32-byte `disputer_ph` (where a refund goes; the disputer's choice) and a nonzero `bond_grandparent` (the disputer's own coin). Derives the bond launcher `bond_parent = coinid(bond_grandparent, bond_launcher_hash, dispute_bond)` and asserts its coin announcement `sha256(bond_parent + "flpcr-bond-v1" + sha256tree([bond_puzzle_hash, dispute_bond, distributor_id]))`. The launcher (created by the disputer's own coin spend with exactly `dispute_bond` mojos of XCH, hinted with the distributor id) creates the bond coin at `bond_puzzle_hash` for its whole amount and announces it; a coin id commits to its puzzle, so a bond that was never funded, or funded with the wrong amount, cannot open a dispute (the Forge registry's reserve-launcher pattern). Records `dispute = (root_id, disputer_ph, bond_parent)`; the root stays pending and the prologue will not promote it while the dispute is open |
+| `dispute` | **anyone**; no authorization. The bond is the authorization | `[h, root_id, disputer_ph, bond_grandparent]`. Requires a pending root with that id, no open dispute, a 32-byte `disputer_ph` (where a refund goes; the disputer's choice) and a nonzero `bond_grandparent` (the disputer's own coin). Derives the bond launcher's puzzle hash `L = curry_tree_hash(bond_launcher_hash, [bond_puzzle_hash, distributor_id, disputer_ph])` and its id `bond_parent = coinid(bond_grandparent, L, dispute_bond)`, and sends it a mode-23 message `"flpcr-bond-v1" + sha256tree([bond_puzzle_hash, dispute_bond, distributor_id])`. The launcher (created by the disputer's own coin spend with exactly `dispute_bond` mojos of XCH, hinted with the distributor id) is curried with those three values, receives that message from this singleton (any generation: `singleton(distributor_id, inner)` for the inner puzzle hash its solution names), and creates the bond coin at `bond_puzzle_hash` for its whole amount. A coin id commits to its puzzle, so the disputer's signed spend fixes both where the bond sits and where an upheld dispute refunds it: a bond that was never funded, funded with the wrong amount, redirected, or given another refund address cannot open a dispute, and the launcher cannot be spent without the dispute being recorded (review 2026-11-09, NEW-1 and NEW-2). Records `dispute = (root_id, disputer_ph, bond_parent)`; the root stays pending and the prologue will not promote it while the dispute is open |
 | `resolve` | **the guardian or the admin** (mode-23 message `"s" + sha256tree([root_id, upheld])` from a coin at `guardian_ph` or `admin_ph`) | `[h, upheld, sender]`, `upheld` 0 or 1, with a dispute open. **Upheld:** `pending = nil` (the operator reposts a corrected root under the same id) and the bond is refunded to `disputer_ph`. **Rejected:** the bond is forfeited to `dev_fee_ph` and `pending.activates_at = h + 32 + dispute_blocks` (the window restarts). Either way `dispute = nil`, and the leaf sends a mode-23 message to the bond coin `coinid(bond_parent, bond_puzzle_hash, dispute_bond)` carrying the tree hash of the one delegated puzzle `(q . [[51, recipient, dispute_bond, [recipient]]])`; the bundle must spend the bond coin with exactly that puzzle, and nothing else can be run against it |
 | `claim` | **the holder**, by key signature (`AGG_SIG_UNSAFE` of the leaf by the synthetic key whose standard puzzle hash is `ph`) or by message (mode-16 `"k" + leaf` from a coin at `ph`), **or a delegate the holder granted**, the same two ways at the delegate's address, plus the holder's delegation slot. Neither form names a generation (§5.4) | Requires a 32-byte `ph` that is not the burn address, and the campaign's excluded list (revealed in the solution, checked against `campaign.excluded`) must not contain it. Against the **active** root, for any campaign not yet reclaimed (no deadline): verifies `(campaign, ph, cumulative)`, pays `cumulative − claimed` from the reserve to `ph` (hinted), and records `cumulative` in the claim slot |
-| `reclaim` | **the creator** (signature or message over `sha256tree(["flpcr-reclaim-v1", distributor_id, campaign_id])`, or a delegate the creator granted, by signature or message), **or the admin** (`auth = 3`: a coin at `admin_ph` sends `"k"` + that message), from the campaign's `end + claim_window` | Pays `budget − claimed` to `creator_ph` (hinted), whoever authorized it, and removes the campaign |
+| `reclaim` | **the creator** (signature or message over `sha256tree(["flpcr-reclaim-v1", distributor_id, campaign_id])`, or a delegate the creator granted, by signature or message), **or the admin** (`auth = 3`: a coin at `admin_ph` sends `"k"` + that message), from the campaign's `end + claim_window`, **and not while a dispute is open or while the pending root raises the campaign's total over the active root's** (review 2026-11-09, NEW-3) | Pays `budget − claimed` to `creator_ph` (hinted), whoever authorized it, and removes the campaign |
 | `rotate` | `cancel = 0`: the guardian (`"r" + new_engine_ph`); `cancel = 1`: the admin (`"x" + engine_ph` of the pending rotation) | `cancel = 0` stores `rotation = (new_engine_ph, h + 32 + rotate_delay)`; a newer proposal replaces an older one and restarts the delay. The prologue adopts it as `engine_ph` on the first spend at or after `effective_at`; until then the current operator keeps posting. `cancel = 1` clears a pending rotation naming that key. The new key must be 32 bytes |
 | `delegate` | the owner (signature or message over `sha256tree(["flpcr-delegate-v2", distributor_id, owner, delegate, grant])`) | `owner` and `delegate` are 32 bytes; `grant` is 0 or 1. The first grant for a key inserts `(key, 1, 0, left, right)` between its neighbours; a later grant or revoke spends `(key, active, uses, left, right)` and recreates `(key, grant, uses + 1, left, right)`. A revoke of a never-granted key is refused. Emits `RESERVE_FEE delegate_fee`. State is unchanged |
 
@@ -440,7 +441,13 @@ The **creator sets `claim_window` when creating the campaign**. It is part of th
 anyone reading the campaign sees every term: budget, schedule, scoring, and how long holders are
 guaranteed to have after the end. For each campaign:
 
-- `reclaim` is refused before `end + claim_window`. From then on it can be submitted by the creator
+- `reclaim` is refused before `end + claim_window`, while a dispute is open (its outcome may be a
+  corrected root that owes holders more), and while the pending root raises the campaign's total above
+  the active root's (that root's accrual is still in its dispute window). Otherwise a creator could
+  dispute its own final root, or time the reclaim inside the final root's window, and take what holders
+  were owed (review 2026-11-09, NEW-3). A pending root that leaves the campaign's total unchanged does
+  not block: roots keep naming every live campaign (`post_root`'s `check_kept`), so blocking on any
+  mention would let a steady stream of roots hold a finished campaign's reclaim forever. From then on it can be submitted by the creator
   (their signature, or a message from their address for a vault or multisig creator), by a delegate the
   creator granted with the same `delegate` leaf (a hot wallet for a cold-wallet creator; a holder's
   delegate is not the creator's), or by the **admin**, the dev multisig, so a fully claimed or abandoned
@@ -453,10 +460,17 @@ guaranteed to have after the end. For each campaign:
   lands first wins, and the other is rebuilt against the new state (the late claim then finds the
   campaign gone; the late reclaim pays out less).
 
-The claim window's only floor is technical: at least `3 × dispute_blocks + 32` (testnet 56 blocks,
-production 146). That leaves room for the previous root's dispute window, one veto and repost of the
-root covering `end`, and the height slack, before reclaiming opens. Its ceiling is the longest
-campaign, 365 days.
+The claim window's only floor is technical: at least `4 × (dispute_blocks + 32)` (testnet 160 blocks,
+production 280, ≈ 93 min). A root posted at the node's peak, as the shipped tools post, activates one
+cycle of `32 + dispute_blocks` after it lands, and a root can only be posted once the previous one has
+activated. So the root pending across `end`, the final root, and one late veto and repost of it take
+three cycles after `end`; the fourth is the holders' time to claim the final root before reclaiming
+opens. The 2026-10-19 floor, `3 × dispute_blocks + 32` (testnet 56, production 146), counted the
+dispute windows but not the height slack in each, and a late veto pushed the final root past the
+opening (FLPCR-08, rerun 2026-11-09: end+120 at testnet, end+210 at production). With `reclaim`'s own
+check above, an operator later than this still cannot be overtaken while its root is pending; the
+floor is what gives holders a full cycle after it activates. Its ceiling is the longest campaign,
+365 days.
 
 **The reclaim guard (operator policy, not a puzzle rule).** By design, unclaimed rewards return to the
 creator from `end + claim_window`. But the puzzle counts the window from `end`, not from when the final
@@ -477,8 +491,8 @@ The distributor bounds **campaign length** (`end − start`):
 
 | Preset (`Config` in `distributor.py`) | `dispute_blocks` | `min_campaign_length` | `max_campaign_length` | minimum `claim_window` | `rotate_delay` | `delegate_fee` |
 |---|---|---|---|---|---|---|
-| `Config.testnet(...)` | 8 (≈ 2.5 min) | 16 (≈ 5 min) | 365 days | 56 | 24 | 1,000,000 mojos |
-| `Config(...)`, production | 38 (≈ 12 min) | 77 (≈ 24 min) | 365 days | 146 | 4,608 (≈ 1 day) | 50,000,000 mojos |
+| `Config.testnet(...)` | 8 (≈ 2.5 min) | 16 (≈ 5 min) | 365 days | 160 | 24 | 1,000,000 mojos |
+| `Config(...)`, production | 38 (≈ 12 min) | 77 (≈ 24 min) | 365 days | 280 | 4,608 (≈ 1 day) | 50,000,000 mojos |
 
 Both presets also set `max_campaigns = 32`. `Config` is the single configuration class: the driver
 curries the leaves from it, and it refuses the same bad values `init` does.
@@ -832,8 +846,10 @@ chain data. A root is claimable no sooner than `dispute_blocks` after the block 
 - **Anyone disputes with a bond.** This is Merkl's dispute mechanism with the stake as a coin: there
   anyone freezes a tree by staking 100 EURA and a multisig resolves; here anyone spends a coin of their
   own that creates a bond launcher holding exactly `dispute_bond` of XCH (production 5 XCH, testnet
-  0.1 TXCH), the launcher creates the bond coin and announces it, and the `dispute` leaf asserts that
-  announcement, so a bond that was never funded, or funded short, cannot open a dispute. The root
+  0.1 TXCH), curried with the bond's address and the disputer's refund address; the `dispute` leaf
+  derives the launcher from them and sends it a message, and only then does the launcher create the
+  bond coin. So a bond that was never funded, or funded short, cannot open a dispute, and nobody who
+  sees the disputer's bundle can redirect the bond or its refund. The root
   stays pending and cannot activate, however long that takes. The **guardian or admin** then
   `resolve`s: **upheld**, the root is revoked and the bond refunded to the address the disputer named;
   **rejected**, the bond is forfeited to the dev multisig and the dispute window restarts, so a bad

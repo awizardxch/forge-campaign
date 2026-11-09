@@ -85,7 +85,7 @@ The registry contents: per reward asset, the launcher, the config, and a summary
 ### `POST /campaigns/quote`
 
 Body: the campaign fields minus `distributor_id`, which is resolved from `reward_asset`. `claim_window`
-(blocks) is required, from `3 × dispute_blocks + 32` (testnet 56, production 146) up to the longest
+(blocks) is required, from `4 × (dispute_blocks + 32)` (testnet 160, production 280) up to the longest
 campaign. `start` must be at least 32 blocks after the current peak and no more than
 `max_campaign_length` after it. The distributor's bounds are returned in the error if either is out of
 range.

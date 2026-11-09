@@ -31,7 +31,7 @@ class TestReclaimGuard(unittest.TestCase):
         w.advance_to(w.h + 3)
         self.alice, self.bob = w.keys.ph("alice"), w.keys.ph("bob")
         self.src = FixtureSource(lp_assets={POOL: LP}, events={LP: [HolderEvent(0, self.alice, 3), HolderEvent(0, self.bob, 1)]})
-        self.c = w.campaign("creator", 1_000_000, w.h + 34, w.h + 74, Kind.LP_HOLD, POOL, claim_window=56)
+        self.c = w.campaign("creator", 1_000_000, w.h + 34, w.h + 74, Kind.LP_HOLD, POOL, claim_window=160)
         w.create(self.c, "creator")
         self.state = {"roots": {}}
         self.engine = EngineState(w.launcher_id, height=self.c.start)

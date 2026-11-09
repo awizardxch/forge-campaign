@@ -5,6 +5,9 @@
 > **Compiled fingerprint:** `(cd contracts/compiled && sha256sum *.hex | sha256sum)` =
 > `bb2781ffef81d2a59c132e5b5b669f6fecdae8c3f8e93db3d67f847897a93146`; `python contracts/build.py --check` clean.
 > **Suite at this revision:** 392 passed, 5 skipped.
+> **Fix rerun (branch `fix-bond-reclaim`, 2026-11-09):** compiled fingerprint
+> `c730114474886304d045a2b8db807f10adf992e568d8231fbe1e7f53e0e7a422`; 461 passed, 5 skipped; `run_all.py` all
+> ok. The outputs in `output/` and the cost table are from this rerun.
 
 The original probes in `../probes/` are the historical record and are left as they were: they target the
 eight-leaf build of `dea1d7d` and its `Distributor.spend` API, which no longer exist. Each script here ports
@@ -37,7 +40,7 @@ assertion is the first that can fire and why, and `scripts/mutate.py` is what pi
 | FLPCR-05 | `r05_height_pin.py` | PASS | future `h`: `AssertHeightAbsoluteFailed`; stale `h`: `AssertBeforeHeightAbsoluteFailed`; each mutant without its guard ACCEPTS the probe and `TestHeightPin` fails on it (4 and 2 failures) [92 passed] |
 | FLPCR-06 | `r06_guardian_rotation.py` | PASS | `rotate(self) + post_root` in one spend: `MessageNotSentOrReceived` [ACCEPTED, 970,000 to the guardian]; pending rotation visible; admin cancels |
 | FLPCR-07 | `r07_create_creator.py` | PASS | someone else names the creator: `MessageNotSentOrReceived` [ACCEPTED]; consent by signature `clvm raise`; 0/31/33-byte creator `clvm raise` [ACCEPTED, budget locked]; 31/33-byte rotate key and delegate owner `clvm raise` |
-| FLPCR-08 | `r08_final_root.py` | **FAIL: attack still works** | at the floor `3D + 32`, a root pending across `end` pushes the final root past reclaim: D=8 (window 56) final root at end+79..120, the creator reclaims 970,000 while it is pending; D=38 (window 146) holds without a veto or with an early one (4 to 36 blocks to spare) but not with a late veto (end+178 / end+210) |
+| FLPCR-08 | `r08_final_root.py` | PASS (`fix-bond-reclaim`) | floor `4 × (D + 32)`: D=8 window 160, D=38 window 280; final root at end+50..120 / end+110..210, holders keep at least one full cycle (D + 32) after it activates, alice claims, the creator reclaims the rest at the opening; a slow operator's final root posted the block before the opening blocks the reclaim (`clvm raise`, NEW-3). [6b8c027, floor `3D + 32`: D=8 (window 56) final root at end+79..120, the creator reclaimed 970,000 while it was pending; D=38 (window 146) failed with a late veto (end+178 / end+210)] |
 | FLPCR-09 | `r01_09_17_engine.py` | PASS | one root vs roots cut at 998: identical cumulatives [50,450/49,549 vs 99,851/148] |
 | FLPCR-10 | `r10_nft_reader.py` | PASS | forged NFT under a DID payment not counted [counted]; DID-authorized mint from an XCH coin counted [missed]; an unfollowable spend ends the holding |
 | FLPCR-11 | `r11_links.py` | PASS | replayed link ignored [`{atk: 250}`]; primary unlinks; third-party unlink ignored; other distributor's link inert; backdated entry refused by the log; dropped committed entry refused; `from_json` keeps links |
@@ -57,10 +60,15 @@ The verified-safe batteries (`A/p4_safe_battery.py`, `B/probe_slots.py`, `C/prob
 one by one; their cases are in `tests/test_chain.py` (`TestAssertionProbes`, `TestSpentSlotsStaySpent`,
 `TestOnlyTheHolderClaims`, `TestClaimRefusals`, `TestCreateRefusals`, the CAT twins).
 
-## Attacks that still get through
+## Attacks that got through on 6b8c027 (fixed on `fix-bond-reclaim`)
 
 `n_new_surface.py` probes what was added after the review (the delegation slot list, generation-free
-signature claims, exclusions, the bond and dispute leaves). Sections A and B hold; section C does not.
+signature claims, exclusions, the bond and dispute leaves). Sections A and B held; section C did not.
+All four below are fixed on `fix-bond-reclaim` (re-pin of `bond_launcher`, `dispute`, `reclaim`,
+`create`), and `n_new_surface.py` now ends "62/62 as expected": C5 `WrongPuzzleHash` (a launcher paying
+the thief at the funded coin) and `MessageNotSentOrReceived` (the lifted launcher spent alone), C6
+`MessageNotSentOrReceived`, C7 `clvm raise` during the dispute and during the restarted window, then the
+honest claim and reclaim accepted. The record of what was found:
 
 1. **NEW-1 (High): anyone who sees a dispute bundle steals the bond.** `bond_launcher.rue` is a plain
    puzzle anyone can spend, and the bond's destination is its *solution* (`created_puzzle_hash`), which
@@ -83,7 +91,8 @@ signature claims, exclusions, the bond and dispute leaves). Sections A and B hol
    counts one `dispute_blocks` per root, but a root activates `HEIGHT_WINDOW + dispute_blocks` after its
    `h`, and the next root's `h` must reach the previous root's `activates_at` to promote it.
 
-Suggested directions (puzzle changes, a reviewed re-pin; not applied here):
+Suggested directions (applied on `fix-bond-reclaim`; the floor ended at `4 × (D + 32)`, because at
+`3 × (D + 32)` a late veto leaves holders zero blocks to claim the final root):
 - NEW-1/2: curry `bond_puzzle_hash`, `distributor_id` and `disputer_ph` into the bond launcher (so the
   disputer's signed spend commits to them through the launcher's puzzle hash), and have `dispute` derive
   that puzzle hash from `CONFIG` and its `disputer_ph`.
@@ -103,7 +112,7 @@ Suggested directions (puzzle changes, a reviewed re-pin; not applied here):
 - **Testnet bundle export** and the mempool races (FLPCR-12, NEW-1 by replacement) remain uncovered by the
   simulator.
 
-## Cost (current leaves, XCH and CAT)
+## Cost (`fix-bond-reclaim` leaves, XCH and CAT)
 
 Singleton CLVM cost is the singleton spend's execution cost (action layer, merkle proof, leaf). Whole bundle
 is `chia_wallet_sdk.spend_bundle_cost` of the bundle the simulator accepted: singleton, reserve, slots, bond
@@ -113,32 +122,32 @@ launcher and bond, and the stand-in coins that send messages, pay fees and fund 
 | Action | Singleton CLVM cost | Whole bundle cost | % of block |
 |---|---:|---:|---:|
 | XCH create (empty table) | 3.25M | 94.3M | 0.86% |
-| XCH create (32nd, 31 in the table) | 4.12M | 138.7M | 1.26% |
+| XCH create (32nd, 31 in the table) | 4.13M | 139.5M | 1.27% |
 | XCH post_root, 1 campaign | 3.03M | 85.7M | 0.78% |
-| XCH post_root, 32 campaigns (max_campaigns) | 6.02M | 146.7M | 1.33% |
-| XCH post_root, 32 campaigns, with previous totals | 8.68M | 165.0M | 1.50% |
-| XCH claim, first (insert, coin message), 32 in state | 6.04M | 192.0M | 1.75% |
-| XCH claim, repeat (own slot), 32 in state | 5.94M | 195.9M | 1.78% |
-| XCH claim, first, key signature (AGG_SIG_UNSAFE) | 6.05M | 190.3M | 1.73% |
-| XCH delegate (grant, insert) | 4.14M | 166.9M | 1.52% |
-| XCH claim, delegated (delegate signs) | 6.12M | 200.6M | 1.82% |
-| XCH reclaim (creator, coin message) | 4.58M | 153.5M | 1.40% |
-| XCH reclaim (admin) | 4.55M | 152.0M | 1.38% |
-| XCH dispute (bond launcher + bond) | 1.52M | 80.3M | 0.73% |
+| XCH post_root, 32 campaigns (max_campaigns) | 6.02M | 147.5M | 1.34% |
+| XCH claim, first (insert, coin message), 32 in state | 6.06M | 192.8M | 1.75% |
+| XCH post_root, 32 campaigns, with previous totals | 8.68M | 165.7M | 1.51% |
+| XCH claim, repeat (own slot), 32 in state | 5.96M | 196.7M | 1.79% |
+| XCH claim, first, key signature (AGG_SIG_UNSAFE) | 6.07M | 191.1M | 1.74% |
+| XCH delegate (grant, insert) | 4.14M | 167.7M | 1.52% |
+| XCH claim, delegated (delegate signs) | 6.14M | 201.4M | 1.83% |
+| XCH reclaim (creator, coin message) | 4.88M | 157.2M | 1.43% |
+| XCH reclaim (admin) | 4.84M | 155.7M | 1.42% |
+| XCH dispute (bond launcher + bond) | 1.87M | 88.4M | 0.80% |
 | XCH resolve (upheld, bond refund) | 1.80M | 83.5M | 0.76% |
 | CAT create (empty table) | 3.25M | 143.8M | 1.31% |
-| CAT create (32nd, 31 in the table) | 4.12M | 188.4M | 1.71% |
+| CAT create (32nd, 31 in the table) | 4.13M | 189.1M | 1.72% |
 | CAT post_root, 1 campaign | 3.03M | 110.7M | 1.01% |
-| CAT post_root, 32 campaigns (max_campaigns) | 6.02M | 171.8M | 1.56% |
-| CAT post_root, 32 campaigns, with previous totals | 8.68M | 190.1M | 1.73% |
-| CAT claim, first (insert, coin message), 32 in state | 6.09M | 217.2M | 1.97% |
-| CAT claim, repeat (own slot), 32 in state | 5.99M | 221.1M | 2.01% |
-| CAT claim, first, key signature (AGG_SIG_UNSAFE) | 6.10M | 215.5M | 1.96% |
-| CAT delegate (grant, insert) | 4.14M | 192.0M | 1.75% |
-| CAT claim, delegated (delegate signs) | 6.17M | 225.8M | 2.05% |
-| CAT reclaim (creator, coin message) | 4.58M | 178.6M | 1.62% |
-| CAT reclaim (admin) | 4.55M | 177.1M | 1.61% |
-| CAT dispute (bond launcher + bond) | 1.52M | 105.4M | 0.96% |
+| CAT post_root, 32 campaigns (max_campaigns) | 6.02M | 172.6M | 1.57% |
+| CAT claim, first (insert, coin message), 32 in state | 6.09M | 218.0M | 1.98% |
+| CAT post_root, 32 campaigns, with previous totals | 8.68M | 190.8M | 1.73% |
+| CAT claim, repeat (own slot), 32 in state | 5.99M | 221.9M | 2.02% |
+| CAT claim, first, key signature (AGG_SIG_UNSAFE) | 6.10M | 216.3M | 1.97% |
+| CAT delegate (grant, insert) | 4.14M | 192.8M | 1.75% |
+| CAT claim, delegated (delegate signs) | 6.17M | 226.6M | 2.06% |
+| CAT reclaim (creator, coin message) | 4.88M | 182.3M | 1.66% |
+| CAT reclaim (admin) | 4.84M | 180.8M | 1.64% |
+| CAT dispute (bond launcher + bond) | 1.87M | 113.5M | 1.03% |
 | CAT resolve (upheld, bond refund) | 1.80M | 108.6M | 0.99% |
 
 Against the review's eight-leaf XCH figures (create 2.45M / 79.7M, post_root 1 campaign 2.76M / 81.2M,

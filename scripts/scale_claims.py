@@ -43,7 +43,7 @@ def main() -> int:
     print(f"{args.holders} wallets in {time.time() - t:.1f}s")
     start = w.h + HEIGHT_WINDOW + 2
     length = 4608  # a day of blocks
-    c = w.campaign("creator", 10**12, start, start + length, Kind.LP_HOLD, POOL, claim_window=3 * w.cfg.dispute_blocks + HEIGHT_WINDOW + 64)
+    c = w.campaign("creator", 10**12, start, start + length, Kind.LP_HOLD, POOL, claim_window=w.cfg.min_claim_window + 64)
     events = []
     for i, wallet in enumerate(wallets):
         events.append(HolderEvent(0, wallet.puzzle_hash, 4 + i % 7))

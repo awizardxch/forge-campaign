@@ -19,7 +19,7 @@ except (ImportError, FileNotFoundError):  # pragma: no cover
 from flpcr import EngineState, FixtureSource, HolderEvent, Kind, Params, run_epoch
 
 POOL, LP = b"\xb0" * 32, b"\x1b" * 32
-WINDOW = 56
+WINDOW = 160
 
 
 @unittest.skipUnless(HAVE_CHAIN, "chia-wallet-sdk or compiled puzzles missing")

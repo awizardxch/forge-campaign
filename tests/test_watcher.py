@@ -36,7 +36,7 @@ class WatcherTest(unittest.TestCase):
         self.alice, self.bob, self.op = w.keys.ph("alice"), w.keys.ph("bob"), w.keys.ph("engine")
         self.src = FixtureSource(lp_assets={POOL: LP}, events={LP: [HolderEvent(0, self.alice, 3), HolderEvent(0, self.bob, 1)]})
         start = w.h + HEIGHT_WINDOW + 2
-        self.c = w.campaign("creator", 1_000_000, start, start + 40, Kind.LP_HOLD, POOL, claim_window=56)
+        self.c = w.campaign("creator", 1_000_000, start, start + 40, Kind.LP_HOLD, POOL, claim_window=160)
         w.create(self.c, "creator")
         w.advance_to(self.c.start + 21)
         self.end = self.c.start + 20
@@ -158,7 +158,7 @@ class TestRemedies(WatcherTest):
         self.assertIn("root", {d["field"] for d in r.diff})
         self.assertIsNone(r.holders)  # no manifest: the posted leaves are unknown
         self.assertEqual(r.remedy.action, "dispute")
-        self.assertEqual(r.remedy.prepared.creations, [(w.d.bond_launcher_hash, bond, w.launcher_id)])
+        self.assertEqual(r.remedy.prepared.creations, [(w.d.bond_launcher_ph(w.keys.ph("disputer")), bond, w.launcher_id)])
         self.assertEqual(r.remedy.to_json()["creations"][0]["from_coin"], r.remedy.disputer_coin.coin_id().hex())
         self.assertGreater(r.blocks_remaining, 0)
         self.push_remedy(r.remedy)
@@ -238,7 +238,7 @@ class TestServiceAfterAVeto(unittest.TestCase):
         w.advance_to(w.h + 3)
         src = FixtureSource(lp_assets={POOL: LP}, events={LP: [HolderEvent(0, w.keys.ph("alice"), 1)]})
         start = w.h + HEIGHT_WINDOW + 2
-        c = w.campaign("creator", 1_000_000, start, start + 40, Kind.LP_HOLD, POOL, claim_window=56)
+        c = w.campaign("creator", 1_000_000, start, start + 40, Kind.LP_HOLD, POOL, claim_window=160)
         w.create(c, "creator")
         svc = CampaignService(SimChain(w.sim), w.launcher_id, "testnet11", lambda cs: src, operator=op, every=10)
         svc.boot()
