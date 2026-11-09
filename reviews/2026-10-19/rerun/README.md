@@ -135,7 +135,7 @@ launcher and bond, and the stand-in coins that send messages, pay fees and fund 
 | XCH claim, delegated (delegate signs) | 6.14M | 201.4M | 1.83% |
 | XCH reclaim (creator, coin message) | 4.88M | 157.2M | 1.43% |
 | XCH reclaim (admin) | 4.84M | 155.7M | 1.42% |
-| XCH dispute (bond launcher + bond) | 1.87M | 88.4M | 0.80% |
+| XCH dispute (bond launcher + bond) | 1.90M | 89.6M | 0.81% |
 | XCH resolve (upheld, bond refund) | 1.80M | 83.5M | 0.76% |
 | CAT create (empty table) | 3.25M | 143.8M | 1.31% |
 | CAT create (32nd, 31 in the table) | 4.13M | 189.1M | 1.72% |
@@ -149,7 +149,7 @@ launcher and bond, and the stand-in coins that send messages, pay fees and fund 
 | CAT claim, delegated (delegate signs) | 6.17M | 226.6M | 2.06% |
 | CAT reclaim (creator, coin message) | 4.88M | 182.3M | 1.66% |
 | CAT reclaim (admin) | 4.84M | 180.8M | 1.64% |
-| CAT dispute (bond launcher + bond) | 1.87M | 113.5M | 1.03% |
+| CAT dispute (bond launcher + bond) | 1.90M | 114.6M | 1.04% |
 | CAT resolve (upheld, bond refund) | 1.80M | 108.6M | 0.99% |
 
 Against the review's eight-leaf XCH figures (create 2.45M / 79.7M, post_root 1 campaign 2.76M / 81.2M,

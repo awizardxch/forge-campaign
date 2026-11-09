@@ -963,12 +963,15 @@ Each now has a probe built so that the assertion it names is the first thing tha
 
 **Not yet proven:**
 - **Real consensus.** The simulator runs chia_rs consensus checks, but testnet11 is the gate (phase 3).
-- **Cost under load.** The 2026-10-19 review measured XCH costs on the pre-fix build (a claim with 32
-  campaigns in state: about 1.6% of a block). CAT costs, many claims in one spend, and the re-pinned
-  leaves are not measured yet. `max_campaigns` bounds the state.
+- **Cost under load: measured on the simulator (2026-11-09, current pins), not on chain.** Every action,
+  XCH and CAT, with 32 campaigns in state, costs between 0.8% and 2.1% of a block
+  (`reviews/2026-10-19/rerun/README.md`, `cost.py`). 1,000 holders claiming by key signature were paid
+  exactly in 10 bundles of about 100 claims (about 40.9M cost per claim, 4.0B per bundle;
+  `scripts/scale_claims.py --holders 1000`). `max_campaigns` bounds the state. Mempool behaviour and
+  fees under real load are testnet's to show.
 - **Real keys.** Router, operator, guardian, admin and the disputer are anyone-can-spend test puzzles
   here. On testnet they are a wallet key (router, operator, disputer), a Forge multisig safe (guardian)
   and the dev multisig (admin).
 - **The distributor registry** is not built.
 - **No external review.** The pre-testnet review (`reviews/2026-10-19/FINDINGS.md`) is one model pass;
-  its on-chain findings are fixed in this build, and its probes have to be rerun against the new pins.
+  its probes were rerun on the current pins on 2026-11-09 (four new findings, all fixed).
