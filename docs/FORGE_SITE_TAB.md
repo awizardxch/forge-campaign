@@ -2,8 +2,8 @@
 
 > **Status:** plan, 2026-11-09. This is the integration of FLPCR into the Forge site (`awizardxch/forge-ui`). It
 > is written from forge-ui `9cd0b2b` and forge-campaign `main`. Nothing here is built in forge-ui yet. The
-> service side (`flpcr/service/`) exists, except for the create intake (§5), which is the next thing to build
-> in this repo.
+> service side is built in this repo (`flpcr/service/`): status, claimable, the claim sequencer, the create
+> intake (§5) and the watcher. It is not hosted yet.
 
 ## 1. Owner decisions this plan follows
 

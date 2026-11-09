@@ -39,10 +39,16 @@ rerun against the new ones.
   survivors". Proven on testnet11 by the fourth (`b1df2ca9…`) and fifth (`62b6d188…`) distributors
   (`docs/TESTNET.md` §5).
 
-## Owner rules not yet built (2026-10-19)
+## Owner rules (2026-10-19)
 
-- The front end sets the total amount and the campaign length; emission per day is total / days, equal every day.
-- Holder shares come from past holdings, time-averaged, never the live block (as Merkl roots do): a position held for one or two blocks must average to about zero. Confirm the engine's fee lookback excludes the current block and set a floor on `params.fee_window`.
+- **Built:** the front end sets the total amount and the campaign length; emission per day is budget / days,
+  equal every day (`emittable` is linear per block; `model.daily_emission(c)` = budget × 4608 / length,
+  and the days sum to the budget exactly). "Total" on the page is the budget: the deposit less the 3% fee.
+- **Built (2026-11-09):** holder shares come from past holdings, time-averaged, never the live block. The
+  fee lookback averages each holder's share over `[h − fee_window, h)`, so the event's own block is never
+  read: a deposit in the swap's block earns nothing from it, and a 1–2 block position stays under
+  k / fee_window. Floor: `Params` refuses `fee_window < 192` (one hour) on every network;
+  `RouterRules.min_fee_window` is 4,608 (one day) for production quotes.
 - A wallet with several addresses claims for all of them in one bundle. Built differently from the rule as written (one coin spend per address): the wallet signs every address's leaf in one approval (key signature, no coin at the addresses) and one coin spend pays the fee; `Distributor.sequence` chains generations for real collisions. Confirmed by the owner (2026-10-20), with FLPCR-07 below.
 
 ## Build and test
@@ -51,7 +57,7 @@ rerun against the new ones.
 cargo install rue-cli --version 0.8.4 --locked       # exactly 0.8.4: reproduces upstream's pinned hashes
 pip install chia-wallet-sdk==0.36.0 pytest clvm
 python contracts/build.py --check   # compiled/ matches the sources and every pin; run before trusting anything
-.venv/Scripts/python.exe -m pytest tests -q   # 378 tests, all on the in-process simulator
+.venv/Scripts/python.exe -m pytest tests -q   # 449 tests (5 skip without Sage RPC), all on the in-process simulator
 python scripts/mutate.py            # optional, ~3 min; must end "0 unargued survivors"
 ```
 
@@ -82,6 +88,13 @@ driver all read it. `build.py` also enforces the upstream source sha256 pins.
   across spends.
 - **`Clvm.alloc([83, 5])` encodes a byte string, not a list.** Build values with `flpcr/chain/values.py`.
 - **Conservation is bundle-wide.** Spare XCH anywhere in a bundle can cover a short XCH deposit.
+- **The service is the distributor's only writer.** The create intake (`flpcr/service/intake.py`) leases
+  the singleton per quote, because the creator's message is mode 23 and names the current coin; every
+  service writer (operator step, sequencer batch) checks `service.lease.busy()` before spending. Scripts
+  (`deploy_testnet.py`) do not see the lease: never run them against a distributor the service operates.
+- **`fixtures/vectors.json` is a contract with forge-ui.** It holds claim leaves, campaign ids and the
+  claim stand-in spend for the site's TypeScript mirrors; `tests/test_vectors.py` fails when it is stale
+  (`python scripts/make_vectors.py` rewrites it). A change there is a front-end change too.
 
 ## Decisions already made (don't relitigate)
 
@@ -114,7 +127,11 @@ driver all read it. `build.py` also enforces the upstream source sha256 pins.
 - Campaign length: testnet from 16 blocks, production from 77, max 365 days; `start` from `h + 32` to
   `h + max_campaign_length`. The claim window is the creator's choice (floor: `3 × dispute_blocks + 32`,
   testnet 56, production 146).
-- Reward assets: XCH, or a CAT in a Forge registry pool (router rule).
+- Reward assets: XCH, or a CAT in a Forge V16 registry pool (router rule).
+- **Fee weights (2026-11-09, open for the owner):** a swap's LP fee is valued in the pool's asset 0 at the
+  pre-spend spot price (XCH whenever the pool holds XCH); a CAT/CAT pool's fees are valued in its own
+  asset 0, which is safe because weights are only compared within one pool. The alternative is to refuse
+  fee weighting on pools without XCH.
 - NFT collections are identified by minter DID, or by a `col1` id = sha256(DID hex + metadata
   `collection.id`), which counts an NFT only if the DID minted it **and** its hash-checked metadata
   names the collection. Gates and boosts live in the campaign params.
@@ -161,6 +178,15 @@ exact leaves into a separate folder and set `FLPCR_COMPILED`. The original plan,
    create and claim messages, before relying on them.
 5. **Live data:** built for LP holders and NFTs. `flpcr/lp_crawl.py` crawls every V16 pool's LP holders
    (custody excluded, cached in the gitignored `lp-crawl-<network>.json`), `flpcr/live_source.py`
-   `LiveLpSource` serves them (time share only), and `flpcr/chain/node_reader.py` `NodeReader` is the
-   node adapter for `nfts.py`. `deploy_testnet.py post --source live` combines them. Still open:
-   `forge_resync` fee events.
+   `LiveLpSource` serves holders and, for `fees_bps > 0` campaigns, fee events from `flpcr/v16_fees.py`
+   (each V16 pool's singleton walked spend by spend, pinned to forge-puzzles `37f3199`; Forge V16 pools
+   only, checked from chain), and `flpcr/chain/node_reader.py` `NodeReader` is the node adapter for
+   `nfts.py`. `deploy_testnet.py post --source live` combines them. Fee events are tested on recorded V16
+   spends (`fixtures/v16_pool_spends.json`), not yet on live testnet data (`docs/SAGE_CHECKS.md` B3).
+6. **Watcher:** `python -m flpcr.service.watcher` (roles observer, disputer, guardian, admin) replays each
+   pending root and prepares the dispute, veto or resolve (never signs); `FLPCR_WATCH=1` runs it inside
+   the service as an observer, and `GET /api/v1/watch` serves its last report.
+7. **Hosted service:** `python -m flpcr.service.main` (Dockerfile): operator (`FLPCR_OPERATOR_SK`),
+   claim sequencer, and the create intake (`FLPCR_ROUTER_SK`, `FLPCR_ROUTER_RULES`,
+   `FLPCR_LEASE_SECONDS`) behind `POST /api/v1/campaigns/quote` and `/create`. Not hosted yet.
+   Everything left that needs a real wallet or chain is `docs/SAGE_CHECKS.md`.

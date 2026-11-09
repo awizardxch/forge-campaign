@@ -65,9 +65,12 @@ The engine on its own needs only the standard library (Python 3.10+). The chain 
   about 125 per bundle), a second reader.
 - **Excluded addresses and NFT campaigns (2026-10-20):** the burn address and up to 16 creator-excluded
   addresses are refused at claim; `NFT_HOLD` pays one share per NFT, by minter DID or `col1` collection.
-  Proven on testnet11 (fourth and fifth distributors, `docs/TESTNET.md` §5). 378 tests.
-- **Phase 1 (in progress):** live LP holders of every V16 pool are built (`LiveLpSource`, time share
-  only), and NFT holders read from a node (`NodeReader`). Still open: fee events. Only Forge V16 (and newer) pools are
-  supported.
+  Proven on testnet11 (fourth and fifth distributors, `docs/TESTNET.md` §5).
+- **Phase 1 (in progress):** live LP holders and fee events of every Forge V16 pool are built
+  (`LiveLpSource`, `flpcr/v16_fees.py`; older pools are refused), and NFT holders are read from a node
+  (`NodeReader`). Fee events are not yet run on live testnet data.
 - **Phase 3 (in progress):** `scripts/deploy_testnet.py` with real keys runs the distributor on testnet11.
-  Still open: operator / watcher bots, API, interface tab. See [`docs/TESTNET.md`](docs/TESTNET.md).
+  The hosted service is built (`flpcr/service/`: operator, claim sequencer, create intake, watcher, HTTP
+  API) but not hosted. Still open: hosting on Hetzner, and the forge.awizard.dev 🪎 tab
+  ([`docs/FORGE_SITE_TAB.md`](docs/FORGE_SITE_TAB.md)). What needs a real wallet is
+  [`docs/SAGE_CHECKS.md`](docs/SAGE_CHECKS.md); the rest of the plan is [`docs/TESTNET.md`](docs/TESTNET.md).

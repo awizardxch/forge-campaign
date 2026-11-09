@@ -257,7 +257,11 @@ Checks each pending root.
 - **Also watches rotations:** a pending `rotation` in state (`ChainState.rotation`) is a proposed
   operator key. Alert on any proposal; if it is not expected, ask the admin to cancel it before
   `effective_at`.
-- **Code:** `run_epoch` replay plus `Distributor.veto` / `SimWorld.veto`.
+- **Code:** `flpcr.service.watcher.Watcher` (`check()` returns MATCH, MISMATCH with a diff, UNVERIFIABLE
+  or NO_PENDING, plus the prepared remedy for its role: observer, disputer, guardian or admin; never
+  signed or pushed). CLI: `python -m flpcr.service.watcher --state <file> --once [--role …]`; in the
+  service, `FLPCR_WATCH=1` and `GET /api/v1/watch`. Holder-level checks need a published manifest: the
+  manifest is checked only when the root's `manifest_hash` is nonzero.
 
 ### `flpcr.rotate`
 
