@@ -19,6 +19,16 @@ confirmed by watching the successor coin appear. Progress lands in
 Roles are this wallet's own derivations (a stand-in; the guardian will be a
 multisig): router 1, operator 2, guardian 3, creator 4, holder 5, delegate 6.
 The dev multisig (dev fee and admin) comes from `flpcr.networks`.
+
+`post` commits the root's manifest (`flpcr.manifest.manifest_hash`) and writes it to
+`<state file stem>-manifests/<hash>.json` next to the state file (gitignored), where a
+watcher finds it (`--manifests <that folder>`); publish that folder wherever watchers read.
+
+Never run this script against a distributor the hosted service (`flpcr.service`) is
+operating. It does not see the service's create lease (`flpcr.service.lease`): a spend
+from here can land between a creator's quote and their create, which then fails, and the
+service's operator and sequencer only pick up this script's spend on their next check.
+Stop the service (or point this script at another distributor) first.
 """
 
 from __future__ import annotations
@@ -49,7 +59,7 @@ from flpcr.chain.auth import ByAdmin, ByDelegate, ByMessage, BySignature  # noqa
 from flpcr.chain.driver import HEIGHT_WINDOW, ClaimRequest, Distributor, LeafCall, Prepared, Puzzles  # noqa: E402
 from flpcr.chain.values import to_program  # noqa: E402
 from flpcr.distributor import Config  # noqa: E402
-from flpcr.manifest import state_from_json, state_to_json  # noqa: E402
+from flpcr.manifest import manifest_hash, publish_manifest, state_from_json, state_to_json  # noqa: E402
 from flpcr.networks import addresses  # noqa: E402
 
 NETWORK = os.environ.get("FLPCR_NETWORK", "testnet11").strip() or "testnet11"
@@ -57,6 +67,7 @@ if NETWORK != "testnet11":
     raise SystemExit("this script drives testnet11 only; mainnet needs the owner's own run")
 NODE = (os.environ.get("FLPCR_NODE_URL", "").strip() or "https://testnet11.api.coinset.org").rstrip("/")
 STATE_FILE = ROOT / (os.environ.get("FLPCR_STATE", "").strip() or f"state-{NETWORK}.json")
+MANIFESTS_DIR = STATE_FILE.parent / f"{STATE_FILE.stem}-manifests"  # <hash>.json per posted root
 # Mojos left as network fee by every bundle, on top of what a leaf reserves. A
 # zero-fee spend is accepted by the mempool and never mines.
 FEE = int(os.environ.get("FLPCR_FEE", "2000000000"))
@@ -578,12 +589,16 @@ def cmd_post(args, wallet: Wallet, state: dict, puzzles: Puzzles) -> None:
     if root is None or root.root is None:
         raise SystemExit("nothing accrued in this window; wait for the campaign to start")
     totals = sorted(root.totals.items())
-    call = d.post_root(h, root.root_id, root.start, root.end, root.root, totals)
+    mh = manifest_hash(root)
+    path = publish_manifest(MANIFESTS_DIR, root)  # before the push: the root names it
+    print(f"  manifest {mh.hex()[:16]}… written to {path}")
+    call = d.post_root(h, root.root_id, root.start, root.end, root.root, totals, manifest_hash=mh)
     _, result = push_calls(wallet, d, [call], f"post root {root.root_id} [{root.start}, {root.end})")
     engine_before = state.get("engine")
     state["engine"] = state_to_json(engine)
     state.setdefault("roots", {})[str(root.root_id)] = {
         "root": root.root.hex(), "start": root.start, "end": root.end, "totals": {k.hex(): v for k, v in totals},
+        "manifest_hash": mh.hex(), "manifest": str(path),
         "engine_before": engine_before,
         "claims": [{"campaign": cl.campaign_id.hex(), "puzzle_hash": cl.puzzle_hash.hex(), "cumulative": cl.cumulative,
                     "proof": [cl.proof[0], [x.hex() for x in cl.proof[1]]]} for cl in root.claims],

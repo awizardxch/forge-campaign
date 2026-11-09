@@ -8,6 +8,9 @@ aggregated in.
 `peak()` is the height a spend may name: the last *transaction* block, not the
 peak (a spend naming a non-transaction height stays pending, see Forge's
 "spend height is the last tx block").
+
+`spent(coin_id)` is the service's cheap check that nobody else has moved the
+singleton: one coin-record lookup, never cached for an unspent coin.
 """
 
 from __future__ import annotations
@@ -77,6 +80,12 @@ class NodeChain:
         self.reader.refresh()
         return state.created_height if state is not None else None
 
+    def spent(self, coin_id: bytes) -> bool:
+        """True once the coin is spent on chain (a fresh lookup: the reader forgets unspent coins first)."""
+        self.reader.refresh()
+        state = self.reader.coin_state(coin_id)
+        return state is not None and state.spent_height is not None
+
     def unspent_at(self, puzzle_hashes: Sequence[bytes]) -> List[Coin]:
         out = self.rpc("get_coin_records_by_puzzle_hashes",
                        {"puzzle_hashes": ["0x" + ph.hex() for ph in puzzle_hashes], "include_spent_coins": False})
@@ -107,6 +116,10 @@ class SimChain:
     def confirmed_at(self, coin_id: bytes) -> Optional[int]:
         state = self.sim.coin_state(coin_id)
         return state.created_height if state is not None else None
+
+    def spent(self, coin_id: bytes) -> bool:
+        state = self.sim.coin_state(coin_id)
+        return state is not None and state.spent_height is not None
 
     def unspent_at(self, puzzle_hashes: Sequence[bytes]) -> List[Coin]:
         return [coin for ph in puzzle_hashes for coin in self.sim.unspent_coins(ph, False)]

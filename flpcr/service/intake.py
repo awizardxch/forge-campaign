@@ -28,6 +28,10 @@ Quote request (JSON):
 
 Create request: {"quote": quote id, "spend_bundle": {"coin_spends": [...], "aggregated_signature": hex}}.
 
+`quote` calls `CampaignService.follow()` first, so it names the singleton coin the chain
+holds; `create` checks that coin is still unspent (someone else's spend makes the creator's
+message stale: 409, re-quote) before the router co-signs.
+
 The router key (FLPCR_ROUTER_SK) is a second key, separate from the operator's. Without
 it the intake still quotes, and refuses to create.
 """
@@ -240,6 +244,7 @@ class CampaignIntake:
         if not svc.lock.acquire(timeout=10):
             raise LeaseBusy("the distributor is being spent; retry shortly", 20)
         try:
+            svc.follow()  # quote on the singleton as it is on chain, not as this service last moved it
             h = svc.chain.peak()
             campaign = self.campaign_from(body, h)
             try:
@@ -414,8 +419,9 @@ class CampaignIntake:
             raise LeaseBusy("the distributor is being spent; retry shortly", 20)
         try:
             d = svc.d
-            if d.coin.coin_id() != q.coin_id:
+            if d.coin.coin_id() != q.coin_id or svc.chain.spent(q.coin_id):
                 self.lease.release(q.id)
+                svc.follow()  # another builder may have spent it: resync before the next quote
                 raise Requote("the singleton moved since the quote; re-quote and sign again")
             h = svc.chain.peak()
             if h >= q.h + HEIGHT_WINDOW - H_MARGIN:

@@ -8,13 +8,18 @@ writers leave the singleton alone. Each of them checks `busy()` once, under the
 service lock, before it builds a spend:
 
 * `CampaignService.operator_step` (posting a root) returns None while busy;
-* `ClaimSequencer.run_batch` returns None while busy; its queue waits for the next batch.
+* `ClaimSequencer.run_batch` returns None while busy; its queue waits for the next batch;
+* `CampaignService.follow` (the resync after someone else's spend) does nothing while busy:
+  the leased create is the intake's own spend, and the intake applies it or boots.
+
+Any new spend path in the service must check `busy()` the same way, under the service lock.
 
 A lease is either *open* (quoted, waiting for the creator's signed bundle; it lapses at
 `expires_at`) or *pinned* (the create has been pushed; it holds until the intake
 releases it, whether the push confirmed or failed). Only one lease exists at a time.
 The lease is in-process state: it orders the writers inside one service, it is not a
-chain rule, and another builder spending the same distributor ignores it.
+chain rule, and another builder spending the same distributor ignores it
+(`scripts/deploy_testnet.py` must not run against a distributor the service operates).
 """
 
 from __future__ import annotations
