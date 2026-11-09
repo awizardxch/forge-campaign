@@ -261,7 +261,9 @@ Checks each pending root.
   or NO_PENDING, plus the prepared remedy for its role: observer, disputer, guardian or admin; never
   signed or pushed). CLI: `python -m flpcr.service.watcher --state <file> --once [--role …]`; in the
   service, `FLPCR_WATCH=1` and `GET /api/v1/watch`. Holder-level checks need a published manifest: the
-  manifest is checked only when the root's `manifest_hash` is nonzero.
+  manifest is checked only when the root's `manifest_hash` is nonzero. Our operator (the service and
+  `deploy_testnet.py post`) commits and publishes one for every root: point `--manifests` (or
+  `FLPCR_MANIFESTS`) at `https://<service>/api/v1/manifests/{hash}`.
 
 ### `flpcr.rotate`
 

@@ -62,7 +62,7 @@ creator can dispute its own final root and reclaim the holders' accrual).
 cargo install rue-cli --version 0.8.4 --locked       # exactly 0.8.4: reproduces upstream's pinned hashes
 pip install chia-wallet-sdk==0.36.0 pytest clvm
 python contracts/build.py --check   # compiled/ matches the sources and every pin; run before trusting anything
-.venv/Scripts/python.exe -m pytest tests -q   # 449 tests (5 skip without Sage RPC), all on the in-process simulator
+.venv/Scripts/python.exe -m pytest tests -q   # 460 tests (5 skip without Sage RPC), all on the in-process simulator
 python scripts/mutate.py            # optional, ~3 min; must end "0 unargued survivors"
 ```
 
@@ -194,5 +194,9 @@ exact leaves into a separate folder and set `FLPCR_COMPILED`. The original plan,
    the service as an observer, and `GET /api/v1/watch` serves its last report.
 7. **Hosted service:** `python -m flpcr.service.main` (Dockerfile): operator (`FLPCR_OPERATOR_SK`),
    claim sequencer, and the create intake (`FLPCR_ROUTER_SK`, `FLPCR_ROUTER_RULES`,
-   `FLPCR_LEASE_SECONDS`) behind `POST /api/v1/campaigns/quote` and `/create`. Not hosted yet.
+   `FLPCR_LEASE_SECONDS`) behind `POST /api/v1/campaigns/quote` and `/create`. Every root commits
+   `manifest_hash(root)` and its manifest is published (`GET /api/v1/manifests/<hash>`, files under
+   `FLPCR_CACHE_DIR/manifests/`; `deploy_testnet.py post` writes `<state stem>-manifests/`), so watchers
+   check each holder. The service follows spends it did not make (`follow()`: a dispute, veto, rotation
+   or another builder's create) and stops serving proofs past a root that does not replay. Not hosted yet.
    Everything left that needs a real wallet or chain is `docs/SAGE_CHECKS.md`.
