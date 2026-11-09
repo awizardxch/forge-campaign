@@ -18,6 +18,10 @@ Everything is checked before a request is queued: the key hashes to the address,
 signatures verify, the messages are there, the coins are unspent, and the fee covers the
 request's share of the bundle's cost. A bad request is refused on its own; it never sinks a
 batch.
+
+`run_batch` leaves the singleton alone while the create intake's lease is held, and calls
+`CampaignService.follow()` before it builds, so a batch is never built on a generation someone
+else has already spent.
 """
 
 from __future__ import annotations
@@ -180,6 +184,7 @@ class ClaimSequencer:
         with svc.lock:
             if svc.lease.busy():  # a quoted create holds the singleton; the queue waits
                 return None
+            svc.follow()  # another builder may have moved the singleton: build on the chain's state
             d = svc.d
             h = svc.chain.peak()
             take = list(queued)

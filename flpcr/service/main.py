@@ -17,14 +17,21 @@ Environment (the host's service variables):
     FLPCR_LEASE_SECONDS  how long a create quote holds the singleton (default 120)
     FLPCR_EVERY          blocks between roots while campaigns run (default 180, ~1 h)
     FLPCR_LOOP_SECONDS   seconds between operator checks (default 60)
-    FLPCR_CACHE_DIR      where the LP crawl cache lives (a mounted volume; default ./data)
+    FLPCR_CACHE_DIR      where the LP crawl cache and the published root manifests live (a
+                         mounted volume; default ./data). Manifests: <dir>/manifests/<hash>.json,
+                         served at GET /api/v1/manifests/<hash>
     FLPCR_WATCH          1: also run the watcher (flpcr.service.watcher) as an observer each loop,
                          alerting on a pending root that does not replay (default 0: off)
     FLPCR_WATCH_WEBHOOK  POST each watcher alert's JSON here (with FLPCR_WATCH=1)
-    FLPCR_MANIFESTS      where published root manifests are: a folder or a URL template
+    FLPCR_MANIFESTS      where the watcher reads root manifests: a folder or a URL template, e.g.
+                         https://<host>/api/v1/manifests/{hash} (default: this service's own
+                         <FLPCR_CACHE_DIR>/manifests)
     PORT                 HTTP port (default 8080)
 
-Boot resyncs from chain; nothing else is needed on disk. The guardian and the admin
+Boot resyncs from chain; nothing else is needed on disk (a root's manifest is rebuilt
+and written again if its file is missing). Each loop first calls `service.follow()`: a
+spend of the singleton by anyone else (dispute, veto, rotation, a deploy script) is
+picked up before the operator or the sequencer acts. The guardian and the admin
 are multisigs and never live here. The host holds at most two keys: operator and router.
 """
 
@@ -104,7 +111,9 @@ def main() -> int:
 
     chain = NodeChain(node)
     source_for = live_source_factory(network, node, api, cache)
-    service = CampaignService(chain, bytes.fromhex(launcher), network, source_for, operator=operator, every=every)
+    manifests_dir = cache / "manifests"
+    service = CampaignService(chain, bytes.fromhex(launcher), network, source_for, operator=operator, every=every,
+                              manifests_dir=manifests_dir)
     sequencer = ClaimSequencer(service)
     router_hex = env.get("FLPCR_ROUTER_SK", "").strip().removeprefix("0x")
     router_sk = SecretKey.from_bytes(bytes.fromhex(router_hex)) if router_hex else None
@@ -113,7 +122,7 @@ def main() -> int:
     watcher = sink = None
     if env.get("FLPCR_WATCH", "0").strip() == "1":  # an observer: the service holds no guardian key or bond
         watcher = Watcher(chain, bytes.fromhex(launcher), source_for, network=network,
-                          manifests=manifest_lookup(env.get("FLPCR_MANIFESTS", "").strip()))
+                          manifests=manifest_lookup(env.get("FLPCR_MANIFESTS", "").strip() or str(manifests_dir)))
         sink = AlertSink(env.get("FLPCR_WATCH_WEBHOOK", "").strip() or None)
     server = serve(service, port, sequencer, intake, watcher)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -131,8 +140,16 @@ def main() -> int:
             traceback.print_exc()
             time.sleep(30)
 
+    passes = 0
     while True:
+        passes += 1
         try:
+            if service.follow():
+                st = service.s
+                print(f"resynced after another builder's spend: proofs through root {max(st.roots, default=0)}"
+                      + (f"; {st.mismatch}" if st.mismatch else ""), flush=True)
+            elif service.s.mismatch and passes % 10 == 0:  # a source may have been down: retry the rebuild
+                service.boot()
             posted = service.operator_step()
             if posted:
                 print(f"posted root {posted['root_id']} [{posted['start']}, {posted['end']}) fee {posted['fee']:,}", flush=True)

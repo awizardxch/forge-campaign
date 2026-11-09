@@ -4,18 +4,34 @@ Boot needs no state file:
 
 1. `resync` rebuilds the driver (coin, state, reserve, every slot) from the
    launcher id.
-2. The engine reruns every posted root from the same sources the operator used.
-   Each rebuilt root must hash to the one on chain, or the service refuses to
-   serve proofs from that root on: a holder is never handed a proof the chain
-   would refuse.
+2. The engine reruns every posted root from the same sources the operator used,
+   over every campaign live when that root was posted (its posted totals, plus
+   every campaign created by then and not yet reclaimed: `root_campaigns`), so a
+   root that silently dropped a campaign does not rebuild. Each rebuilt root must
+   match the chain (id, window, root, totals, and the manifest hash if one was
+   committed), or the service refuses to serve proofs from that root on: a holder
+   is never handed a proof the chain would refuse, and the operator posts nothing
+   on top of it. A later boot reuses the rebuilt roots (and the engine after each)
+   while the chain still names them, and reruns the engine from the first that
+   changed.
 
 Then:
 
 * `status()` and `claimable(puzzle_hash)` answer the public API: campaigns,
   roots, and each holder's leaves with the exact message to sign.
+* `follow()` notices someone else's spend of the singleton (a dispute, veto,
+  rotation, resolve, or a create or post by `scripts/deploy_testnet.py`): one
+  coin-state lookup (`chain.spent`) on the coin the driver holds, and a `boot()`
+  if it was spent. Every writer (`operator_step`, the sequencer's `run_batch`,
+  the intake's `quote`) calls it first, under the service lock and outside a
+  lease, so none of them acts on a stale ChainState; the main loop calls it
+  each pass so /status follows the chain.
 * `operator_step()` posts a root when one is due, signed with the operator key
   the service holds (with the intake's router key, its only keys: the guardian
-  and admin stay multisigs).
+  and admin stay multisigs). Each root commits `manifest_hash(root)`
+  (`flpcr.manifest`), and its manifest is written to `manifests_dir/<hash>.json`
+  before the push; `manifest(hash)` serves it (GET /api/v1/manifests/<hash>), so a
+  watcher can check every holder's leaf, not only the root and totals.
 * the sequencer (`flpcr.service.sequencer`) batches claimants' signed claims.
 * the create intake (`flpcr.service.intake`) quotes and co-signs creators' campaigns
   with the router key (a second key, FLPCR_ROUTER_SK). While a quote's lease
@@ -25,10 +41,13 @@ Then:
 
 from __future__ import annotations
 
+import json
+import pathlib
+import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from chia_wallet_sdk import Clvm, Coin, SecretKey, standard_puzzle_hash
 
@@ -37,12 +56,15 @@ from ..chain.resync import Resynced, resync
 from ..chain.signer import KeySigner
 from ..chain.values import to_bytes, to_int, to_list
 from ..engine import EngineState, Root, run_epoch
+from ..manifest import manifest_hash, publish_manifest, root_to_json
 from ..merkle import claim_leaf
 from ..model import Campaign, Kind, Params
 from .lease import SingletonLease
 
 MIN_FEE = 2_000_000_000  # 0.002 XCH: the floor the deploy scripts use
 FEE_PER_COST = 10  # mojos per unit of cost; under 5 the mempool refuses a nonzero fee
+ZERO_HASH = bytes(32).hex()
+HASH_HEX = re.compile(r"^[0-9a-f]{64}$")
 
 
 def params_from_program(clvm: Clvm, hex_value: str) -> Params:
@@ -88,6 +110,47 @@ def chain_root_ids(got: Resynced) -> List[str]:
     return [rid for rid in sorted(got.roots, key=int) if int(rid) <= current]
 
 
+def reclaim_heights(got: Resynced) -> Dict[bytes, int]:
+    """Each reclaimed campaign's id -> the height its reclaim confirmed."""
+    out: Dict[bytes, int] = {}
+    for a in got.actions:
+        if a.leaf == "reclaim":
+            out.setdefault(to_bytes(to_list(a.solution)[1]), a.height)
+    return out
+
+
+def root_campaigns(got: Resynced, rid: str, campaigns: Dict[bytes, Campaign],
+                   reclaimed: Optional[Dict[bytes, int]] = None) -> List[Campaign]:
+    """The campaigns the operator should have passed to the engine for root `rid`: every
+    campaign in its posted totals, and every campaign live when it was posted (created by
+    then, not reclaimed before it). A campaign live then but missing from the totals still
+    accrues in the rebuild, so a root that silently dropped one does not match."""
+    posted = got.roots[rid]
+    at = posted["posted_at"]
+    reclaimed = reclaim_heights(got) if reclaimed is None else reclaimed
+    ids = {bytes.fromhex(k) for k in posted["totals"]}
+    for cid_hex, rec in got.campaigns.items():
+        cid = bytes.fromhex(cid_hex)
+        if rec["created_at"] <= at and reclaimed.get(cid, at + 1) > at:
+            ids.add(cid)
+    return [campaigns[c] for c in sorted(ids) if c in campaigns]
+
+
+def root_disagrees(root: Optional[Root], rid: str, posted: dict) -> Optional[str]:
+    """Why a rebuilt root is not the one posted on chain (the fields that differ), or None."""
+    if root is None or root.root is None:
+        return "the engine finds nothing claimable in its window"
+    mine = {"root_id": root.root_id, "start": root.start, "end": root.end, "root": root.root.hex(),
+            "totals": {cid.hex(): amt for cid, amt in sorted(root.totals.items())}}
+    theirs = {"root_id": int(rid), "start": posted["start"], "end": posted["end"], "root": posted["root"],
+              "totals": posted["totals"]}
+    bad = [k for k in mine if mine[k] != theirs[k]]
+    mh = posted.get("manifest_hash", ZERO_HASH)
+    if mh != ZERO_HASH and mh != manifest_hash(root).hex():
+        bad.append("manifest_hash")
+    return ", ".join(bad) or None
+
+
 @dataclass
 class OperatorKey:
     secret: SecretKey  # the synthetic key whose standard puzzle hash is the engine
@@ -109,11 +172,15 @@ class ServiceState:
     roots: Dict[int, Root] = field(default_factory=dict)
     mismatch: Optional[str] = None  # why proofs stop at some root, if they do
     log: List[dict] = field(default_factory=list)
+    engines: Dict[int, EngineState] = field(default_factory=dict)  # the engine after each rebuilt root
+    posted: Dict[int, Tuple[str, str]] = field(default_factory=dict)  # root id -> (root, manifest hash) as posted
+    published: Dict[str, int] = field(default_factory=dict)  # manifest hash -> rebuilt root id
 
 
 class CampaignService:
     def __init__(self, chain, launcher_id: bytes, network: str, source_for: Callable[[Sequence[Campaign]], object],
-                 operator: Optional[OperatorKey] = None, every: int = 180, puzzles_factory=None):
+                 operator: Optional[OperatorKey] = None, every: int = 180, puzzles_factory=None,
+                 manifests_dir: Optional[pathlib.Path] = None):
         self.chain = chain
         self.launcher_id = launcher_id
         self.network = network
@@ -125,33 +192,94 @@ class CampaignService:
         self.s: Optional[ServiceState] = None
         self.signer = KeySigner.for_network([operator.secret] if operator else [], network)
         self.lease = SingletonLease()  # held by a create the intake has quoted (flpcr.service.lease)
+        self.manifests_dir = pathlib.Path(manifests_dir) if manifests_dir else None  # <hash>.json per posted root
 
     # --- boot -------------------------------------------------------------------------
 
     def boot(self) -> ServiceState:
         with self.lock:
+            prior = self.s
             puzzles = self.puzzles_factory()
             got = resync(self.chain.reader, puzzles, self.launcher_id)
             d = got.distributor
             campaigns = campaigns_from(got, puzzles.clvm)
-            start = min((c.start for c in campaigns.values()), default=0)
-            state = ServiceState(got, campaigns, EngineState(d.launcher_id, height=start))
+            # No campaign yet: the engine has no start (None, not 0); run_epoch starts it at the
+            # earliest campaign's start once there is one.
+            start = min((c.start for c in campaigns.values()), default=None)
+            state = ServiceState(got, campaigns, EngineState(d.launcher_id, height=start),
+                                 log=prior.log if prior else [])
+            reclaimed = reclaim_heights(got)
+            reuse = prior is not None and prior.resynced.distributor.launcher_id == d.launcher_id
             for rid in chain_root_ids(got):
                 posted = got.roots[rid]
-                covered = [campaigns[bytes.fromhex(k)] for k in posted["totals"] if bytes.fromhex(k) in campaigns]
-                try:
-                    engine, root = run_epoch(state.engine, covered, self.source_for(covered), posted["end"])
-                except Exception as e:  # noqa: BLE001
-                    state.mismatch = f"root {rid}: the engine could not rebuild it ({type(e).__name__}: {e})"
-                    break
-                if root is None or root.root is None or root.root.hex() != posted["root"] or root.root_id != int(rid):
-                    state.mismatch = (f"root {rid}: the engine's rebuild does not hash to the root posted on chain; "
-                                      "proofs stop at the root before it")
+                committed = posted.get("manifest_hash", ZERO_HASH)
+                state.posted[int(rid)] = (posted["root"], committed)
+                old = prior.roots.get(int(rid)) if reuse else None
+                if (old is not None and int(rid) in prior.engines and old.root.hex() == posted["root"]
+                        and (old.start, old.end) == (posted["start"], posted["end"])):
+                    engine, root = prior.engines[int(rid)], old  # unchanged on chain: no rerun
+                else:
+                    reuse = False  # from here on, rerun the engine
+                    covered = root_campaigns(got, rid, campaigns, reclaimed)
+                    try:
+                        engine, root = run_epoch(state.engine, covered, self.source_for(covered), posted["end"])
+                    except Exception as e:  # noqa: BLE001
+                        state.mismatch = f"root {rid}: the engine could not rebuild it ({type(e).__name__}: {e})"
+                        break
+                why = root_disagrees(root, rid, posted)
+                if why:
+                    state.mismatch = (f"root {rid}: the engine's rebuild does not match the root posted on chain "
+                                      f"({why}); proofs stop at the root before it")
                     break
                 state.engine = engine
                 state.roots[root.root_id] = root
+                state.engines[root.root_id] = engine
+                self._publish(state, root, committed)
             self.s = state
             return state
+
+    def _publish(self, state: ServiceState, root: Root, committed: str = ZERO_HASH) -> str:
+        """Index a rebuilt root's manifest; write its file if the chain committed it and it is not on disk."""
+        mh = manifest_hash(root).hex()
+        state.published[mh] = root.root_id
+        if self.manifests_dir is not None and committed == mh and not (self.manifests_dir / f"{mh}.json").is_file():
+            publish_manifest(self.manifests_dir, root)
+        return mh
+
+    def follow(self) -> bool:
+        """Resync if someone else spent the singleton the driver holds. True if it booted.
+
+        The service's own spends advance the driver as they confirm, so a spent coin here is
+        a foreign spend (a dispute, veto, resolve, rotation, a create or post by another
+        builder). Skipped while a lease is held: the leased create is the intake's own spend,
+        and the intake applies it (or boots) when it settles."""
+        with self.lock:
+            if self.s is None:
+                self.boot()
+                return True
+            if self.lease.busy() or not self.chain.spent(self.d.coin.coin_id()):
+                return False
+            before = self.d.coin.coin_id()
+            self.boot()
+            self.s.log.append({"step": "resync", "reason": "the singleton was spent by another builder",
+                               "from_coin": before.hex(), "coin": self.d.coin.coin_id().hex(),
+                               "time": int(time.time())})
+            return True
+
+    def manifest(self, hash_hex: str) -> Optional[dict]:
+        """A posted root's manifest by its hash: the published file if there is one (served as
+        written: a watcher checks it against the chain), else the rebuilt root's."""
+        hash_hex = hash_hex.strip().lower().removeprefix("0x").removesuffix(".json")
+        if not HASH_HEX.match(hash_hex):
+            raise ValueError("a manifest hash is 64 hex characters")
+        if self.manifests_dir is not None:
+            path = self.manifests_dir / f"{hash_hex}.json"
+            if path.is_file():
+                return json.loads(path.read_text())
+        with self.lock:
+            rid = self.s.published.get(hash_hex) if self.s else None
+            root = self.s.roots.get(rid) if rid is not None else None
+            return root_to_json(root) if root is not None else None
 
     @property
     def d(self) -> Distributor:
@@ -174,8 +302,13 @@ class CampaignService:
                     "phase": ("scheduled" if h < c.start else "running" if h < c.end
                               else "claim window" if h < c.end + c.claim_window else "reclaimable"),
                 })
-            root = lambda r: r and {"root_id": r.root_id, "start": r.start, "end": r.end, "root": r.root.hex(),  # noqa: E731
-                                    "activates_at": r.activates_at}
+            def root(r):
+                if r is None:
+                    return None
+                committed = self.s.posted.get(r.root_id)
+                mh = committed[1] if committed and committed[0] == r.root.hex() and committed[1] != ZERO_HASH else None
+                return {"root_id": r.root_id, "start": r.start, "end": r.end, "root": r.root.hex(),
+                        "activates_at": r.activates_at, "manifest_hash": mh}
             return {
                 "network": self.network, "launcher_id": self.launcher_id.hex(), "peak": h,
                 "coin": d.coin.coin_id().hex(), "reserve": d.reserve_coin.amount,
@@ -225,7 +358,9 @@ class CampaignService:
         live = [c for c in st.campaigns if c.id in self.s.campaigns]
         if not live:
             return None
-        last_end = self.s.engine.height
+        if self.s.mismatch:
+            return None  # never post on top of a root the engine cannot rebuild
+        last_end = self.s.engine.height if self.s.engine.height is not None else min(c.start for c in live)
         end = min(h, max(c.end for c in live))
         if end <= last_end or h <= min(c.start for c in live):
             return None
@@ -240,6 +375,7 @@ class CampaignService:
         with self.lock:
             if self.lease.busy():  # a quoted create holds the singleton's next generation
                 return None
+            self.follow()  # someone else may have spent it: a dispute, a veto, a rotation
             h = self.chain.peak()
             end = self.due(h)
             if end is None:
@@ -252,7 +388,11 @@ class CampaignService:
             if root is None or root.root is None:
                 return None
             totals = sorted(root.totals.items())
-            prepared = d.prepare([d.post_root(h, root.root_id, root.start, root.end, root.root, totals)])
+            mh = manifest_hash(root)
+            if self.manifests_dir is not None:  # published before the push: the root names it
+                publish_manifest(self.manifests_dir, root)
+            prepared = d.prepare([d.post_root(h, root.root_id, root.start, root.end, root.root, totals,
+                                              manifest_hash=mh)])
             own = self._message_spends(prepared, d.coin.coin_id())
             spends = list(prepared.spends) + own
             fee = max(MIN_FEE, FEE_PER_COST * d.spend_cost(spends))
@@ -265,8 +405,11 @@ class CampaignService:
             d.apply(prepared)
             self.s.engine = engine
             self.s.roots[root.root_id] = root
+            self.s.engines[root.root_id] = engine
+            self.s.posted[root.root_id] = (root.root.hex(), mh.hex())
+            self.s.published[mh.hex()] = root.root_id
             entry = {"step": "post_root", "root_id": root.root_id, "start": root.start, "end": root.end,
-                     "time": int(time.time()), "fee": fee}
+                     "time": int(time.time()), "fee": fee, "manifest_hash": mh.hex()}
             self.s.log.append(entry)
             return entry
 

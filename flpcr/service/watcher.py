@@ -64,7 +64,7 @@ from chia_wallet_sdk import Clvm, Coin
 from ..chain.driver import HEIGHT_WINDOW, Prepared, Puzzles
 from ..chain.resync import Resynced, resync
 from ..engine import EngineState, Root, run_epoch
-from ..manifest import manifest_hash, root_to_json
+from ..manifest import manifest_hash, publish_manifest, root_to_json  # noqa: F401 (publish_manifest: re-exported)
 from ..merkle import build_tree, claim_leaf
 from ..model import Campaign
 from .core import campaigns_from, chain_root_ids
@@ -249,7 +249,9 @@ def compare(posted: dict, expected: Root, manifest: Optional[dict]) -> tuple:
 
 def manifest_lookup(spec: Optional[str]) -> Optional[ManifestLookup]:
     """A directory (`<hash>.json` or `root-<id>.json` in it) or a URL template with `{hash}`
-    and/or `{root_id}` (a bare URL prefix means `<prefix>/{hash}.json`). Missing: None."""
+    and/or `{root_id}` (a bare URL prefix means `<prefix>/{hash}.json`). Missing: None.
+    The hosted service publishes its roots' manifests at
+    `https://<host>/api/v1/manifests/{hash}` (the bare prefix `.../api/v1/manifests` works too)."""
     if not spec:
         return None
     if spec.startswith(("http://", "https://")):
@@ -275,14 +277,6 @@ def manifest_lookup(spec: Optional[str]) -> Optional[ManifestLookup]:
                 return json.loads(path.read_text())
         return None
     return read
-
-
-def publish_manifest(folder: pathlib.Path, root: Root) -> pathlib.Path:
-    """Write a root's manifest where `manifest_lookup(folder)` finds it (operator side, and tests)."""
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{manifest_hash(root).hex()}.json"
-    path.write_text(json.dumps(root_to_json(root), sort_keys=True, separators=(",", ":")))
-    return path
 
 
 # --- the watcher --------------------------------------------------------------------------
@@ -315,7 +309,7 @@ class Watcher:
 
     def resynced(self) -> Resynced:
         """The distributor from chain; resynced again only once its singleton coin has been spent."""
-        if self._got is not None and self.chain.reader.coin_spend(self._got.distributor.coin.coin_id()) is None:
+        if self._got is not None and not self.chain.spent(self._got.distributor.coin.coin_id()):
             return self._got
         puzzles = self.puzzles_factory()
         self._got = resync(self.chain.reader, puzzles, self.launcher_id)

@@ -1,7 +1,13 @@
 """The service's HTTP API (JSON, CORS-open for the Forge front end).
 
     GET  /health                         liveness: 200 once booted, with the peak
-    GET  /api/v1/status                  the distributor: campaigns, roots, dispute, rotation
+    GET  /api/v1/status                  the distributor: campaigns, roots (each with the
+                                         manifest_hash it committed, or null), dispute, rotation
+    GET  /api/v1/manifests/<hash>        a posted root's manifest (flpcr.manifest.root_to_json),
+                                         by the manifest_hash its post_root committed; ".json"
+                                         may be appended. Served as published: check it against
+                                         the chain (the watcher does). A watcher reads it with
+                                         FLPCR_MANIFESTS=https://<host>/api/v1/manifests/{hash}
     GET  /api/v1/claimable/<address>     a holder's leaves in the claimable root, with the
                                          message to sign and the proof (xch1/txch1 or hex)
     POST /api/v1/claims                  the sequencer (flpcr.service.sequencer): signed claims
@@ -72,6 +78,9 @@ def make_handler(service, sequencer=None, intake=None, watcher=None):
                     return self.send_json(503, {"success": False, "error": "booting: resyncing from chain"})
                 if path == "/api/v1/status":
                     return self.send_json(200, {"success": True, **service.status()})
+                if path.startswith("/api/v1/manifests/"):
+                    found = service.manifest(path.rsplit("/", 1)[1])
+                    return self.send_json(200 if found else 404, found if found else {"success": False, "error": "unknown manifest"})
                 if path.startswith("/api/v1/claimable/"):
                     ph = puzzle_hash_of(path.rsplit("/", 1)[1])
                     return self.send_json(200, {"success": True, "puzzle_hash": ph.hex(), **service.claimable(ph)})

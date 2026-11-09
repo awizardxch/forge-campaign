@@ -3,3 +3,4 @@ __pycache__/
 *.egg-info/
 state*.json
 lp-crawl*.json
+state*-manifests/

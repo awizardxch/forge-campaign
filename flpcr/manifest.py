@@ -15,6 +15,7 @@ on links, and can tell if a later log rewrites it.
 from __future__ import annotations
 
 import json
+import pathlib
 from fractions import Fraction
 from hashlib import sha256
 
@@ -48,6 +49,23 @@ def manifest_hash(root: Root) -> bytes:
     """sha256 of the canonical JSON; the value `post_root` carries."""
     canonical = json.dumps(root_to_json(root), sort_keys=True, separators=(",", ":"))
     return sha256(canonical.encode()).digest()
+
+
+def manifest_bytes(root: Root) -> bytes:
+    """The canonical JSON `manifest_hash` hashes: what is published."""
+    return json.dumps(root_to_json(root), sort_keys=True, separators=(",", ":")).encode()
+
+
+def publish_manifest(folder: pathlib.Path, root: Root) -> pathlib.Path:
+    """Write a root's manifest as `<folder>/<manifest hash>.json`, where a watcher's
+    `manifest_lookup(folder)` (and the service's GET /api/v1/manifests/<hash>) finds it."""
+    folder = pathlib.Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{manifest_hash(root).hex()}.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_bytes(manifest_bytes(root))
+    tmp.replace(path)
+    return path
 
 
 def state_to_json(state: EngineState) -> dict:
