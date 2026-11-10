@@ -70,6 +70,9 @@ def make_handler(service, sequencer=None, intake=None, watcher=None):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            # A public site reading a service on the user's own machine (the testnet 🪎 tab): Chrome's
+            # private-network preflight asks for this before it sends the POST.
+            self.send_header("Access-Control-Allow-Private-Network", "true")
             self.end_headers()
 
         def do_GET(self):
