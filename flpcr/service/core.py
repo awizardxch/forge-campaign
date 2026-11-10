@@ -58,7 +58,7 @@ from ..chain.values import to_bytes, to_int, to_list
 from ..engine import EngineState, Root, run_epoch
 from ..manifest import manifest_hash, publish_manifest, root_to_json
 from ..merkle import claim_leaf
-from ..model import Campaign, Kind, Params
+from ..model import BLOCKS_PER_DAY, Campaign, Kind, Params
 from .lease import SingletonLease
 
 MIN_FEE = 2_000_000_000  # 0.002 XCH: the floor the deploy scripts use
@@ -329,21 +329,81 @@ class CampaignService:
             h = self.chain.peak()
             active = st.pending if st.pending and h >= st.pending.activates_at and st.dispute is None else st.active
             if active is None:
-                return {"root_id": None, "claims": []}
+                return {"root_id": None, "claims": [], "pending": self._pending_for(puzzle_hash, None, None)}
             root = self.s.roots.get(active.root_id)
             if root is None:
-                return {"root_id": active.root_id, "claims": [], "note": self.s.mismatch or "no proofs for this root"}
+                return {"root_id": active.root_id, "claims": [], "pending": [],
+                        "note": self.s.mismatch or "no proofs for this root"}
             out = []
             for cl in root.claims:
                 if cl.puzzle_hash != puzzle_hash:
                     continue
                 slot = d.claims.get(d.claim_key(cl.campaign_id, puzzle_hash))
-                owed = cl.cumulative - (slot.claimed if slot else 0)
+                claimed = slot.claimed if slot else 0
+                owed = cl.cumulative - claimed
                 out.append({"campaign": cl.campaign_id.hex(), "cumulative": cl.cumulative, "claimable": max(owed, 0),
+                            "claimed": claimed,
                             "leaf": claim_leaf(d.launcher_id, cl.campaign_id, puzzle_hash, cl.cumulative).hex(),
                             "proof": [cl.proof[0], [x.hex() for x in cl.proof[1]]],
                             "excluded": [x.hex() for x in d.excluded.get(cl.campaign_id, [])]})
-            return {"root_id": active.root_id, "claims": out}
+            return {"root_id": active.root_id, "claims": out, "pending": self._pending_for(puzzle_hash, active, root)}
+
+    def _pending_for(self, puzzle_hash: bytes, effective, effective_root: Optional[Root]) -> list:
+        """What the holder has in a posted root that is not claimable yet (in its dispute
+        window, or disputed): the amount it adds over the claimable root, never a proof."""
+        st = self.d.chain_state
+        if st.pending is None or st.pending is effective:
+            return []
+        root = self.s.roots.get(st.pending.root_id)
+        if root is None:
+            return []
+        out = []
+        for cl in root.claims:
+            if cl.puzzle_hash != puzzle_hash:
+                continue
+            before = effective_root.claim_for(cl.campaign_id, puzzle_hash) if effective_root else None
+            slot = self.d.claims.get(self.d.claim_key(cl.campaign_id, puzzle_hash))
+            base = max(before.cumulative if before else 0, slot.claimed if slot else 0)
+            if cl.cumulative > base:
+                out.append({"campaign": cl.campaign_id.hex(), "root_id": root.root_id, "cumulative": cl.cumulative,
+                            "amount": cl.cumulative - base, "activates_at": st.pending.activates_at,
+                            "disputed": st.dispute is not None})
+        return out
+
+    def campaign(self, campaign_id: bytes) -> Optional[dict]:
+        """One campaign's page: its status row, its terms, what the schedule has released, and
+        its total in every root the service rebuilt. None if the chain does not list it."""
+        with self.lock:
+            st = self.status()
+            row = next((x for x in st["campaigns"] if x["id"] == campaign_id.hex()), None)
+            if row is None:
+                return None
+            full = self.s.campaigns.get(campaign_id)
+            length = row["end"] - row["start"]
+            h = st["peak"]
+            out = {**row, "length": length, "daily_emission": row["budget"] * BLOCKS_PER_DAY // length,
+                   "reclaim_from": row["end"] + row["claim_window"],
+                   "emittable": row["budget"] * (min(max(h, row["start"]), row["end"]) - row["start"]) // length}
+            if full is not None:
+                out.update({"amount": full.amount, "fee": full.fee, "nonce": full.nonce,
+                            "collection": full.params.collection and {"did": full.params.collection[0].hex(),
+                                                                      "id": full.params.collection[1]}})
+            cs = self.d.chain_state
+            active_id = cs.active.root_id if cs.active else None
+            pending_id = cs.pending.root_id if cs.pending else None
+            roots = []
+            for rid, r in sorted(self.s.roots.items()):
+                if campaign_id not in r.totals:
+                    continue
+                state = ("disputed" if rid == pending_id and cs.dispute is not None else "pending" if rid == pending_id
+                         else "active" if rid == active_id else "superseded")
+                roots.append({"root_id": rid, "start": r.start, "end": r.end, "total": r.totals[campaign_id],
+                              "holders": sum(1 for c in r.claims if c.campaign_id == campaign_id and c.cumulative > 0),
+                              "state": state})
+            out["roots"] = roots
+            out["allocated"] = roots[-1]["total"] if roots else 0  # through the last root the service rebuilt
+            out["holders"] = roots[-1]["holders"] if roots else 0
+            return out
 
     # --- the operator -------------------------------------------------------------------
 

@@ -288,6 +288,17 @@ class TestHttp(unittest.TestCase):
             self.assertEqual((code, again["requote"]), (409, True))
             code, _ = self.call(port, "GET", "/api/v1/campaigns/" + "00" * 32)
             self.assertEqual(code, 404)
+            code, _ = self.call(port, "GET", "/api/v1/campaigns/zz")
+            self.assertEqual(code, 400)
+        finally:
+            server.shutdown()
+        # The page is the service's: it is served with no intake (no router key on the host).
+        server = serve(x.svc, 0)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        port = server.server_address[1]
+        try:
+            code, page = self.call(port, "GET", f"/api/v1/campaigns/{q['campaign']}")
+            self.assertEqual((code, page["status"], page["budget"]), (200, "created", 970_000))
         finally:
             server.shutdown()
 

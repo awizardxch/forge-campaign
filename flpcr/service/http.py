@@ -9,14 +9,17 @@
                                          the chain (the watcher does). A watcher reads it with
                                          FLPCR_MANIFESTS=https://<host>/api/v1/manifests/{hash}
     GET  /api/v1/claimable/<address>     a holder's leaves in the claimable root, with the
-                                         message to sign and the proof (xch1/txch1 or hex)
+                                         message to sign and the proof (xch1/txch1 or hex),
+                                         what each has claimed, and "pending": amounts in a
+                                         posted root that is not claimable yet
     POST /api/v1/claims                  the sequencer (flpcr.service.sequencer): signed claims
     GET  /api/v1/claims/<request id>     a submitted claim's progress
     GET  /api/v1/watch                   the watcher's last report on the pending root (FLPCR_WATCH=1)
     POST /api/v1/campaigns/quote         the create intake (flpcr.service.intake): a campaign's
                                          terms, the creator's conditions and a lease
     POST /api/v1/campaigns/create        the creator's signed bundle for a quote; the router co-signs
-    GET  /api/v1/campaigns/<campaign id> one campaign: its status row and terms
+    GET  /api/v1/campaigns/<campaign id> one campaign's page: status row, terms, what the schedule
+                                         has released, its total and holder count per root
 
 A quote that can no longer be honoured (lapsed lease, moved singleton) answers 409 with
 "requote": true; another create holding the distributor answers 503 with "retry_after".
@@ -90,8 +93,14 @@ def make_handler(service, sequencer=None, intake=None, watcher=None):
                 if path.startswith("/api/v1/claims/") and sequencer is not None:
                     found = sequencer.status_of(path.rsplit("/", 1)[1])
                     return self.send_json(200 if found else 404, {"success": bool(found), **(found or {"error": "unknown request"})})
-                if path.startswith("/api/v1/campaigns/") and intake is not None:
-                    found = intake.campaign(path.rsplit("/", 1)[1])
+                if path.startswith("/api/v1/campaigns/"):
+                    cid = path.rsplit("/", 1)[1]
+                    raw = bytes.fromhex(cid.removeprefix("0x"))
+                    if len(raw) != 32:
+                        raise ValueError("a campaign id is 32 bytes of hex")
+                    found = intake.campaign(cid) if intake is not None else service.campaign(raw)
+                    if found is not None and "status" not in found:
+                        found = {**found, "status": "created"}
                     return self.send_json(200 if found else 404, {"success": bool(found), **(found or {"error": "unknown campaign"})})
                 return self.send_json(404, {"success": False, "error": "not found"})
             except ValueError as e:

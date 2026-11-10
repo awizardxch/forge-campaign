@@ -89,6 +89,43 @@ class TestService(unittest.TestCase):
         posted = again.operator_step(wait=5, poll=0)
         self.assertEqual(posted["root_id"], 2)
 
+    def test_the_campaign_page_and_pending_amounts(self):
+        """The tab's two reads: a campaign's page, and what a holder has that is not claimable yet."""
+        w = self.w
+        svc = self.service()
+        w.d = svc.d
+        self.assertIsNone(svc.campaign(b"\x00" * 32))
+        page = svc.campaign(self.c.id)
+        self.assertEqual((page["phase"], page["emittable"], page["roots"], page["holders"]), ("scheduled", 0, [], 0))
+        self.assertEqual((page["amount"], page["fee"], page["budget"]), (1_000_000, 30_000, 970_000))
+        self.assertEqual(page["reclaim_from"], self.c.end + WINDOW)
+
+        w.advance_to(self.c.start + 12)
+        svc.operator_step(wait=5, poll=0)
+        page = svc.campaign(self.c.id)
+        self.assertEqual([(r["root_id"], r["state"], r["holders"]) for r in page["roots"]], [(1, "pending", 2)])
+        self.assertEqual(page["allocated"], page["roots"][0]["total"])
+        self.assertLessEqual(page["allocated"], page["emittable"])  # the puzzle's ceiling
+        mine = svc.claimable(self.alice)
+        self.assertEqual(mine["claims"], [])  # in its dispute window: no proof handed out
+        self.assertEqual([(x["root_id"], x["disputed"]) for x in mine["pending"]], [(1, False)])
+        first = mine["pending"][0]["amount"]
+        self.assertGreater(first, 0)
+
+        w.advance_to(svc.status()["pending"]["activates_at"] + 1)
+        mine = svc.claimable(self.alice)
+        self.assertEqual((mine["pending"], mine["claims"][0]["claimable"], mine["claims"][0]["claimed"]), ([], first, 0))
+        self.assertEqual(w.claim(svc.s.roots[1], self.c.id, "alice"), first)
+        self.assertEqual(svc.claimable(self.alice)["claims"][0]["claimed"], first)
+
+        w.advance_to(w.h + 12)
+        svc.operator_step(wait=5, poll=0)  # root 2: pending over the active root 1
+        mine = svc.claimable(self.alice)
+        second = svc.s.roots[2].claim_for(self.c.id, self.alice).cumulative
+        self.assertEqual(mine["pending"][0]["amount"], second - first)  # only what root 2 adds
+        self.assertEqual([r["state"] for r in svc.campaign(self.c.id)["roots"]], ["active", "pending"])
+        self.assertEqual(svc.claimable(b"\x77" * 32), {"root_id": 1, "claims": [], "pending": []})
+
     def test_a_wrong_key_does_not_post(self):
         w = self.w
         other = OperatorKey(SecretKey.from_seed(bytes([8]) * 32).derive_synthetic())

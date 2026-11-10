@@ -485,22 +485,10 @@ class CampaignIntake:
     # --- reads ----------------------------------------------------------------------------
 
     def campaign(self, campaign_id: str) -> Optional[dict]:
-        """The campaign's status row with its terms: fee, budget, daily emission, reclaim height."""
-        svc = self.service
+        """The service's campaign page (CampaignService.campaign), or a create still in flight."""
         cid = _hex(campaign_id)
-        row = next((x for x in svc.status()["campaigns"] if x["id"] == cid.hex()), None)
-        if row is None:
+        page = self.service.campaign(cid)
+        if page is None:
             q = next((q for q in self.quotes.values() if q.campaign.id == cid and q.status == "pushed"), None)
             return q and {"id": cid.hex(), "status": "pushed", "quote": q.id}
-        full = svc.s.campaigns.get(cid)
-        out = {**row, "status": "created"}
-        length = row["end"] - row["start"]
-        out.update({"length": length, "daily_emission": row["budget"] * BLOCKS_PER_DAY // length,
-                    "reclaim_from": row["end"] + row["claim_window"]})
-        if full is not None:
-            out.update({"amount": full.amount, "fee": full.fee, "nonce": full.nonce,
-                        "collection": full.params.collection and {"did": full.params.collection[0].hex(),
-                                                                  "id": full.params.collection[1]}})
-        roots = [r for _, r in sorted(svc.s.roots.items())]
-        out["allocated"] = roots[-1].totals.get(cid, 0) if roots else 0  # through the last root the service rebuilt
-        return out
+        return {**page, "status": "created"}

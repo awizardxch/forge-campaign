@@ -82,8 +82,9 @@ For every address the wallet scan already holds (forge-ui scans the wallet's add
 - **Sum per campaign:**
   - claimable now;
   - claimed;
-  - pending, in a root that is still in its dispute window.
-- **Not yet posted:** "earned" shows nothing until the service exposes the engine's running total.
+  - pending, in a root that is still in its dispute window or disputed (the response's `pending` list).
+- **Not yet posted:** what a holder has accrued since the last root is not served. The campaign page's
+  `emittable` minus `allocated` is the campaign-wide amount still to be posted; show that, not a per-holder guess.
 - **Proof gaps:** if the service reports `proof_gap`, show the message, and show no Claim button for roots
   past the gap. The service never hands out a proof the chain would refuse.
 
@@ -194,12 +195,12 @@ All JSON and CORS-open (`flpcr/service/http.py`):
 | `GET /health` | up, and the peak |
 | `GET /api/v1/status` | distributor, campaigns, active and pending roots (each with the `manifest_hash` it committed, or null), dispute, rotation, proof gap |
 | `GET /api/v1/manifests/<hash>` | a posted root's manifest (`flpcr.manifest.root_to_json`: every holder's leaf and proof) by the hash its `post_root` committed; `.json` may be appended. Served as published, so check it: watchers set `FLPCR_MANIFESTS=https://<host>/api/v1/manifests/{hash}` |
-| `GET /api/v1/claimable/<address>` | a holder's leaves in the claimable root, with leaf and proof |
+| `GET /api/v1/claimable/<address>` | a holder's leaves in the claimable root, with leaf, proof, `claimable` and `claimed`; and `pending`: per campaign, the `amount` a posted root adds that is not claimable yet, with `activates_at` and `disputed` (never a proof) |
 | `POST /api/v1/claims` | the sequencer: signed claims |
 | `GET /api/v1/claims/<id>` | progress of a submitted claim |
 | `POST /api/v1/campaigns/quote` | the create intake (§5): terms, the creator's condition, a lease |
 | `POST /api/v1/campaigns/create` | the creator's signed bundle for a quote; the router co-signs and pushes |
-| `GET /api/v1/campaigns/<id>` | one campaign: the status row plus fee, budget, daily emission, `reclaim_from`, and `allocated` through the last root the service rebuilt |
+| `GET /api/v1/campaigns/<id>` | one campaign's page: the status row plus `amount`, `fee`, `budget`, `daily_emission`, `reclaim_from`, `emittable` (what the schedule has released at the peak), `roots` (`root_id`, window, `total`, `holders`, `state`: superseded / active / pending / disputed), and `allocated` and `holders` from the last root the service rebuilt. Served by the service itself, with or without the intake |
 
 **Quote request:** `{creator, amount, kind: "LP_HOLD" | "NFT_HOLD" | "CAT_HOLD", target, days | length | end,
 start?, claim_window?, excluded?: [address], collection?: {did, id}, reward_asset?, nonce?}`. Amounts are
