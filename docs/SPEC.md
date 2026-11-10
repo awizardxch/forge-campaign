@@ -11,7 +11,7 @@
 > with the on-chain fixes from the pre-testnet review (`reviews/2026-10-19/FINDINGS.md`) applied in one
 > re-pin. The puzzles run on the in-process simulator (chia-wallet-sdk 0.36.0) for XCH and CAT rewards,
 > agree with the reference model on randomized scenarios, and every leaf assertion and emitted guard is
-> pinned by a test or argued (§12). On testnet11 since 2026-10-20 ([`TESTNET.md`](TESTNET.md)): LP
+> pinned by a test or argued (§12). On testnet11 since 2026-10-20: LP
 > campaigns on live holders, NFT campaigns, excluded addresses. Not externally audited.
 
 **Decisions so far**

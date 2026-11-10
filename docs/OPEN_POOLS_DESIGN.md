@@ -4,7 +4,7 @@
 > per day) is a **separate puzzle, for later**, not part of the campaign distributor; LP and NFT
 > Merkl-style campaigns come first. **Part 1 is built** on the campaign distributor: `Kind.NFT_HOLD`,
 > targeting a minter DID or a `col1` collection (DID + metadata collection id, checked against the
-> on-chain metadata hash), proven on testnet11 by the fifth distributor (`docs/TESTNET.md` §5). The
+> on-chain metadata hash), proven on testnet11 by the fifth distributor. The
 > excluded addresses and "every holder in every root" decisions below are built too (SPEC §5.4, §6.1).
 > The rest of this page is kept as the design for the open pool.
 

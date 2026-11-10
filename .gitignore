@@ -4,3 +4,7 @@ __pycache__/
 state*.json
 lp-crawl*.json
 state*-manifests/
+# The private Forge copy keeps the testnet records here on purpose (docs/OPERATIONS.md);
+# the public slice never ships this folder.
+!testnet-state/
+!testnet-state/**

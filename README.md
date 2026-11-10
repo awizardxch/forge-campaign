@@ -17,7 +17,9 @@ can veto it and **anyone can dispute it with a bond** (Merkl's dispute, as a coi
 right and forfeiting it to the dev multisig if it was not.
 
 The reference design is Merkl's EVM incentive layer, rebuilt for Chia's coin set model on the
-CHIP-0050 action layer that Forge V16 runs on (the same pinned upstream puzzles). **Simulator-tested and running on testnet11 (eight distributors so far, three on the current pins), with the service hosted beside the Forge's testnet router and the forge.awizard.dev 🪎 tab reading it. Not audited; not on mainnet.**
+CHIP-0050 action layer that Forge V16 runs on (the same pinned upstream puzzles). This repository is the public part, for the CHIP and the audit review: the puzzles, the code that
+drives them, the tests, the spec documents and the review record. Operations notes, testnet
+records and owner decisions are kept privately. **Simulator-tested and running on testnet11 (eight distributors so far, three on the current pins), with the service hosted beside the Forge's testnet router and the forge.awizard.dev 🪎 tab reading it. Not audited; not on mainnet.**
 
 | | |
 |---|---|
@@ -25,8 +27,6 @@ CHIP-0050 action layer that Forge V16 runs on (the same pinned upstream puzzles)
 | [`docs/PUZZLES.md`](docs/PUZZLES.md) | The distributor puzzles as built: types, every leaf's rules, driver conventions |
 | [`docs/API.md`](docs/API.md) | HTTP API, read and write |
 | [`docs/AGENT_TOOLS.md`](docs/AGENT_TOOLS.md) | The `flpcr.*` agent tools: inputs, outputs, who signs, checks, and the code behind each |
-| [`docs/TESTNET.md`](docs/TESTNET.md) | Local setup, the testnet11 distributors and what each proved, `deploy_testnet.py` commands and guards, what is left |
-| [`docs/SAGE_CHECKS.md`](docs/SAGE_CHECKS.md) | The launch checklist that needs a real wallet, ticked with on-chain evidence |
 | [`docs/FORGE_SITE_TAB.md`](docs/FORGE_SITE_TAB.md) | The 🪎 tab's contract: what the site reads and what the wallet signs |
 | `flpcr/service/` | The hosted service: operator (posts roots), claim sequencer, create intake, watcher, HTTP API (`docs/API.md`); `Dockerfile` builds it |
 | `registry/` | The chain-verified distributor registry, one file per network |
@@ -62,7 +62,7 @@ The engine on its own needs only the standard library (Python 3.10+). The chain 
   findings, none a drain, plus 12 more; the on-chain fixes are in one re-pin of every leaf. The 2026-11-09
   rerun (`reviews/2026-10-19/rerun/`) refused 16 of 17 probes, and found FLPCR-08 short and three new dispute-bond and reclaim findings (NEW-1 to NEW-3); those are fixed in the
   `fix-bond-reclaim` re-pin, and NEW-4 (bond launcher bound to the pending root) after it. Distributors
-  launched before that re-pin keep the old leaves (`docs/TESTNET.md` §5).
+  launched before that re-pin keep the old leaves.
 - **Phase 0 ✅:** spec, engine, reference model, router rules.
 - **Phase 2 ✅ on the simulator:** distributor puzzles (ten leaves: init, create, post_root, veto, claim,
   reclaim, rotate, delegate, dispute, resolve), driver, chain, differential and mutation suites, for XCH and
@@ -76,7 +76,7 @@ The engine on its own needs only the standard library (Python 3.10+). The chain 
 - **Phase 3 (testnet, 2026-11-10):**
   - Current distributors: `85b5d8e7…` (XCH rewards; its operator was rotated to the service key) and
     `31ad2dca…` (T6 CAT rewards), both on the current pins (`registry/testnet11.json`).
-  - [`docs/SAGE_CHECKS.md`](docs/SAGE_CHECKS.md): A3 to A5, B1, C2, C6 and C7 are done with on-chain
+  - The launch checklist (kept with the operations notes, outside this repository): A3 to A5, B1, C2, C6 and C7 are done with on-chain
     evidence. The service posted roots and paid a claim on chain. Still open: A1 (address links) and A2
     (claims signed over WalletConnect from the tab), B2 (lock claim), B3 (fee-weighted), C3 (several
     claimants in one batch), C4 (watcher alert), C5 (create intake, waiting on a router key).

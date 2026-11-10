@@ -11,7 +11,7 @@
 > plus the messages, signatures and network fee the bundle must carry), and `apply(prepared)` advances
 > the driver once the bundle confirms. Authorization is typed (`flpcr/chain/auth.py`: `BySignature`,
 > `ByMessage`, `ByDelegate`, `ByAdmin`). The live versions (real keys, node push, the HTTP API) are the
-> testnet work in `TESTNET.md`.
+> testnet work in the private operations notes.
 
 ## Ground rules for every tool
 

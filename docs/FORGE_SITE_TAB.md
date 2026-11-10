@@ -9,7 +9,7 @@
 
 - **The tab.** Campaigns get their own tab, labelled with the treasure chest emoji 🪎 (U+1FA8E). It sits
   beside 🔐 and 🪄⚡️, which are also emoji-only tabs.
-- **Pools.** Only Forge V16 pools and newer are supported (CLAUDE.md, 2026-11-09). The tab never lists a
+- **Pools.** Only Forge V16 pools and newer are supported (owner, 2026-11-09). The tab never lists a
   V15 or V14 pool as a target.
 - **Signing.** Every signature comes from the user's wallet over WalletConnect (`chip0002_*`), as in the
   rest of forge-ui. The site holds no key. The service holds only the operator key; the router key lives
@@ -114,7 +114,7 @@ This is the flow `scripts/deploy_testnet.py claim-all` proved on testnet11, move
    bundle, so a claim can wait up to one batch interval.
 
 - **Lock and multisig holders** (🔐 tab): a lock claims by a mode-16 message `"k" + leaf` from its own
-  address in an executed proposal (`docs/TESTNET.md` §6). The lock tab needs a "claim campaign rewards"
+  address in an executed proposal. The lock tab needs a "claim campaign rewards"
   proposal type that builds that message and submits the executed proposal's bundle to the same
   endpoint.
 
