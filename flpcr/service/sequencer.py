@@ -9,7 +9,10 @@ A request is everything one claimant brings:
 
 * Key claims (wallets): `signature` signs every claim leaf (the one-approval stand-in spend
   Forge's front end already uses), and `spend_bundle` is a small XCH spend of any of the
-  claimant's coins that pays the fee: the claimant pays the transaction.
+  claimant's coins that pays the fee: the claimant pays the transaction. A wallet that signs
+  the stand-in and the fee spend in ONE chip0002_signCoinSpends request returns one aggregate
+  it cannot split: send it as `signature` and leave `spend_bundle.aggregated_signature`
+  empty, and it is checked against every leaf and every signature the fee spend needs.
 * Message claims (locks, multisigs, vaults): no `public_key`; `spend_bundle`'s spends send
   "k" + leaf in mode 16 from the claimed address and pay the fee. A lock's executed proposal
   is exactly such a bundle.
@@ -67,8 +70,10 @@ def _bundle(clvm: Clvm, body: Optional[dict]):
         hx = lambda v: bytes.fromhex(str(v).removeprefix("0x"))  # noqa: E731
         coin = Coin(hx(c["parent_coin_info"]), hx(c["puzzle_hash"]), int(c["amount"]))
         spends.append(CoinSpend(coin, hx(s["puzzle_reveal"]), hx(s["solution"])))
-    sig = Signature.from_bytes(bytes.fromhex(str(body.get("aggregated_signature", "")).removeprefix("0x")))
-    return spends, sig
+    raw = str(body.get("aggregated_signature") or "").strip().removeprefix("0x")
+    if not raw:
+        return spends, None  # one combined signature in the request's `signature` (see the docstring)
+    return spends, Signature.from_bytes(bytes.fromhex(raw))
 
 
 class ClaimSequencer:
@@ -87,6 +92,7 @@ class ClaimSequencer:
         if not claims or len(claims) > MAX_REQUEST_CLAIMS:
             raise ValueError(f"a request carries 1 to {MAX_REQUEST_CLAIMS} claims")
         spends, bundle_sig = _bundle(clvm, body.get("spend_bundle"))
+        combined = bundle_sig is None  # the leaves' and the fee spend's signatures in one aggregate
         conds = self._conditions(clvm, spends)
         pks, msgs = [], []
         requests: List[ClaimRequest] = []
@@ -116,21 +122,27 @@ class ClaimSequencer:
                 auth = ByMessage()
             requests.append(ClaimRequest(cid, ph, leaf["cumulative"], proof, auth))
 
-        claim_sig = Signature.infinity()
-        if pks:
-            claim_sig = Signature.from_bytes(bytes.fromhex(str(body.get("signature", "")).removeprefix("0x")))
-            if not PublicKey.aggregate_verify(pks, msgs, claim_sig):
-                raise ValueError("the claim signature does not verify")
         # The bundle's own signatures: every AGG_SIG its spends require, and nothing else.
         req_pks, req_msgs = [], []
         extra = ADDITIONAL_DATA[svc.network]
         for coin_id, op, pk, msg in [(c[4], c[0], c[1], c[2]) for c in conds if c[0] in (AGG_SIG_ME, AGG_SIG_UNSAFE)]:
             req_pks.append(PublicKey.from_bytes(pk))
             req_msgs.append(msg + coin_id + extra if op == AGG_SIG_ME else msg)
-        if req_pks and not PublicKey.aggregate_verify(req_pks, req_msgs, bundle_sig):
-            raise ValueError("the spend bundle's signature does not verify")
-        if not req_pks and spends and not bundle_sig.is_infinity():
-            raise ValueError("the spend bundle carries a signature its spends do not ask for")
+        claim_sig = Signature.infinity()
+        if combined:
+            claim_sig = Signature.from_bytes(bytes.fromhex(str(body.get("signature", "")).removeprefix("0x")))
+            if not PublicKey.aggregate_verify(pks + req_pks, msgs + req_msgs, claim_sig):
+                raise ValueError("the combined signature does not verify over the claim leaves and the fee spend")
+            bundle_sig = Signature.infinity()
+        else:
+            if pks:
+                claim_sig = Signature.from_bytes(bytes.fromhex(str(body.get("signature", "")).removeprefix("0x")))
+                if not PublicKey.aggregate_verify(pks, msgs, claim_sig):
+                    raise ValueError("the claim signature does not verify")
+            if req_pks and not PublicKey.aggregate_verify(req_pks, req_msgs, bundle_sig):
+                raise ValueError("the spend bundle's signature does not verify")
+            if not req_pks and spends and not bundle_sig.is_infinity():
+                raise ValueError("the spend bundle carries a signature its spends do not ask for")
         for s in spends:
             state = svc.chain.reader.coin_state(s.coin.coin_id())
             if state is None or state.spent_height is not None:
@@ -181,7 +193,7 @@ class ClaimSequencer:
             queued = [p for p in self.queue.values() if p.status == "queued"]
         if not queued:
             return None
-        with svc.lock:
+        with svc.write_lock:  # one builder at a time; reads take only `svc.lock`, never this
             if svc.lease.busy():  # a quoted create holds the singleton; the queue waits
                 return None
             svc.follow()  # another builder may have moved the singleton: build on the chain's state
@@ -213,7 +225,8 @@ class ClaimSequencer:
                     p.detail = f"push failed, will retry: {e}"
                 svc.boot()  # the distributor may have moved under us; rebuild from chain
                 return {"pushed": False, "error": str(e)}
-            d.apply_batch(batch)
+            with svc.lock:
+                d.apply_batch(batch)
             for p in take:
                 p.status, p.height, p.detail = "confirmed", at, None
             return {"pushed": True, "requests": len(take), "claims": len(batch.placed),

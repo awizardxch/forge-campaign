@@ -35,14 +35,14 @@
     `fixtures/vectors.json` → `claim_stand_in`.
 
   `claim-all` already proved the local-RPC path on distributor v5.
-- [ ] **A3. Reclaim and delegate `AGG_SIG_ME`.** Run `reclaim` and `delegate --grant 1` / `--grant 0`
+- [x] **A3. Reclaim and delegate `AGG_SIG_ME`.** *(2026-11-10, distributor `f957041a…`: grant 4,943,372, revoke 4,943,378, four reclaims to reserve 0. Found and fixed: `deploy_testnet.py` reserved `delegate_fee` twice.)* Run `reclaim` and `delegate --grant 1` / `--grant 0`
   on a current-pin distributor. Check that the grant and revoke each leave `delegate_fee` (1,000,000
   mojos on testnet) as fee.
-- [ ] **A4. Create.** Run `create`. The creator's coin spend must send `"k" + id` (mode 23) next to the
+- [x] **A4. Create.** *(2026-11-10: `"k"+id` and `"c"+id` in block 4,943,361; stale signature refused `MESSAGE_NOT_SENT_OR_RECEIVED`, re-sign confirmed 4,943,468.)* Run `create`. The creator's coin spend must send `"k" + id` (mode 23) next to the
   router's message. Check that a stale singleton coin makes Sage's signed spend fail, and that a re-sign
   against the current coin succeeds. That re-sign is the case the create intake's lease exists for.
 
-- [ ] **A5. Dispute funding spend (NEW-4).** Run `dispute` on the new distributor, then `resolve
+- [x] **A5. Dispute funding spend (NEW-4).** *(2026-11-10, `f957041a…`: every check below held; see TESTNET.md §5.)* Run `dispute` on the new distributor, then `resolve
   --upheld 1`, repost, `dispute`, `resolve --upheld 0`. Check:
   - Sage signs the disputer's spend with `ASSERT_CONCURRENT_SPEND` (64) of the singleton coin in it;
   - the launcher sits at `bond_launcher_ph(disputer_ph, pending root)` and the bond coin appears at
@@ -53,7 +53,7 @@
 
 ## B. Paths that have never run live
 
-- [ ] **B1. CAT rewards.**
+- [x] **B1. CAT rewards.** *(2026-11-10, `31ad2dca…`, T6: reserve 0 = chain 0, resync matches.)*
   1. `launch --reward-asset <a CAT in a V16 pool>`;
   2. `create` with a CAT deposit;
   3. `post`, `claim-all`, then `reclaim` after the window.
@@ -75,7 +75,7 @@
   - it boots by resync;
   - `GET /api/v1/status` matches `deploy_testnet.py status`;
   - `GET /api/v1/claimable/<addr>` returns leaves that `claim-all` accepts.
-- [ ] **C2. Rotate the operator to the service.** The guardian proposes with `rotate --to <service
+- [x] **C2. Rotate the operator to the service.** *(2026-11-10, `85b5d8e7…`: effective 4,944,005; the service posted root 1; the old key refused by `post_root`.)* The guardian proposes with `rotate --to <service
   operator ph>` (the guardian is derivation 3 until it is a multisig). Wait `rotate_delay` (24 blocks on
   testnet), then check that the service posts and the old key is refused.
 - [ ] **C3. Sequencer under load.** Submit claim requests from several wallets in one batch interval.
@@ -87,9 +87,9 @@
   root activating.
 - [ ] **C5. Create intake.** `POST /api/v1/campaigns/quote`, sign the creator's spend in Sage within the
   lease, `POST /api/v1/campaigns/create`. Check that a lapsed lease is refused and a re-quote succeeds.
-- [ ] **C6. Follow.** While the service runs, spend the singleton from `deploy_testnet.py` (a claim).
+- [x] **C6. Follow.** *(2026-11-10: the service picked up the deploy script's rotation spend without a restart.)* While the service runs, spend the singleton from `deploy_testnet.py` (a claim).
   The service must follow the foreign spend without a restart and keep `status` equal to the chain.
-- [ ] **C7. Registry.** `GET /api/v1/distributors` on the hosted service shows the new distributor as
+- [x] **C7. Registry.** *(2026-11-10: `this` = `85b5d8e7…`, `listed: current`, pins `af39d78a…` equal the entry's.)* `GET /api/v1/distributors` on the hosted service shows the new distributor as
   `listed: current`, with `pins` equal to the entry's.
 
 ## D. Before mainnet (owner)

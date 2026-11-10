@@ -188,6 +188,12 @@ class CampaignService:
         self.operator = operator
         self.every = every
         self.puzzles_factory = puzzles_factory or (lambda: Puzzles(Clvm()))
+        # Two locks (2026-11-10: reads stalled for minutes while a batch waited to confirm):
+        # `write_lock` lets one builder at a time (operator, sequencer, create intake, follow,
+        # boot) prepare, push and wait on the singleton; `lock` guards only the moments the
+        # state is read or swapped. A push's confirmation wait holds `write_lock` alone, so
+        # status, claimable and campaign reads answer from the last confirmed state meanwhile.
+        self.write_lock = threading.RLock()
         self.lock = threading.RLock()
         self.s: Optional[ServiceState] = None
         self.signer = KeySigner.for_network([operator.secret] if operator else [], network)
@@ -198,7 +204,9 @@ class CampaignService:
     # --- boot -------------------------------------------------------------------------
 
     def boot(self) -> ServiceState:
-        with self.lock:
+        # The resync and the engine reruns are slow (chain reads): built under `write_lock`,
+        # swapped in under `lock`, so reads see the old state until the new one is whole.
+        with self.write_lock:
             prior = self.s
             puzzles = self.puzzles_factory()
             got = resync(self.chain.reader, puzzles, self.launcher_id)
@@ -236,7 +244,8 @@ class CampaignService:
                 state.roots[root.root_id] = root
                 state.engines[root.root_id] = engine
                 self._publish(state, root, committed)
-            self.s = state
+            with self.lock:
+                self.s = state
             return state
 
     def _publish(self, state: ServiceState, root: Root, committed: str = ZERO_HASH) -> str:
@@ -254,7 +263,7 @@ class CampaignService:
         a foreign spend (a dispute, veto, resolve, rotation, a create or post by another
         builder). Skipped while a lease is held: the leased create is the intake's own spend,
         and the intake applies it (or boots) when it settles."""
-        with self.lock:
+        with self.write_lock:
             if self.s is None:
                 self.boot()
                 return True
@@ -360,6 +369,22 @@ class CampaignService:
                             "excluded": [x.hex() for x in d.excluded.get(cl.campaign_id, [])]})
             return {"root_id": active.root_id, "claims": out, "pending": self._pending_for(puzzle_hash, active, root)}
 
+    MAX_CLAIMABLE_BATCH = 6000  # a wallet scan's addresses (forge-ui's MAX_PAYER_KEYS)
+
+    def claimable_many(self, puzzle_hashes: List[bytes]) -> dict:
+        """`claimable` for a whole wallet in one request (the 🪎 tab asks for every address the
+        wallet scan holds): only the addresses with something claimable or pending."""
+        if len(puzzle_hashes) > self.MAX_CLAIMABLE_BATCH:
+            raise ValueError(f"at most {self.MAX_CLAIMABLE_BATCH} addresses per request")
+        holders, root_id = [], None
+        with self.lock:
+            for ph in dict.fromkeys(puzzle_hashes):  # once each, in order
+                one = self.claimable(ph)
+                root_id = one.get("root_id", root_id)
+                if any(c["claimable"] > 0 for c in one["claims"]) or one.get("pending"):
+                    holders.append({"puzzle_hash": ph.hex(), **{k: v for k, v in one.items() if k != "root_id"}})
+        return {"root_id": root_id, "holders": holders}
+
     def _pending_for(self, puzzle_hash: bytes, effective, effective_root: Optional[Root]) -> list:
         """What the holder has in a posted root that is not claimable yet (in its dispute
         window, or disputed): the amount it adds over the claimable root, never a proof."""
@@ -444,7 +469,7 @@ class CampaignService:
         """Post a root if one is due. Returns what was posted, or None."""
         if self.operator is None:
             return None
-        with self.lock:
+        with self.write_lock:
             if self.lease.busy():  # a quoted create holds the singleton's next generation
                 return None
             self.follow()  # someone else may have spent it: a dispute, a veto, a rotation
@@ -473,16 +498,17 @@ class CampaignService:
                 spends = list(prepared.spends) + own
             successor = Coin(d.coin.coin_id(), d.full_puzzle(prepared.new_state).tree_hash(), 1)
             self.chain.push(spends, self.signer.sign(own))
-            self._wait(successor.coin_id(), wait, poll)
-            d.apply(prepared)
-            self.s.engine = engine
-            self.s.roots[root.root_id] = root
-            self.s.engines[root.root_id] = engine
-            self.s.posted[root.root_id] = (root.root.hex(), mh.hex())
-            self.s.published[mh.hex()] = root.root_id
+            self._wait(successor.coin_id(), wait, poll)  # `write_lock` only: reads go on meanwhile
             entry = {"step": "post_root", "root_id": root.root_id, "start": root.start, "end": root.end,
                      "time": int(time.time()), "fee": fee, "manifest_hash": mh.hex()}
-            self.s.log.append(entry)
+            with self.lock:
+                d.apply(prepared)
+                self.s.engine = engine
+                self.s.roots[root.root_id] = root
+                self.s.engines[root.root_id] = engine
+                self.s.posted[root.root_id] = (root.root.hex(), mh.hex())
+                self.s.published[mh.hex()] = root.root_id
+                self.s.log.append(entry)
             return entry
 
     def _message_spends(self, prepared, coin_id: bytes, fee: int = MIN_FEE) -> list:

@@ -76,6 +76,41 @@ class TestService(unittest.TestCase):
         self.assertEqual(svc.claimable(self.alice)["claims"][0]["claimable"], 0)  # paid: nothing more until the next root
         self.assertEqual(cl["excluded"], [(b"\x99" * 32).hex()])
 
+    def test_reads_answer_while_a_post_waits_to_confirm(self):
+        """Status, claimable and the campaign page answer while the operator's post sits in its
+        confirmation wait (2026-11-10, testnet: every read stalled for minutes behind it)."""
+        import threading
+        import time
+
+        w = self.w
+        svc = self.service()
+        w.d = svc.d
+        w.advance_to(self.c.start + 12)
+        in_wait, release = threading.Event(), threading.Event()
+        real_wait = svc._wait
+
+        def held_wait(coin_id, wait, poll):
+            in_wait.set()
+            release.wait(10)
+            return real_wait(coin_id, wait, poll)
+
+        svc._wait = held_wait
+        posted = {}
+        builder = threading.Thread(target=lambda: posted.update(svc.operator_step(wait=5, poll=0) or {}))
+        builder.start()
+        self.assertTrue(in_wait.wait(10), "the post never reached its confirmation wait")
+        t0 = time.monotonic()
+        st = svc.status()
+        svc.claimable(self.alice)
+        svc.campaign(self.c.id)
+        took = time.monotonic() - t0
+        release.set()
+        builder.join(10)
+        self.assertLess(took, 2.0, f"reads waited {took:.1f} s behind the post")
+        self.assertIsNone(st["pending"], "a read during the wait sees the last confirmed state")
+        self.assertEqual(posted.get("root_id"), 1)
+        self.assertEqual(svc.status()["pending"]["root_id"], 1, "and the post is applied once it confirms")
+
     def test_a_restarted_service_carries_on(self):
         """Post with one service, restart a fresh one from chain, and it posts the next root."""
         w = self.w

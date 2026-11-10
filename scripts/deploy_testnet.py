@@ -182,18 +182,23 @@ class Wallet:
         return spends[0]
 
     def send(self, sender_ph: bytes, message: bytes, receiver_coin_id: bytes, fee: int = 0,
-             extra_outputs: Sequence[tuple] = (), keep: int = 0, mode: int = 23) -> CoinSpend:
+             extra_outputs: Sequence[tuple] = (), keep: int = 0, mode: int = 23,
+             reserve: Optional[int] = None) -> CoinSpend:
         """A coin at `sender_ph` sends `message` to the singleton and recreates
         its value at the same address, less `fee`, `keep` (left in the bundle
-        for conservation: a creator's deposit) and any `extra_outputs`."""
+        for conservation: a creator's deposit) and any `extra_outputs`.
+        `reserve` (default `fee`) is what this spend asserts with RESERVE_FEE: a
+        leaf that reserves its own fee (delegate_fee) is not reserved twice --
+        consensus sums every RESERVE_FEE in a bundle (SAGE_CHECKS A3, 2026-11-10)."""
         need = fee + keep + sum(a for _, a in extra_outputs)
         coin = self.pick([sender_ph], need + 1, self.address(sender_ph)[:12])
         change = coin.amount - need
         send = [66, mode, message] if mode == 16 else [66, mode, message, receiver_coin_id]
         conditions = [send, [51, sender_ph, change, [sender_ph]]]
         conditions += [[51, ph, amount, [ph]] for ph, amount in extra_outputs]
-        if fee:
-            conditions.append([52, fee])
+        reserved = fee if reserve is None else reserve
+        if reserved:
+            conditions.append([52, reserved])
         return self.spend(coin, conditions)
 
     def cat_coin(self, asset_id: bytes, minimum: int, what: str = "reward CAT") -> Cat:
@@ -227,10 +232,11 @@ class Wallet:
         pk = self.keys[cat.info.p2_puzzle_hash]
         return CatSpend(cat, c.standard_spend(pk, c.delegated_spend([to_program(c, cond) for cond in conditions])))
 
-    def fee_spend(self, fee: int) -> CoinSpend:
+    def fee_spend(self, fee: int, reserve: Optional[int] = None) -> CoinSpend:
         ph = self.phs[0]
         coin = self.pick([ph], fee + 1, "fee")
-        return self.spend(coin, [[51, ph, coin.amount - fee, [ph]], [52, fee]])
+        reserved = fee if reserve is None else reserve
+        return self.spend(coin, [[51, ph, coin.amount - fee, [ph]], *([[52, reserved]] if reserved else [])])
 
     def sign(self, spends: Sequence[CoinSpend]) -> Signature:
         """Sage signs these spends (only ones its keys can sign are sent)."""
@@ -282,7 +288,11 @@ def push_and_wait(wallet: Wallet, puzzle_spends: Sequence[CoinSpend], wallet_spe
     state = rpc("get_blockchain_state", {})["blockchain_state"]
     print(f"{label}: {len(spends)} spends, pushing at peak {state['peak']['height']}, "
           f"mempool {state.get('mempool_cost', 0) / 1e9:.1f}B", flush=True)
-    verdict = rpc("push_tx", {"spend_bundle": bundle_json(spends, signature)})
+    bundle = bundle_json(spends, signature)
+    # The last bundle pushed, next to the state file (gitignored with it): a refusal such as
+    # INVALID_SPEND_BUNDLE names no spend, so this is what gets taken apart.
+    STATE_FILE.with_name(f"{STATE_FILE.stem}-last-bundle.json").write_text(json.dumps({"label": label, "spend_bundle": bundle}, indent=1))
+    verdict = rpc("push_tx", {"spend_bundle": bundle})
     print(f"{label}: push_tx {json.dumps(verdict)}", flush=True)
     if not verdict.get("success"):
         raise SystemExit(f"{label}: rejected by the node")
@@ -314,20 +324,32 @@ def push_calls(wallet: Wallet, d: Distributor, calls: Sequence[LeafCall], label:
         signed_cats = wallet.sign([s for s in prepared.spends if s.coin.coin_id() in ours])
         claim_signature = Signature.aggregate([claim_signature, signed_cats])
     wallet_spends = []
+    # The bundle leaves `fee` plus what the leaves reserve (prepared.fee, e.g. delegate_fee);
+    # the wallet asserts only its own `fee`, the leaves assert theirs.
     fee_left = fee + prepared.fee
+    reserve_left = fee
     for i, m in enumerate(prepared.messages):
         keep = (keep_by_sender or {}).get(m.sender, 0)
         this_fee = fee_left if i == 0 else 0
-        wallet_spends.append(wallet.send(m.sender, m.message, d.coin.coin_id(), fee=this_fee, keep=keep, mode=m.mode))
+        this_reserve = reserve_left if i == 0 else 0
+        wallet_spends.append(wallet.send(m.sender, m.message, d.coin.coin_id(), fee=this_fee, keep=keep, mode=m.mode,
+                                         reserve=this_reserve))
         fee_left -= this_fee
+        reserve_left -= this_reserve
     if fee_left:
-        wallet_spends.append(wallet.fee_spend(fee_left))
+        wallet_spends.append(wallet.fee_spend(fee_left, reserve=reserve_left))
     for ph, amount, memo in prepared.creations:
         # The coin named when the call was built (a dispute's disputer coin) creates it.
         coin = creator_coin
         assert coin is not None, "a creation needs the coin that was named when the call was built"
         wallet_spends.append(wallet.spend(coin, [[51, ph, amount, [memo]], [51, coin.puzzle_hash, coin.amount - amount, [coin.puzzle_hash]],
                                                 *[[64, c] for c in prepared.concurrent]]))
+    if prepared.creations and os.environ.get("FLPCR_PROBE_CONCURRENT") == "1":
+        # SAGE_CHECKS A5: the creating spend (a dispute's funding) pushed ALONE must be refused,
+        # since it asserts the singleton spend beside it (ASSERT_CONCURRENT_SPEND).
+        alone = wallet_spends[-1]
+        verdict = rpc("push_tx", {"spend_bundle": bundle_json([alone], wallet.sign([alone]))})
+        print(f"{label}: probe, funding spend alone: {json.dumps({k: verdict.get(k) for k in ('success', 'status', 'error')})}", flush=True)
     successor = Coin(d.coin.coin_id(), d.full_puzzle(prepared.new_state).tree_hash(), 1)
     result = push_and_wait(wallet, prepared.spends, wallet_spends, successor.coin_id(), label,
                            extra_signature=claim_signature)
@@ -419,6 +441,10 @@ def source_for(args, wallet: "Wallet", campaigns: Sequence[Campaign]):
     pools = [c.target for c in campaigns if c.kind == Kind.LP_HOLD]
     if getattr(args, "source", "fixture") != "live":
         return holders_source(wallet, pools, [c.target for c in campaigns if c.kind == Kind.NFT_HOLD])
+    # A distributor running campaigns on both the fixture's label pool and real pools (SAGE_CHECKS
+    # C1, 2026-11-10): the label pool keeps its fixture holders, real pools are crawled.
+    fixture = holders_source(wallet, [POOL]) if POOL in pools else None
+    pools = [t for t in pools if t != POOL]
     src = LiveLpSource.connect(FORGE_API, NODE, CRAWL_CACHE)
     src.refresh([src.lp_asset(t) for t in pools])
     src.refresh_fees([c.target for c in campaigns if c.kind == Kind.LP_HOLD and c.params.fees_bps])
@@ -437,7 +463,36 @@ def source_for(args, wallet: "Wallet", campaigns: Sequence[Campaign]):
                 held[e.puzzle_hash] = held.get(e.puzzle_hash, 0) + e.delta
             held = {k: v for k, v in held.items() if v}
             print(f"  live source: collection {c.target.hex()[:12]}: {len(held)} holders, {sum(held.values())} NFTs")
-    return Combined(src, nfts)
+    return Combined(Split(fixture, src) if fixture else src, nfts)
+
+
+class Split:
+    """A Source: the fixture's label pool from `fixture`, every other asset from `live`."""
+
+    def __init__(self, fixture, live):
+        self.fixture, self.live = fixture, live
+        self.fixture_lp = fixture.lp_asset(POOL)
+
+    def lp_asset(self, pool_launcher: bytes) -> bytes:
+        return self.fixture_lp if pool_launcher == POOL else self.live.lp_asset(pool_launcher)
+
+    def holder_events(self, asset_id: bytes, before: int):
+        return (self.fixture if asset_id == self.fixture_lp else self.live).holder_events(asset_id, before)
+
+    def fee_events(self, pool_launcher: bytes, start: int, end: int):
+        return [] if pool_launcher == POOL else self.live.fee_events(pool_launcher, start, end)
+
+    def nft_events(self, collection_id: bytes, before: int):
+        return self.live.nft_events(collection_id, before)
+
+    def links(self):
+        return self.live.links()
+
+    def excluded(self, asset_id: bytes):
+        return self.fixture.excluded(asset_id) if asset_id == self.fixture_lp else self.live.excluded(asset_id)
+
+    def forwarders(self, asset_id: bytes):
+        return self.fixture.forwarders(asset_id) if asset_id == self.fixture_lp else self.live.forwarders(asset_id)
 
 
 def holders_source(wallet: Wallet, targets: Sequence[bytes] = (POOL,), collections: Sequence[bytes] = ()) -> FixtureSource:
