@@ -100,6 +100,41 @@ class TestSequencer(unittest.TestCase):
             self.assertEqual(self.balance(ph) - before[ph], amount + change.get(ph, 0), ph.hex()[:8])
         self.assertEqual(self.leaf(self.holders[0].puzzle_hash)["claimable"], 0)
 
+    def test_one_combined_signature(self):
+        """A wallet that signs the claim stand-in and the fee spend in one chip0002_signCoinSpends
+        request returns one aggregate: sent as `signature` with the fee bundle's own left empty,
+        it is checked against the leaves and the fee spend together, and the claim is paid."""
+        x = self.holders[0]
+        req = self.key_request([x])
+        fee_only = req["spend_bundle"]["aggregated_signature"]
+        combined = Signature.aggregate([Signature.from_bytes(bytes.fromhex(req["signature"])),
+                                        Signature.from_bytes(bytes.fromhex(fee_only.removeprefix("0x")))])
+        req["signature"] = combined.to_bytes().hex()
+        req["spend_bundle"] = {**req["spend_bundle"], "aggregated_signature": ""}
+        owed = self.leaf(x.puzzle_hash)["claimable"]
+        before = self.balance(x.puzzle_hash)
+        self.seq.submit(req)
+        out = self.seq.run_batch(wait=5, poll=0)
+        self.assertTrue(out["pushed"], out)
+        self.assertEqual(self.balance(x.puzzle_hash) - before, owed)
+        # The leaf signature alone, presented as the combined one, is refused: the fee spend's is missing.
+        y = self.holders[1]
+        short = self.key_request([y])
+        short["spend_bundle"] = {**short["spend_bundle"], "aggregated_signature": ""}
+        with self.assertRaisesRegex(ValueError, "combined signature does not verify"):
+            self.seq.submit(short)
+
+    def test_claimable_for_a_whole_wallet(self):
+        """`claimable_many`: one request for every address a wallet scan holds, answering only the
+        addresses with something to claim (the 🪎 tab)."""
+        stranger = self.w.sim.bls(0)
+        phs = [stranger.puzzle_hash, self.holders[0].puzzle_hash, self.lock_ph, self.holders[0].puzzle_hash]
+        out = self.svc.claimable_many(phs)
+        self.assertEqual([h["puzzle_hash"] for h in out["holders"]], [self.holders[0].puzzle_hash.hex(), self.lock_ph.hex()])
+        self.assertEqual(out["holders"][0]["claims"][0]["claimable"], self.leaf(self.holders[0].puzzle_hash)["claimable"])
+        with self.assertRaisesRegex(ValueError, "at most"):
+            self.svc.claimable_many([stranger.puzzle_hash] * (self.svc.MAX_CLAIMABLE_BATCH + 1))
+
     def test_refused_at_intake(self):
         x, y = self.holders[0], self.holders[1]
         forged = self.key_request([x])

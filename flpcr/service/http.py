@@ -122,6 +122,13 @@ def make_handler(service, sequencer=None, intake=None, watcher=None):
                 body = json.loads(self.rfile.read(length) or b"{}")
                 if path == "/api/v1/claims" and sequencer is not None:
                     return self.send_json(202, {"success": True, **sequencer.submit(body)})
+                if path == "/api/v1/claimable":
+                    if service.s is None:
+                        return self.send_json(503, {"success": False, "error": "booting: resyncing from chain"})
+                    raw = body.get("addresses") or body.get("puzzle_hashes") or []
+                    if not isinstance(raw, list):
+                        raise ValueError("addresses is a list")
+                    return self.send_json(200, {"success": True, **service.claimable_many([puzzle_hash_of(str(x)) for x in raw])})
                 if path == "/api/v1/campaigns/quote" and intake is not None:
                     return self.send_json(200, {"success": True, **intake.quote(body)})
                 if path == "/api/v1/campaigns/create" and intake is not None:

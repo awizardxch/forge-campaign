@@ -241,7 +241,7 @@ class CampaignIntake:
         svc = self.service
         if svc.s is None:
             raise ValueError("booting: resyncing from chain")
-        if not svc.lock.acquire(timeout=10):
+        if not svc.write_lock.acquire(timeout=10):
             raise LeaseBusy("the distributor is being spent; retry shortly", 20)
         try:
             svc.follow()  # quote on the singleton as it is on chain, not as this service last moved it
@@ -257,7 +257,7 @@ class CampaignIntake:
             lease = self.lease.take(qid, coin_id, self.lease_seconds)
             q = self.quotes[qid] = Quote(qid, campaign, h, coin_id, lease.expires_at)
         finally:
-            svc.lock.release()
+            svc.write_lock.release()
         return self.describe(q)
 
     def describe(self, q: Quote) -> dict:
@@ -415,7 +415,7 @@ class CampaignIntake:
         if self.lease.held_by(q.id) is None:
             raise Requote("the quote's lease lapsed; re-quote and sign again")
         spends, sig = _bundle(Clvm(), body.get("spend_bundle"))
-        if not svc.lock.acquire(timeout=10):
+        if not svc.write_lock.acquire(timeout=10):
             raise LeaseBusy("the distributor is being spent; retry shortly", 20)
         try:
             d = svc.d
@@ -462,14 +462,13 @@ class CampaignIntake:
                 raise ValueError(f"the chain refused the create: {e}") from e
             q.status = "pushed"
         finally:
-            svc.lock.release()
+            svc.write_lock.release()
         try:
             at = svc._wait(successor.coin_id(), wait, poll)
         except RuntimeError as e:
             q.status, q.detail = "failed", f"not confirmed: {e}"
             self.lease.release(q.id)
-            with svc.lock:
-                svc.boot()  # it may still land; rebuild from chain either way
+            svc.boot()  # it may still land; rebuild from chain either way (boot takes its own locks)
             raise ValueError(f"the create was pushed but not confirmed: {e}") from e
         with svc.lock:
             d.apply(prepared)

@@ -1,5 +1,42 @@
 {
  "network": "testnet11",
  "version": 1,
- "distributors": []
+ "distributors": [
+  {
+   "launcher_id": "f957041a5882a74fc537b413f25e59a24a41606a6adc06f3042c8cca2870b3cd",
+   "reward_asset": "0000000000000000000000000000000000000000000000000000000000000000",
+   "router_ph": "e402387e787810b01fdeebc88bae36f9afcb75e7ef37dd2a02d1b9a23f470008",
+   "guardian_ph": "4aaecb635fc6d07a9a482137d77921fb0a3e5e4f342d70d7ba87d9736300708a",
+   "admin_ph": "16ca22dea994ce7077c93aba59d3e8ea804235a7fd232038a0da854ddde8ceac",
+   "dev_fee_ph": "16ca22dea994ce7077c93aba59d3e8ea804235a7fd232038a0da854ddde8ceac",
+   "pins": "af39d78ae5f305a922833f0da97bc90fb74150a291ca3f593b54a8f37ee7044b",
+   "status": "retired",
+   "api": null,
+   "note": ""
+  },
+  {
+   "launcher_id": "31ad2dca58821b36894fc913a005fbcaa821859c0b649cd680d11288532d2af3",
+   "reward_asset": "969289f721bed5723aa03c73efd7886c204e50ff4e80a8eacfb352b74e7305a7",
+   "router_ph": "e402387e787810b01fdeebc88bae36f9afcb75e7ef37dd2a02d1b9a23f470008",
+   "guardian_ph": "4aaecb635fc6d07a9a482137d77921fb0a3e5e4f342d70d7ba87d9736300708a",
+   "admin_ph": "16ca22dea994ce7077c93aba59d3e8ea804235a7fd232038a0da854ddde8ceac",
+   "dev_fee_ph": "16ca22dea994ce7077c93aba59d3e8ea804235a7fd232038a0da854ddde8ceac",
+   "pins": "af39d78ae5f305a922833f0da97bc90fb74150a291ca3f593b54a8f37ee7044b",
+   "status": "current",
+   "api": null,
+   "note": ""
+  },
+  {
+   "launcher_id": "85b5d8e71e9566f0686d27442d85662710c33aeaf9d898eebb8acba3f1afa72f",
+   "reward_asset": "0000000000000000000000000000000000000000000000000000000000000000",
+   "router_ph": "e402387e787810b01fdeebc88bae36f9afcb75e7ef37dd2a02d1b9a23f470008",
+   "guardian_ph": "4aaecb635fc6d07a9a482137d77921fb0a3e5e4f342d70d7ba87d9736300708a",
+   "admin_ph": "16ca22dea994ce7077c93aba59d3e8ea804235a7fd232038a0da854ddde8ceac",
+   "dev_fee_ph": "16ca22dea994ce7077c93aba59d3e8ea804235a7fd232038a0da854ddde8ceac",
+   "pins": "af39d78ae5f305a922833f0da97bc90fb74150a291ca3f593b54a8f37ee7044b",
+   "status": "current",
+   "api": null,
+   "note": ""
+  }
+ ]
 }
