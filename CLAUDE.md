@@ -76,7 +76,7 @@ build". Residual Lows are in `FINDINGS.md`. Distributors launched before this re
 cargo install rue-cli --version 0.8.4 --locked       # exactly 0.8.4: reproduces upstream's pinned hashes
 pip install chia-wallet-sdk==0.36.0 pytest clvm
 python contracts/build.py --check   # compiled/ matches the sources and every pin; run before trusting anything
-.venv/Scripts/python.exe -m pytest tests -q   # 476 tests (5 skip without Sage RPC), all on the in-process simulator
+.venv/Scripts/python.exe -m pytest tests -q   # 485 tests (5 skip without Sage RPC), all on the in-process simulator
 python scripts/mutate.py            # optional, ~3 min; must end "0 unargued survivors"
 ```
 
@@ -177,6 +177,10 @@ driver all read it. `build.py` also enforces the upstream source sha256 pins.
   live on testnet11. A new Forge revision is added by pinning its replay lane, never by keeping old ones.
 - **Site (2026-11-09):** campaigns live on forge.awizard.dev as their own tab, labelled with the treasure
   chest emoji (🪎, U+1FA8E); `docs/FORGE_SITE_TAB.md` is the integration plan.
+- **The distributor registry is a file (2026-11-10):** `registry/<network>.json`, one current distributor
+  per `(reward asset, router_ph)`, each verified by resync with this build's leaves
+  (`python -m flpcr.registry add | verify | list | retire`); served at `GET /api/v1/distributors`. An
+  on-chain registry waits for a second operator. After a launch, `add` it and commit the file.
 - Puzzles live in this repo, not `forge-puzzles`.
 
 ## Testnet11: where the work starts

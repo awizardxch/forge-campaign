@@ -193,6 +193,7 @@ All JSON and CORS-open (`flpcr/service/http.py`):
 | Method and path | Use |
 |---|---|
 | `GET /health` | up, and the peak |
+| `GET /api/v1/distributors` | the registry for this network: every listed distributor (`launcher_id`, `reward_asset`, `router_ph`, `status`: current / retired, `api`, `pins`), plus `this` and whether it is `listed`. The tab reads it to find the current distributor and its API base per reward asset |
 | `GET /api/v1/status` | distributor, campaigns, active and pending roots (each with the `manifest_hash` it committed, or null), dispute, rotation, proof gap |
 | `GET /api/v1/manifests/<hash>` | a posted root's manifest (`flpcr.manifest.root_to_json`: every holder's leaf and proof) by the hash its `post_root` committed; `.json` may be appended. Served as published, so check it: watchers set `FLPCR_MANIFESTS=https://<host>/api/v1/manifests/{hash}` |
 | `GET /api/v1/claimable/<address>` | a holder's leaves in the claimable root, with leaf, proof, `claimable` and `claimed`; and `pending`: per campaign, the `amount` a posted root adds that is not claimable yet, with `activates_at` and `disputed` (never a proof) |

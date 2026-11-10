@@ -62,7 +62,7 @@ The engine on its own needs only the standard library (Python 3.10+). The chain 
 - **Phase 0 ✅:** spec, engine, reference model, router rules.
 - **Phase 2 ✅ on the simulator:** distributor puzzles (ten leaves: init, create, post_root, veto, claim,
   reclaim, rotate, delegate, dispute, resolve), driver, chain, differential and mutation suites, for
-  XCH and CAT rewards. Still open: the distributor registry, cost measurements beyond claims (claims: about 38.7M cost each,
+  XCH and CAT rewards. The distributor registry is a chain-verified file (`registry/<network>.json`, `python -m flpcr.registry`). Still open: cost measurements beyond claims (claims: about 38.7M cost each,
   about 125 per bundle), a second reader.
 - **Excluded addresses and NFT campaigns (2026-10-20):** the burn address and up to 16 creator-excluded
   addresses are refused at claim; `NFT_HOLD` pays one share per NFT, by minter DID or `col1` collection.

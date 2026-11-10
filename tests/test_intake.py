@@ -299,6 +299,8 @@ class TestHttp(unittest.TestCase):
         try:
             code, page = self.call(port, "GET", f"/api/v1/campaigns/{q['campaign']}")
             self.assertEqual((code, page["status"], page["budget"]), (200, "created", 970_000))
+            code, reg = self.call(port, "GET", "/api/v1/distributors")
+            self.assertEqual((code, reg["this"], reg["listed"]), (200, x.svc.launcher_id.hex(), None))
         finally:
             server.shutdown()
 

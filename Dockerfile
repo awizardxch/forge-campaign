@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir chia-wallet-sdk==0.36.0
 COPY flpcr ./flpcr
 COPY contracts/compiled ./contracts/compiled
 COPY contracts/pins.json ./contracts/pins.json
+COPY registry ./registry
 
 ENV PYTHONUNBUFFERED=1 FLPCR_CACHE_DIR=/app/data
 EXPOSE 8080

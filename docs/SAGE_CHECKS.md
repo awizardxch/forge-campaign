@@ -15,6 +15,11 @@
 > distributor's puzzle hash. Run `launch` on current `main` (`python contracts/build.py --check` clean,
 > compiled fingerprint `6a987d3c…`) with a fresh `FLPCR_STATE`, and use it for every step below. The
 > claim-window floor on testnet is now 160 blocks.
+>
+> **Then list it:** `python -m flpcr.registry add --network testnet11 --launcher <id>` reads the entry off
+> the chain (it refuses a distributor that does not run this build's leaves) and writes
+> `registry/testnet11.json`. Commit that file. `python -m flpcr.registry verify --network testnet11`
+> must exit 0 before any step below.
 
 ## A. Signatures (TESTNET.md §3 step 4)
 
@@ -84,6 +89,8 @@
   lease, `POST /api/v1/campaigns/create`. Check that a lapsed lease is refused and a re-quote succeeds.
 - [ ] **C6. Follow.** While the service runs, spend the singleton from `deploy_testnet.py` (a claim).
   The service must follow the foreign spend without a restart and keep `status` equal to the chain.
+- [ ] **C7. Registry.** `GET /api/v1/distributors` on the hosted service shows the new distributor as
+  `listed: current`, with `pins` equal to the entry's.
 
 ## D. Before mainnet (owner)
 

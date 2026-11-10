@@ -181,7 +181,10 @@ record (without gates or boosts), so a campaign read back keeps its blacklist an
 upstream CHIP-0050 reserve finalizer **unmodified**. Forge needed a multi-reserve finalizer; this
 doesn't, which keeps it out of the audit scope. Every campaign paying in, say, wUSDC goes to the
 wUSDC distributor. A registry like Forge's (key = `(reward asset id, router_ph)`, sorted slots, one
-distributor per asset per router) lets wallets and the API find a distributor cold.
+distributor per asset per router) lets wallets and the API find a distributor cold. **As built
+(2026-11-10):** that index is `registry/<network>.json`, served at `GET /api/v1/distributors` and checked
+against the chain by `python -m flpcr.registry verify`; the on-chain form is for when a second operator
+exists.
 
 **One router per distributor.** `create` needs a mode-23 message from a coin at the distributor's
 curried `router_ph`, whose content is `"c"` + the campaign id. So a distributor only ever holds
@@ -913,7 +916,7 @@ outputs, who signs and the checks for each are in [`AGENT_TOOLS.md`](AGENT_TOOLS
 |---|---|---|
 | **0 ✅** | Spec; engine (`model`, `engine`, `merkle`, `manifest`, CLI); reference distributor model; router rules | Hashing cross-checked against `clvm` |
 | **1: engine on real data** (in progress) | Live `Source` for testnet11 (coinset or full node + `forge_resync`); run against every Forge V16 (or newer) pool; publish manifests. Built: LP holders and fee events of every V16 pool (`LiveLpSource`, `flpcr/v16_fees.py`; a pool below protocol 17 is refused, checked from chain) and NFT holders (`ChainNftSource` over `NodeReader`); fee events tested on recorded V16 spends, not yet on live testnet data | Replaying a week of testnet from scratch twice gives identical roots |
-| **2 ✅ (simulator)** | `contracts/`: 10 leaves plus the bond launcher, claim slots, pins, `build.py`; driver and `SimWorld`; chain, differential and mutation suites, XCH and CAT rewards (§12) | Done on the simulator. Still open: the distributor registry, a `clvmPuzzleAudit.md` pass by a second reader |
+| **2 ✅ (simulator)** | `contracts/`: 10 leaves plus the bond launcher, claim slots, pins, `build.py`; driver and `SimWorld`; chain, differential and mutation suites, XCH and CAT rewards (§12) | Done on the simulator. The distributor registry is a chain-verified file (`flpcr/registry.py`). Still open: a `clvmPuzzleAudit.md` pass by a second reader |
 | **3: testnet lane** | Router (quote + create, our key), operator bot, watcher, API, forge-ui tab, on `Config.testnet` distributors. Built (2026-11-09): the service's operator, claim sequencer, create intake (`/api/v1/campaigns/quote`, `/create`) and watcher; the forge-ui 🪎 tab is planned (`docs/FORGE_SITE_TAB.md`), not built; nothing is hosted yet | One campaign end to end on testnet11: create → roots → claims at several points → reclaim of leftovers |
 | **4: hardening** | Guardian as a Forge multisig safe, external review (the public dispute leaf is built; §7) | No mainnet before external review |
 
@@ -972,6 +975,9 @@ Each now has a probe built so that the assertion it names is the first thing tha
 - **Real keys.** Router, operator, guardian, admin and the disputer are anyone-can-spend test puzzles
   here. On testnet they are a wallet key (router, operator, disputer), a Forge multisig safe (guardian)
   and the dev multisig (admin).
-- **The distributor registry** is not built.
+- **The distributor registry is a file, not a singleton.** `registry/<network>.json` (`flpcr/registry.py`)
+  lists distributors by `(reward asset, router_ph)`, one current per key, and every current entry is
+  verified by resyncing it with this build's leaves. An on-chain registry (§4) waits for a second
+  operator: while every distributor is ours it would add a puzzle to review and prove nothing more.
 - **No external review.** The pre-testnet review (`reviews/2026-10-19/FINDINGS.md`) is one model pass;
   its probes were rerun on the current pins on 2026-11-09 (four new findings, all fixed).

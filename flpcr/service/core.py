@@ -180,7 +180,7 @@ class ServiceState:
 class CampaignService:
     def __init__(self, chain, launcher_id: bytes, network: str, source_for: Callable[[Sequence[Campaign]], object],
                  operator: Optional[OperatorKey] = None, every: int = 180, puzzles_factory=None,
-                 manifests_dir: Optional[pathlib.Path] = None):
+                 manifests_dir: Optional[pathlib.Path] = None, registry=None):
         self.chain = chain
         self.launcher_id = launcher_id
         self.network = network
@@ -193,6 +193,7 @@ class CampaignService:
         self.signer = KeySigner.for_network([operator.secret] if operator else [], network)
         self.lease = SingletonLease()  # held by a create the intake has quoted (flpcr.service.lease)
         self.manifests_dir = pathlib.Path(manifests_dir) if manifests_dir else None  # <hash>.json per posted root
+        self.registry = registry  # flpcr.registry.Registry for this network, or None
 
     # --- boot -------------------------------------------------------------------------
 
@@ -319,6 +320,17 @@ class CampaignService:
                 "proofs_through_root": max(self.s.roots, default=0), "proof_gap": self.s.mismatch,
                 "operator": self.operator.puzzle_hash.hex() if self.operator else None,
             }
+
+    def distributors(self) -> dict:
+        """The registry as loaded at start, and whether this distributor is in it. An index:
+        a caller that must trust an entry verifies it against the chain (flpcr.registry.verify)."""
+        from ..registry import pins_fingerprint
+
+        reg = self.registry
+        mine = reg.get(self.launcher_id.hex()) if reg else None
+        return {"network": self.network, "this": self.launcher_id.hex(), "pins": pins_fingerprint(),
+                "listed": mine.status if mine else None,
+                "distributors": reg.to_json()["distributors"] if reg else []}
 
     def claimable(self, puzzle_hash: bytes) -> dict:
         """The holder's leaves in the claimable root: what each pays now, and the message a

@@ -3,6 +3,8 @@
     GET  /health                         liveness: 200 once booted, with the peak
     GET  /api/v1/status                  the distributor: campaigns, roots (each with the
                                          manifest_hash it committed, or null), dispute, rotation
+    GET  /api/v1/distributors            the registry for this network (flpcr.registry): every listed
+                                         distributor, which are current, and which one this is
     GET  /api/v1/manifests/<hash>        a posted root's manifest (flpcr.manifest.root_to_json),
                                          by the manifest_hash its post_root committed; ".json"
                                          may be appended. Served as published: check it against
@@ -81,6 +83,8 @@ def make_handler(service, sequencer=None, intake=None, watcher=None):
                     return self.send_json(503, {"success": False, "error": "booting: resyncing from chain"})
                 if path == "/api/v1/status":
                     return self.send_json(200, {"success": True, **service.status()})
+                if path == "/api/v1/distributors":
+                    return self.send_json(200, {"success": True, **service.distributors()})
                 if path.startswith("/api/v1/manifests/"):
                     found = service.manifest(path.rsplit("/", 1)[1])
                     return self.send_json(200 if found else 404, found if found else {"success": False, "error": "unknown manifest"})

@@ -26,6 +26,8 @@ Environment (the host's service variables):
     FLPCR_MANIFESTS      where the watcher reads root manifests: a folder or a URL template, e.g.
                          https://<host>/api/v1/manifests/{hash} (default: this service's own
                          <FLPCR_CACHE_DIR>/manifests)
+    FLPCR_REGISTRY_DIR   folder holding <network>.json, the distributor registry served at
+                         GET /api/v1/distributors (default: the repo's registry/)
     PORT                 HTTP port (default 8080)
 
 Boot resyncs from chain; nothing else is needed on disk (a root's manifest is rebuilt
@@ -54,6 +56,7 @@ from .chain import NodeChain
 from .core import CampaignService, OperatorKey
 from .http import serve
 from .intake import CampaignIntake, cached, forge_pool_infos
+from ..registry import Registry
 from ..router import RouterRules
 from .sequencer import ClaimSequencer
 from .watcher import AlertSink, Watcher, manifest_lookup
@@ -113,7 +116,8 @@ def main() -> int:
     source_for = live_source_factory(network, node, api, cache)
     manifests_dir = cache / "manifests"
     service = CampaignService(chain, bytes.fromhex(launcher), network, source_for, operator=operator, every=every,
-                              manifests_dir=manifests_dir)
+                              manifests_dir=manifests_dir,
+                              registry=Registry.load(network, env.get("FLPCR_REGISTRY_DIR", "").strip() or None))
     sequencer = ClaimSequencer(service)
     router_hex = env.get("FLPCR_ROUTER_SK", "").strip().removeprefix("0x")
     router_sk = SecretKey.from_bytes(bytes.fromhex(router_hex)) if router_hex else None
