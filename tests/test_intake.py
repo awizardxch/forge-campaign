@@ -23,6 +23,7 @@ try:
     from flpcr.service.lease import LeaseBusy, SingletonLease
     from flpcr.service.sequencer import ClaimSequencer, Pending
 
+    from flpcr.service.core import MIN_FEE
     HAVE_CHAIN = True
 except (ImportError, FileNotFoundError):  # pragma: no cover
     HAVE_CHAIN = False
@@ -75,15 +76,17 @@ class IntakeWorld:
     def sign(self, spends, extra_sks=()):
         return KeySigner([self.creator.sk, *extra_sks], EXTRA).sign(spends)
 
-    def xch_bundle(self, quote, leave=None, receiver=None, extra_sig=False):
-        """The creator's XCH coin: sends "k" + id to the quoted coin and leaves `leave` unspent."""
+    def xch_bundle(self, quote, leave=None, receiver=None, extra_sig=False, fee=None):
+        """The creator's XCH coin: sends "k" + id to the quoted coin, leaves `leave` unspent for the
+        deposit and reserves `fee` (the quote's network_fee) for the network."""
         w = self.w
         leave = quote["fields"]["amount"] if leave is None else leave
-        coin = w.sim.new_coin(self.creator.puzzle_hash, 5_000_000)
+        fee = quote["network_fee"] if fee is None else fee
+        coin = w.sim.new_coin(self.creator.puzzle_hash, leave + fee + 5_000_000)
         msg = bytes.fromhex(quote["conditions"]["message"]["message"])
         to = bytes.fromhex(receiver or quote["singleton"]["coin_id"])
         clvm = Clvm()
-        conds = [[66, 23, msg, to], [51, self.creator.puzzle_hash, coin.amount - leave]]
+        conds = [[66, 23, msg, to], [51, self.creator.puzzle_hash, coin.amount - leave - fee], [52, fee]]
         clvm.spend_standard_coin(coin, self.creator.pk, clvm.delegated_spend([to_program(clvm, c) for c in conds]))
         spends = list(clvm.coin_spends())
         sig = self.sign(spends)
@@ -98,10 +101,11 @@ class IntakeWorld:
         leave = amount if leave is None else leave
         msg = bytes.fromhex(quote["conditions"]["message"]["message"])
         clvm = Clvm()
-        coin = w.sim.new_coin(self.creator.puzzle_hash, 1)
+        fee = quote["network_fee"]
+        coin = w.sim.new_coin(self.creator.puzzle_hash, fee + 1)
         clvm.spend_standard_coin(coin, self.creator.pk, clvm.delegated_spend(
             [to_program(clvm, [66, 23, msg, bytes.fromhex(quote["singleton"]["coin_id"])]),
-             to_program(clvm, [51, self.creator.puzzle_hash, 1])]))
+             to_program(clvm, [51, self.creator.puzzle_hash, 1]), to_program(clvm, [52, fee])]))
         info = CatInfo(ASSET, None, self.creator.puzzle_hash)
         held = amount + 500
         grand = clvm.atom(b"creator-cat").tree_hash()
@@ -132,8 +136,13 @@ class TestXchCreate(unittest.TestCase):
         self.assertEqual(q["conditions"]["message"]["message"], "6b" + q["campaign"])
         self.assertTrue(x.svc.lease.busy())
         dev_before = x.w.xch_balance("dev")
+        router_before = sum(k.amount for k in x.w.sim.unspent_coins(x.svc.d.cfg.router_ph, False))
+        self.assertGreaterEqual(q["network_fee"], MIN_FEE)
         out = x.intake.create({"quote": q["quote"], "spend_bundle": x.xch_bundle(q)})
         self.assertEqual(out["status"], "created")
+        # The creator paid the network fee; the router's coin came back whole.
+        self.assertEqual(out["network_fee"], q["network_fee"])
+        self.assertEqual(sum(k.amount for k in x.w.sim.unspent_coins(x.svc.d.cfg.router_ph, False)), router_before)
         self.assertFalse(x.svc.lease.busy())
         row = next(c for c in x.svc.status()["campaigns"] if c["id"] == q["campaign"])
         self.assertEqual(row["budget"], 970_000)
@@ -185,6 +194,7 @@ class TestXchCreate(unittest.TestCase):
         q = x.intake.quote(x.request())
         coin = x.svc.d.coin
         for bundle, why in ((x.xch_bundle(q, leave=999_999), "needs 1,000,000"),
+                            (x.xch_bundle(q, fee=1_000), "reserve 1,000 mojos for the network fee"),
                             (x.xch_bundle(q, receiver=(b"\x01" * 32).hex()), "quoted singleton coin"),
                             (x.xch_bundle(q, extra_sig=True), "does not verify")):
             with self.assertRaisesRegex(ValueError, why):

@@ -169,19 +169,22 @@ stale as soon as anything else spends the singleton: a claim batch, a root, anot
   confirmed or failed.
 - **`POST /api/v1/campaigns/create`** takes `{quote, spend_bundle}` and checks the creator's bundle before
   anything is pushed: exactly one message, `"k" + id` mode 23 from a coin at the creator's address to the
-  quoted coin; the deposit (XCH: the creator's spends' inputs less their outputs and any `RESERVE_FEE` are
-  at least `amount`; CAT: spends of the reward CAT whose outputs leave exactly `amount`, which the service
+  quoted coin; the network fee (the creator's XCH spends `RESERVE_FEE` at least the quote's `network_fee`:
+  the creator pays it, owner 2026-11-10); the deposit (XCH: the creator's spends' inputs less their outputs
+  and their `RESERVE_FEE` are at least `amount`; CAT: spends of the reward CAT whose outputs leave exactly `amount`, which the service
   rebuilds into the reserve's CAT ring); an aggregated signature over exactly the `AGG_SIG`s those spends
   need; every coin unspent. It then adds the router's spend (a coin at `router_ph` sends `"c" + id` and
-  recreates itself less the network fee, which the router pays), the singleton spend from
+  recreates itself whole: it pays nothing), the singleton spend from
   `Distributor.create` / `prepare`, pushes, waits for the successor coin and applies.
 - **Lapsed lease or moved singleton:** 409 with `"requote": true`. The page re-quotes and the wallet signs
   again.
 
 **The router key** is a second key on the host, `FLPCR_ROUTER_SK`, separate from `FLPCR_OPERATOR_SK`.
-Unset, the intake still quotes and refuses to create. The router address needs an XCH coin for the fee
-(at least 0.002 XCH). The `RouterRules` values come from `FLPCR_ROUTER_RULES` (JSON), the owner's to set.
-**Owner decision still open:** keep the router key on the same host, or move it to a separate signer.
+Unset, the intake still quotes and refuses to create. The router address needs one XCH coin of any
+amount, which every create recreates whole. The `RouterRules` values come from `FLPCR_ROUTER_RULES` (JSON),
+the owner's to set. **Owner decision (2026-11-10):** the router and operator keys run on the host, beside
+the routers, so campaigns are created and roots posted around the clock; the guardian and admin stay
+multisigs off the host.
 
 **The alternative removes the lease:** make the creator's consent generation-free, as claims are (mode 16,
 bound by the campaign id). That is a leaf change, so it means a re-pin and a review item; not taken.

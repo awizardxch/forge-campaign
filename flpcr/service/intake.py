@@ -8,9 +8,14 @@ holds that generation for it (`flpcr.service.lease`). No puzzle change.
     quote(body)   -> the campaign id, fee, budget, daily emission, reclaim height, the
                      singleton coin to message, the exact conditions the creator's spend
                      must carry, and a lease on the singleton (LEASE_SECONDS).
-    create(body)  -> checks the creator's signed bundle (message, deposit, signature,
-                     unspent coins), adds the router's spend, the singleton's and a
-                     network fee paid by the router's coin, pushes, waits, applies.
+    create(body)  -> checks the creator's signed bundle (message, deposit, network fee,
+                     signature, unspent coins), adds the router's spend and the
+                     singleton's, pushes, waits, applies.
+
+The creator pays the network fee: their XCH spends RESERVE_FEE at least the quote's
+`network_fee` (owner, 2026-11-10: "the person creating the campaign should be paying
+the coin per create"). The router's coin only carries "c" + id and recreates itself at
+the same amount, so one small coin at the router address serves every create.
 
 Quote request (JSON):
 
@@ -113,6 +118,7 @@ class Quote:
     status: str = "quoted"  # quoted | pushed | created | failed
     detail: Optional[str] = None
     height: Optional[int] = None
+    network_fee: int = 0  # what the creator's spends must RESERVE_FEE, estimated at quote time
 
 
 def _hex(v) -> bytes:
@@ -256,22 +262,59 @@ class CampaignIntake:
             coin_id = svc.d.coin.coin_id()
             lease = self.lease.take(qid, coin_id, self.lease_seconds)
             q = self.quotes[qid] = Quote(qid, campaign, h, coin_id, lease.expires_at)
+            q.network_fee = self.estimate_network_fee(q)
         finally:
             svc.write_lock.release()
         return self.describe(q)
+
+    # A stand-in key for the fee estimate: the creator's and router's spends are sized by their
+    # shape (a standard puzzle, these conditions), never by whose key it is.
+    _STAND_IN = SecretKey.from_seed(bytes([0x5e]) * 32).derive_synthetic()
+
+    def estimate_network_fee(self, q: Quote) -> int:
+        """The network fee for this create, from a stand-in of the bundle the create will push: the
+        singleton's spend, the router's, and two creator coins (a CAT deposit adds a ring spend). A
+        quarter over, rounded up to a millionth of an XCH, so a wallet that picks one more coin still
+        clears the node's floor."""
+        svc, c = self.service, q.campaign
+        d = svc.d
+        router_ph = self.router_ph or d.cfg.router_ph
+        pk = self._STAND_IN.public_key()
+        ph = standard_puzzle_hash(pk)
+        clvm = Clvm()
+        msg = to_program(clvm, [66, MODE_CREATE, b"c" + c.id, q.coin_id])
+        clvm.spend_standard_coin(Coin(bytes(32), router_ph, 1), pk,
+                                 clvm.delegated_spend([msg, to_program(clvm, [51, router_ph, 1, [router_ph]])]))
+        for i in range(2):
+            coin = Coin(bytes([i + 1]) * 32, ph, c.amount + 10**12)
+            clvm.spend_standard_coin(coin, pk, clvm.delegated_spend([
+                to_program(clvm, [66, MODE_CREATE, b"k" + c.id, q.coin_id]),
+                to_program(clvm, [51, ph, 10**12]), to_program(clvm, [52, MIN_FEE])]))
+        stand_in = list(clvm.coin_spends())
+        try:
+            call = d.create(q.h, c.creator, c.amount, c.start, c.end, int(c.kind), c.target, c.params.as_clvm(),
+                            c.nonce, c.claim_window, router=router_ph)
+            singleton = list(d.prepare([call], []).spends)
+            cost = d.spend_cost(singleton + stand_in)
+        except Exception:  # a CAT create cannot be prepared without its ring: size it from the stand-in alone
+            cost = d.spend_cost(stand_in) * 4
+        if c.reward_asset != XCH:
+            cost += d.spend_cost(stand_in[1:2])
+        fee = max(MIN_FEE, FEE_PER_COST * cost) * 5 // 4
+        return -(-fee // 1_000_000) * 1_000_000
 
     def describe(self, q: Quote) -> dict:
         c, d = q.campaign, self.service.d
         message = b"k" + c.id
         asset = "XCH" if c.reward_asset == XCH else c.reward_asset.hex()
         deposit = ({"asset": asset, "amount": c.amount,
-                    "how": "the creator's XCH spends leave `amount` mojos unspent beyond their outputs and any "
-                           "RESERVE_FEE; the router's spend pays the network fee"}
+                    "how": "the creator's XCH spends leave `amount` mojos unspent beyond their outputs and their "
+                           "RESERVE_FEE, which must be at least `network_fee`"}
                    if c.reward_asset == XCH else
                    {"asset": asset, "amount": c.amount,
                     "how": "one or more spends of the creator's coins of this CAT whose CREATE_COINs leave exactly "
                            "`amount` behind; the service joins them to the reserve's CAT ring. The message comes "
-                           "from an XCH coin at the creator's address"})
+                           "from an XCH coin at the creator's address, whose spends RESERVE_FEE at least `network_fee`"})
         return {
             "quote": q.id, "campaign": c.id.hex(), "status": q.status,
             "fields": {"distributor": c.distributor_id.hex(), "creator": c.creator.hex(), "reward_asset": c.reward_asset.hex(),
@@ -279,7 +322,8 @@ class CampaignIntake:
                        "params_hash": c.params.hash().hex(), "excluded": sorted(x.hex() for x in c.params.blacklist),
                        "collection": c.params.collection and {"did": c.params.collection[0].hex(), "id": c.params.collection[1]},
                        "nonce": c.nonce, "fee_bps": c.fee_bps, "claim_window": c.claim_window},
-            "fee": c.fee, "budget": c.budget, "length": c.length, "days": c.length / BLOCKS_PER_DAY,
+            "fee": c.fee, "network_fee": q.network_fee, "budget": c.budget, "length": c.length,
+            "days": c.length / BLOCKS_PER_DAY,
             "daily_emission": c.budget * BLOCKS_PER_DAY // c.length, "reclaim_from": c.reclaim_from,
             "height": q.h, "singleton": {"launcher_id": d.launcher_id.hex(), "coin_id": q.coin_id.hex()},
             "conditions": {
@@ -307,8 +351,9 @@ class CampaignIntake:
                 out.append(items)
         return out
 
-    def check_bundle(self, q: Quote, spends: List[CoinSpend], sig: Signature) -> Tuple[List[CoinSpend], List[CatSpend], int]:
-        """(the creator's XCH spends, their CAT deposit spends, mojos the deposit leaves); raises on any fault."""
+    def check_bundle(self, q: Quote, spends: List[CoinSpend], sig: Signature) -> Tuple[List[CoinSpend], List[CatSpend], int, int]:
+        """(the creator's XCH spends, their CAT deposit spends, mojos the deposit leaves, mojos they RESERVE_FEE);
+        raises on any fault."""
         svc, c = self.service, q.campaign
         clvm = Clvm()
         if not spends:
@@ -387,16 +432,17 @@ class CampaignIntake:
                                  "send it back as change")
             if inputs - outputs - reserved < 0:
                 raise ValueError("the creator's XCH spends create more than they spend")
-            return xch, cats, left
+            return xch, cats, left, reserved
         left = inputs - outputs - reserved
         if left < c.amount:
             raise ValueError(f"the creator's spends leave {left:,} mojos for the deposit; the campaign needs {c.amount:,}")
-        return xch, cats, left
+        return xch, cats, left, reserved
 
-    def _router_spend(self, coin: Coin, coin_id: bytes, cid: bytes, fee: int) -> List[CoinSpend]:
+    def _router_spend(self, coin: Coin, coin_id: bytes, cid: bytes) -> List[CoinSpend]:
+        """The router's consent: "c" + id, and the coin back at its own address, whole. It pays nothing."""
         clvm = Clvm()
         ph = self.router_ph
-        conds = [[66, MODE_CREATE, b"c" + cid, coin_id], [51, ph, coin.amount - fee, [ph]], [52, fee]]
+        conds = [[66, MODE_CREATE, b"c" + cid, coin_id], [51, ph, coin.amount, [ph]]]
         clvm.spend_standard_coin(coin, self.router_sk.public_key(),
                                  clvm.delegated_spend([to_program(clvm, x) for x in conds]))
         return list(clvm.coin_spends())
@@ -429,7 +475,7 @@ class CampaignIntake:
                 raise Requote("the quote's height is too old for the create spend; re-quote")
             if q.campaign.id in {x.id for x in d.chain_state.campaigns}:
                 raise ValueError("this campaign already exists")
-            xch, cats, _ = self.check_bundle(q, spends, sig)
+            xch, cats, _, reserved = self.check_bundle(q, spends, sig)
             c = q.campaign
             call = d.create(q.h, c.creator, c.amount, c.start, c.end, int(c.kind), c.target, c.params.as_clvm(),
                             c.nonce, c.claim_window, router=self.router_ph)
@@ -437,20 +483,15 @@ class CampaignIntake:
             mine = {s.coin.coin_id() for s in spends}
             coins = sorted((x for x in svc.chain.unspent_at([self.router_ph]) if x.coin_id() not in mine),
                            key=lambda x: x.amount)
-            fee = MIN_FEE
-            coin = next((x for x in coins if x.amount >= fee + 1), None)
-            if coin is None:
-                raise ValueError(f"the router address holds no coin of at least {fee + 1:,} mojos; the host must fund it")
-            router = self._router_spend(coin, q.coin_id, c.id, fee)
+            if not coins:
+                raise ValueError("the router address holds no coin; the host must send it one (any amount: it is recreated whole)")
+            router = self._router_spend(coins[0], q.coin_id, c.id)
             all_spends = list(prepared.spends) + xch + router
             need = max(MIN_FEE, FEE_PER_COST * d.spend_cost(all_spends))
-            if need > fee:
-                coin = next((x for x in coins if x.amount >= need + 1), None)
-                if coin is None:
-                    raise ValueError(f"the router address holds no coin of at least {need + 1:,} mojos; the host must fund it")
-                fee = need
-                router = self._router_spend(coin, q.coin_id, c.id, fee)
-                all_spends = list(prepared.spends) + xch + router
+            if reserved < need:
+                raise ValueError(f"the creator's spends reserve {reserved:,} mojos for the network fee; this create needs "
+                                 f"{need:,} (the quote's network_fee is {q.network_fee:,})")
+            fee = reserved
             signature = Signature.aggregate([sig, KeySigner.for_network([self.router_sk], svc.network).sign(router)])
             successor = Coin(d.coin.coin_id(), d.full_puzzle(prepared.new_state).tree_hash(), 1)
             self.lease.pin(q.id)

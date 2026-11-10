@@ -78,6 +78,7 @@ POOL = b"\xb0" * 32  # the LP_HOLD target: a label on testnet, the router checks
 
 try:
     sys.path.insert(0, str(ROOT.parent.parent / "discord" / "Forge-Repo" / "projects" / "chia-cfmm" / "contracts"))
+    sys.path.insert(0, str(ROOT.parent / "chia-cfmm" / "contracts"))  # inside Forge: projects/chia-cfmm beside it
     from sage_rpc import SageRPC  # noqa: E402
 except ImportError:  # pragma: no cover
     raise SystemExit("sage_rpc.py (Forge-Repo/projects/chia-cfmm/contracts) must be importable")
@@ -512,6 +513,14 @@ def holders_source(wallet: Wallet, targets: Sequence[bytes] = (POOL,), collectio
 # ---- commands ----------------------------------------------------------------------------------
 
 
+def _ph_arg(value: str) -> bytes:
+    """A puzzle hash from hex or a txch1/xch1 address."""
+    v = value.strip()
+    if v.startswith(("txch1", "xch1")):
+        return Address.decode(v).puzzle_hash
+    return bytes.fromhex(v.removeprefix("0x"))
+
+
 def cmd_launch(args, wallet: Wallet, state: dict, puzzles: Puzzles) -> None:
     if "launcher_id" in state and not args.force:
         raise SystemExit(f"already launched: {state['launcher_id']} (use --force to launch another)")
@@ -519,8 +528,11 @@ def cmd_launch(args, wallet: Wallet, state: dict, puzzles: Puzzles) -> None:
     funding = wallet.pick([wallet.phs[0]], FEE + 2, "funding")
     launcher_id = Coin(funding.coin_id(), Constants.singleton_launcher_hash(), 1).coin_id()
     reward_asset = bytes.fromhex(args.reward_asset) if args.reward_asset else bytes(32)
-    cfg = Config.testnet(launcher_id, reward_asset, net.dev_fee_ph, net.admin_ph, wallet.ph("guardian"), wallet.ph("router"))
-    engine_ph = wallet.ph("operator")
+    # A hosted service's own keys (owner, 2026-11-10: router and operator run on Hetzner), else
+    # the wallet's role derivations. init needs no signature, so neither key signs the launch.
+    router_ph = _ph_arg(args.router) if getattr(args, "router", None) else wallet.ph("router")
+    engine_ph = _ph_arg(args.operator) if getattr(args, "operator", None) else wallet.ph("operator")
+    cfg = Config.testnet(launcher_id, reward_asset, net.dev_fee_ph, net.admin_ph, wallet.ph("guardian"), router_ph)
     d = Distributor(puzzles, cfg, engine_ph)
     conditions = d.funding_conditions(funding)
     conditions.append([51, wallet.phs[0], funding.amount - 1 - FEE, [wallet.phs[0]]])
@@ -543,6 +555,7 @@ def cmd_launch(args, wallet: Wallet, state: dict, puzzles: Puzzles) -> None:
     state.clear()
     state.update({
         "network": NETWORK, "launcher_id": launcher_id.hex(), "engine_ph": engine_ph.hex(),
+        "service_keys": {"router": router_ph != wallet.ph("router"), "operator": engine_ph != wallet.ph("operator")},
         "wallet": wallet.name,
         "roles": {role: {"index": i, "puzzle_hash": wallet.ph(role).hex(), "address": wallet.address(wallet.ph(role))}
                   for role, i in ROLES.items()},
@@ -952,6 +965,8 @@ def main() -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("launch"); s.add_argument("--force", action="store_true")
     s.add_argument("--reward-asset", help="pay rewards in this CAT (its asset id); default XCH")
+    s.add_argument("--router", help="router puzzle hash or address (a hosted service's key); default the wallet's router role")
+    s.add_argument("--operator", help="operator puzzle hash or address (a hosted service's key); default the wallet's operator role")
     s = sub.add_parser("fund-roles"); s.add_argument("--count", type=int, default=ROLE_FUNDING)
     s = sub.add_parser("create")
     s.add_argument("--hours", type=float, default=4.0)

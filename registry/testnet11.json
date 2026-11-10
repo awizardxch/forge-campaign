@@ -34,9 +34,21 @@
    "admin_ph": "16ca22dea994ce7077c93aba59d3e8ea804235a7fd232038a0da854ddde8ceac",
    "dev_fee_ph": "16ca22dea994ce7077c93aba59d3e8ea804235a7fd232038a0da854ddde8ceac",
    "pins": "af39d78ae5f305a922833f0da97bc90fb74150a291ca3f593b54a8f37ee7044b",
+   "status": "retired",
+   "api": "https://testnet-api.forge.awizard.dev/flpcr-v7",
+   "note": "retired for creates 2026-11-10; claims open until its claim window closes"
+  },
+  {
+   "launcher_id": "f4ddac8686dc9d1f147197b1c72742ea4c6d8299b4a20094e30d3be5695d4a26",
+   "reward_asset": "0000000000000000000000000000000000000000000000000000000000000000",
+   "router_ph": "2f35a0ec4f64a167cb2e44636bff897f81b1a4b4a0e38382c6a58360ce8ebc15",
+   "guardian_ph": "4aaecb635fc6d07a9a482137d77921fb0a3e5e4f342d70d7ba87d9736300708a",
+   "admin_ph": "16ca22dea994ce7077c93aba59d3e8ea804235a7fd232038a0da854ddde8ceac",
+   "dev_fee_ph": "16ca22dea994ce7077c93aba59d3e8ea804235a7fd232038a0da854ddde8ceac",
+   "pins": "af39d78ae5f305a922833f0da97bc90fb74150a291ca3f593b54a8f37ee7044b",
    "status": "current",
-   "api": null,
-   "note": ""
+   "api": "https://testnet-api.forge.awizard.dev/flpcr",
+   "note": "hosted router and operator keys (2026-11-10)"
   }
  ]
 }
