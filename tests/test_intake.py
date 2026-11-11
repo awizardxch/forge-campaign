@@ -18,7 +18,7 @@ try:
     from flpcr.chain.values import to_program
     from flpcr.service.chain import SimChain, bundle_json
     from flpcr.service.core import CampaignService, OperatorKey
-    from flpcr.service.http import serve
+    from flpcr.service.http import PostLimit, serve
     from flpcr.service.intake import CampaignIntake, PoolInfo, Requote
     from flpcr.service.lease import LeaseBusy, SingletonLease
     from flpcr.service.sequencer import ClaimSequencer, Pending
@@ -47,7 +47,7 @@ class Clock:
 class IntakeWorld:
     """A distributor whose router is a real key held by the intake, and a booted service."""
 
-    def __init__(self, reward_asset=bytes(32), rules=RouterRules(), router=True):
+    def __init__(self, reward_asset=bytes(32), rules=RouterRules.permissive(), router=True):
         self.router_sk = SecretKey.from_seed(bytes([9]) * 32).derive_synthetic()
         router_ph = standard_puzzle_hash(self.router_sk.public_key())
         op_sk = SecretKey.from_seed(bytes([7]) * 32).derive_synthetic()
@@ -171,7 +171,7 @@ class TestXchCreate(unittest.TestCase):
             x.intake.quote(x.request(start=x.w.h + 3))
         with self.assertRaisesRegex(ValueError, "at most 16"):
             x.intake.quote(x.request(excluded=[bytes([i]) * 32 for i in range(17)]))
-        strict = IntakeWorld(rules=RouterRules(min_amount={XCH: 10**9}))
+        strict = IntakeWorld(rules=RouterRules.permissive(min_amount={XCH: 10**9}))
         with self.assertRaisesRegex(ValueError, "below the minimum"):
             strict.intake.quote(strict.request())
         self.assertFalse(x.svc.lease.busy())  # a refused quote takes no lease
@@ -206,8 +206,6 @@ class TestXchCreate(unittest.TestCase):
     def test_a_lapsed_lease_needs_a_requote(self):
         x = self.x
         q = x.intake.quote(x.request())
-        with self.assertRaises(LeaseBusy):  # one lease at a time
-            x.intake.quote(x.request(nonce=1))
         x.clock.t += 121
         self.assertFalse(x.svc.lease.busy())
         with self.assertRaisesRegex(Requote, "lapsed"):
@@ -266,6 +264,85 @@ class TestXchCreate(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE_CHAIN, "chia-wallet-sdk or compiled puzzles missing")
+class TestDefaultRouterRules(unittest.TestCase):
+    """Audit 2026-11-10, CS-04 and CS-05. The hosted service ran `RouterRules()` as it came:
+    no amount floor, every kind, the puzzle's ~90-minute claim window. 32 dust campaigns filled
+    the table, and a creator could pick the shortest window and reclaim what holders earned."""
+
+    def setUp(self):
+        self.x = IntakeWorld(rules=RouterRules())
+        self.ok = dict(amount=10**11, claim_window=7 * 4608)
+
+    def refused(self, why, **kw):
+        with self.assertRaisesRegex(ValueError, why):
+            self.x.intake.quote(self.x.request(**{**self.ok, **kw}))
+
+    def test_what_the_defaults_sign_for(self):
+        x = self.x
+        q = x.intake.quote(x.request(**self.ok))
+        self.assertEqual(q["fields"]["claim_window"], 7 * 4608)
+        body = x.request(amount=10**11)
+        del body["claim_window"]  # what the site sends: the window is left to the service
+        self.assertEqual(x.intake.quote(body)["fields"]["claim_window"], 7 * 4608)
+
+    def test_what_the_defaults_refuse(self):
+        self.refused("below the minimum", amount=10**11 - 1)
+        self.refused("claim window is under", claim_window=160)
+        self.refused("does not sign for CAT_HOLD", kind="CAT_HOLD", target=ASSET.hex())
+        self.refused("does not sign for NFT_HOLD", kind="NFT_HOLD", target=(b"\xdd" * 32).hex())
+        self.refused("blocks ahead", start=self.x.w.h + 31 * 4608)
+
+    def test_rules_from_env_keep_the_defaults_for_what_is_left_out(self):
+        from flpcr.service.main import rules_from_env
+        self.assertEqual(rules_from_env(""), RouterRules())
+        r = rules_from_env('{"min_claim_window": 160, "kinds": ["LP_HOLD", "NFT_HOLD"]}')
+        self.assertEqual((r.min_claim_window, len(r.kinds), r.min_amount), (160, 2, RouterRules().min_amount))
+
+
+@unittest.skipUnless(HAVE_CHAIN, "chia-wallet-sdk or compiled puzzles missing")
+class TestQuotesCannotHoldTheDistributor(unittest.TestCase):
+    """Audit 2026-11-10, CS-01. A quote needs no key, coin or signature. Asking again every
+    two minutes held the one lease forever: no root, no claim batch, no other creator."""
+
+    def setUp(self):
+        self.x = IntakeWorld()
+
+    def test_quotes_do_not_block_each_other(self):
+        x = self.x
+        x.intake.quote(x.request(creator=(b"\xaa" * 32).hex(), nonce=5))  # anyone's, never signed
+        q = x.intake.quote(x.request())
+        self.assertEqual(x.intake.create({"quote": q["quote"], "spend_bundle": x.xch_bundle(q)})["status"], "created")
+
+    def test_an_endless_stream_of_quotes_delays_the_operator_once(self):
+        x = self.x
+        q = x.intake.quote(x.request())
+        x.intake.create({"quote": q["quote"], "spend_bundle": x.xch_bundle(q)})
+        x.w.advance_to(q["fields"]["end"] + 1)
+        self.assertIsNotNone(x.svc.due(x.svc.chain.peak()))
+        posted = None
+        for i in range(8):  # eight lease periods of someone's quotes, back to back
+            x.intake.quote(x.request(creator=(b"\xaa" * 32).hex(), nonce=100 + i))
+            posted = posted or x.svc.operator_step(wait=5, poll=0)
+            x.clock.t += 100
+        self.assertIsNotNone(posted)  # within MAX_DEFER, not never
+        self.assertEqual(posted["root_id"], 1)
+
+    def test_a_pinned_create_is_exclusive(self):
+        lease = SingletonLease(Clock())
+        lease.take("a", b"\x01" * 32)
+        lease.take("b", b"\x01" * 32)
+        lease.pin("a")
+        self.assertTrue(lease.pinned())
+        with self.assertRaises(LeaseBusy):
+            lease.pin("b")
+        with self.assertRaises(LeaseBusy):
+            lease.take("c", b"\x01" * 32)
+        lease.release("a")
+        self.assertFalse(lease.pinned())
+        lease.pin("b")
+
+
+@unittest.skipUnless(HAVE_CHAIN, "chia-wallet-sdk or compiled puzzles missing")
 class TestHttp(unittest.TestCase):
     def call(self, port, method, path, body=None):
         req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method,
@@ -287,9 +364,9 @@ class TestHttp(unittest.TestCase):
             self.assertEqual((code, bad["success"]), (400, False))
             code, q = self.call(port, "POST", "/api/v1/campaigns/quote", x.request())
             self.assertEqual(code, 200)
-            code, busy = self.call(port, "POST", "/api/v1/campaigns/quote", x.request(nonce=1))
-            self.assertEqual(code, 503)
-            self.assertGreater(busy["retry_after"], 0)
+            code, second = self.call(port, "POST", "/api/v1/campaigns/quote", x.request(nonce=1))
+            self.assertEqual(code, 200)  # quotes share the singleton; none blocks another (CS-01)
+            self.assertEqual(second["singleton"]["coin_id"], q["singleton"]["coin_id"])
             code, out = self.call(port, "POST", "/api/v1/campaigns/create", {"quote": q["quote"], "spend_bundle": x.xch_bundle(q)})
             self.assertEqual((code, out["status"]), (200, "created"))
             code, page = self.call(port, "GET", f"/api/v1/campaigns/{q['campaign']}")
@@ -300,6 +377,16 @@ class TestHttp(unittest.TestCase):
             self.assertEqual(code, 404)
             code, _ = self.call(port, "GET", "/api/v1/campaigns/zz")
             self.assertEqual(code, 400)
+        finally:
+            server.shutdown()
+        # One client's POSTs are limited (CS-01, CS-09); reads are not.
+        server = serve(x.svc, 0, None, x.intake, post_limit=PostLimit(per_minute=2))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        port = server.server_address[1]
+        try:
+            codes = [self.call(port, "POST", "/api/v1/campaigns/quote", x.request(nonce=10 + i))[0] for i in range(3)]
+            self.assertEqual(codes, [200, 200, 429])
+            self.assertEqual(self.call(port, "GET", f"/api/v1/campaigns/{q['campaign']}")[0], 200)
         finally:
             server.shutdown()
         # The page is the service's: it is served with no intake (no router key on the host).

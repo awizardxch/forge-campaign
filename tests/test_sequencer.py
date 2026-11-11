@@ -135,6 +135,87 @@ class TestSequencer(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "at most"):
             self.svc.claimable_many([stranger.puzzle_hash] * (self.svc.MAX_CLAIMABLE_BATCH + 1))
 
+    def test_a_wallet_lookup_reads_the_node_once_and_never_under_the_lock(self):
+        """Audit 2026-11-10, CS-03. `claimable` called the node for the peak under the service
+        lock, once per address: a 6,000-address lookup held every read for about 15 minutes."""
+        svc = self.svc
+        real, calls = svc.chain.peak, []
+
+        def peak():
+            calls.append(svc.lock._is_owned())
+            return real()
+
+        svc.chain.peak = peak
+        try:
+            phs = [bytes([i]) * 32 for i in range(1, 200)] + [self.holders[0].puzzle_hash]
+            out = svc.claimable_many(phs)
+            self.assertEqual(len(out["holders"]), 1)
+            self.assertEqual(calls, [False])  # one node call for the whole request, lock not held
+            calls.clear()
+            self.assertTrue(svc.claimable(self.holders[0].puzzle_hash)["claims"])
+            svc.status()
+            self.assertEqual(calls, [False, False])
+        finally:
+            svc.chain.peak = real
+
+    def poisoned(self, wallet, extra_condition):
+        """A key request whose fee spend also carries `extra_condition`."""
+        req = self.key_request([wallet])
+        clvm = Clvm()
+        coin = self.w.sim.new_coin(self.funder.puzzle_hash, 10**11)
+        conds = [[51, self.funder.puzzle_hash, coin.amount - FEE_PER_CLAIM], extra_condition]
+        clvm.spend_standard_coin(coin, self.funder.pk, clvm.delegated_spend([to_program(clvm, c) for c in conds]))
+        spends = list(clvm.coin_spends())
+        sig = KeySigner([self.funder.sk], bytes.fromhex("37a90eb5185a9c4439a91ddc98bbadce7b4feba060d50116a067de66bf236615")).sign(spends)
+        req["spend_bundle"] = bundle_json(spends, sig)
+        return req
+
+    def test_a_request_the_chain_refuses_does_not_sink_the_others(self):
+        """Audit 2026-11-10, CS-02. A fee spend may be any puzzle, so intake cannot see every
+        condition the chain will refuse (here ASSERT_BEFORE_HEIGHT_ABSOLUTE 1). The batch it
+        rides in fails once; after that each request is pushed alone, the honest ones are paid
+        and the bad one is refused for good."""
+        honest = [self.seq.submit(self.key_request([x])) for x in self.holders[:2]]
+        bad = self.seq.submit(self.poisoned(self.holders[2], [87, 1]))
+        self.assertFalse(self.seq.run_batch(wait=5, poll=0)["pushed"])
+        for _ in range(6):
+            self.seq.run_batch(wait=5, poll=0)
+        for req in honest:
+            self.assertEqual(self.seq.status_of(req["request"])["status"], "confirmed")
+        status = self.seq.status_of(bad["request"])
+        self.assertEqual(status["status"], "refused")
+        self.assertIn("on its own", status["detail"])
+        # A later request is batched normally again.
+        later = self.seq.submit(self.lock_request())
+        self.assertTrue(self.seq.run_batch(wait=5, poll=0)["pushed"])
+        self.assertEqual(self.seq.status_of(later["request"])["status"], "confirmed")
+
+    def test_one_fee_coin_pays_for_one_request(self):
+        """CS-02: two queued requests sharing a fee spend were a double spend in their batch."""
+        first = self.key_request(self.holders[:1])
+        second = self.key_request(self.holders[1:2])
+        second["spend_bundle"] = first["spend_bundle"]
+        self.seq.submit(first)
+        with self.assertRaisesRegex(ValueError, "already pays for another queued request"):
+            self.seq.submit(second)
+
+    def test_a_fee_coin_spent_after_intake_refuses_only_its_request(self):
+        """CS-02: the claimant spends the fee coin elsewhere before the batch is built."""
+        a = self.seq.submit(self.key_request(self.holders[:1]))
+        req = self.key_request(self.holders[1:2])
+        b = self.seq.submit(req)
+        coin_spend = self.seq.queue[b["request"]].spends[0]
+        clvm = Clvm()
+        clvm.spend_standard_coin(coin_spend.coin, self.funder.pk, clvm.delegated_spend(
+            [to_program(clvm, [51, self.funder.puzzle_hash, coin_spend.coin.amount])]))
+        self.w.sim.spend_coins(list(clvm.coin_spends()), [self.funder.sk])
+        out = self.seq.run_batch(wait=5, poll=0)
+        self.assertTrue(out["pushed"], out)
+        self.assertEqual(self.seq.status_of(a["request"])["status"], "confirmed")
+        status = self.seq.status_of(b["request"])
+        self.assertEqual(status["status"], "refused")
+        self.assertIn("spent after", status["detail"])
+
     def test_refused_at_intake(self):
         x, y = self.holders[0], self.holders[1]
         forged = self.key_request([x])

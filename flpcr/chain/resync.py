@@ -114,13 +114,18 @@ def _decode(clvm: Clvm, spend) -> Tuple[Program, List[Tuple[Program, Program]]]:
     return state, runs
 
 
+def _is_zero(program: Program) -> bool:
+    """CLVM zero is the empty atom and nothing else: what a leaf's `x == 0` tests."""
+    return to_bytes(program) == b""
+
+
 def _slot_updates(d: Distributor, leaf: str, sol: List[Program]) -> Tuple[dict, dict]:
     """The claim and delegation slot records an action leaves behind, from its revealed values."""
     claims: dict = {}
     delegations: dict = {}
 
     def delegated(auth: Program, data: Program, owner: bytes) -> None:
-        if to_int(auth) != AUTH_DELEGATE:
+        if to_bytes(auth) != bytes([AUTH_DELEGATE]):  # an atom compare, as in the leaf
             return
         delegate = to_bytes(data.first())
         rest = data.rest()
@@ -132,9 +137,12 @@ def _slot_updates(d: Distributor, leaf: str, sol: List[Program]) -> Tuple[dict, 
         delegations = {LOW: (0, 0, LOW, HIGH), HIGH: (0, 0, LOW, HIGH)}
     elif leaf == "claim":
         campaign_id, ph, cumulative = to_bytes(sol[1]), to_bytes(sol[2]), to_int(sol[3])
-        insert, info = to_int(sol[5]), sol[6]
+        info = sol[6]
         key = d.claim_key(campaign_id, ph)
-        if insert == 0:
+        # The leaf compares atoms (`insert == 0` is true only for the empty atom), so a one-byte
+        # 0x00 takes the insert branch on chain. Branch on the raw atom, exactly as it does
+        # (audit 2026-11-10, CE-02: `to_int` read 0x00 as 0 and resync raised for good).
+        if _is_zero(sol[5]):
             claims[key] = (cumulative, to_bytes(info.rest().first()), to_bytes(info.rest().rest()))
         else:
             n = to_list(info)
@@ -143,9 +151,9 @@ def _slot_updates(d: Distributor, leaf: str, sol: List[Program]) -> Tuple[dict, 
         delegated(sol[7], sol[8], ph)
     elif leaf == "delegate":
         owner, delegate, grant = to_bytes(sol[1]), to_bytes(sol[2]), to_int(sol[3])
-        insert, info = to_int(sol[4]), sol[5]
+        info = sol[5]
         key = d.delegation_key(owner, delegate)
-        if insert == 0:
+        if _is_zero(sol[4]):  # the leaf's own test: the empty atom (CE-02)
             rest = info.rest()
             uses, left, right = to_int(rest.first()), to_bytes(rest.rest().first()), to_bytes(rest.rest().rest())
             delegations[key] = (grant, uses + 1, left, right)

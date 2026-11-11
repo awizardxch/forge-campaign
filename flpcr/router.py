@@ -18,17 +18,26 @@ the router's own rules, applied at quote time:
   campaign on chain once its window ends; these rules keep the table from
   filling in the first place.
 
+* by default (audit 2026-11-10, CS-04 and CS-05) the router also signs only for LP_HOLD
+  campaigns, of at least `DEFAULT_MIN_XCH` when the reward is XCH, that start within
+  `max_start_lead` blocks and leave holders a claim window of at least
+  `min_claim_window` blocks. The puzzle's own floor for the claim window is about an
+  hour and a half; a creator who picked it and kept the service from posting for that
+  long took back what holders had earned. An operator widens any of these on purpose,
+  in FLPCR_ROUTER_RULES; `RouterRules.permissive()` is for tests and probes.
+
 The registry is read from chain by the caller; this module only applies it.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, FrozenSet, Iterable
+from typing import Dict, FrozenSet, Iterable, Optional
 
 from .model import BLOCKS_PER_DAY, MIN_FEE_WINDOW, Campaign, Kind
 
 XCH = bytes(32)
+DEFAULT_MIN_XCH = 100_000_000_000  # 0.1 XCH: the smallest XCH campaign the router signs for by default
 
 
 class NotRoutable(Exception):
@@ -61,9 +70,17 @@ class RouterRules:
     that asset; an asset with no entry has no floor). The values are the
     operator's to set; nothing here is a protocol constant."""
 
-    min_amount: Dict[bytes, int] = field(default_factory=dict)
+    min_amount: Dict[bytes, int] = field(default_factory=lambda: {XCH: DEFAULT_MIN_XCH})
     min_per_day: Dict[bytes, int] = field(default_factory=dict)
     max_live_per_creator: int = 4
+    # The kinds the router signs for. LP_HOLD only until the live sources score the others
+    # (CAT_HOLD credits nobody today; NFT_HOLD reads metadata from URLs its minter chose).
+    kinds: FrozenSet[Kind] = frozenset({Kind.LP_HOLD})
+    # The shortest claim window the router signs for: holders need days, not the puzzle's
+    # floor of four root cycles, to claim before the creator may reclaim.
+    min_claim_window: int = 7 * BLOCKS_PER_DAY
+    # The furthest ahead a campaign may start: an idle row holds one of the table's slots.
+    max_start_lead: int = 30 * BLOCKS_PER_DAY
     # NFT_HOLD targets the operator will sign for (minting DID launcher ids);
     # empty means any collection.
     nft_collections: FrozenSet[bytes] = frozenset()
@@ -76,12 +93,27 @@ class RouterRules:
         if self.min_fee_window < MIN_FEE_WINDOW:
             raise ValueError(f"min_fee_window cannot be under the protocol floor of {MIN_FEE_WINDOW} blocks")
 
+    @classmethod
+    def permissive(cls, **kw) -> "RouterRules":
+        """No amount floor, every kind, the puzzle's own claim window and start bounds: for
+        tests and probes. Never a service's rules."""
+        base = dict(min_amount={}, kinds=frozenset(Kind), min_claim_window=0, max_start_lead=10**12)
+        base.update(kw)
+        return cls(**base)
+
 
 def check_campaign(campaign: Campaign, registry: ForgeRegistry, rules: RouterRules = RouterRules(),
-                   live_for_creator: int = 0) -> None:
+                   live_for_creator: int = 0, height: Optional[int] = None) -> None:
     """`live_for_creator`: how many campaigns this creator already has live
-    in the distributor (the caller reads it from chain state)."""
+    in the distributor (the caller reads it from chain state). `height`: the chain's
+    height now, for the start bound (skipped when the caller has none)."""
     asset = campaign.reward_asset
+    if campaign.kind not in rules.kinds:
+        raise NotRoutable(f"this router does not sign for {campaign.kind.name} campaigns")
+    if campaign.claim_window < rules.min_claim_window:
+        raise NotRoutable(f"claim window is under the {rules.min_claim_window} blocks this router signs for")
+    if height is not None and campaign.start > height + rules.max_start_lead:
+        raise NotRoutable(f"start is more than {rules.max_start_lead} blocks ahead")
     if campaign.amount < rules.min_amount.get(asset, 0):
         raise NotRoutable("amount is below the minimum for this reward asset")
     if campaign.amount * BLOCKS_PER_DAY < rules.min_per_day.get(asset, 0) * campaign.length:

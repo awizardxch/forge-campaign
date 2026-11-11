@@ -142,5 +142,39 @@ class TestResyncRefusals(unittest.TestCase):
             resync(w.sim, Puzzles(Clvm()), w.launcher_id)
 
 
+@unittest.skipUnless(HAVE_CHAIN, "chia-wallet-sdk or compiled puzzles missing")
+class TestResyncReadsAtomsAsTheLeafDoes(unittest.TestCase):
+    """Audit 2026-11-10, CE-02. A leaf's `insert == 0` is true only for the empty atom, so a
+    holder's own first claim with `insert` encoded as any other atom (0x00 included) takes the
+    insert branch on chain. Resync must take the same branch, or one such claim stops every
+    boot of the service."""
+
+    def world(self):
+        w = SimWorld(delegate_fee=0)
+        w.advance_to(w.h + 3)
+        alice, bob = w.keys.ph("alice"), w.keys.ph("bob")
+        src = FixtureSource(lp_assets={POOL: LP}, events={LP: [HolderEvent(0, alice, 3), HolderEvent(0, bob, 1)]})
+        start = w.h + HEIGHT_WINDOW + 2
+        c = w.campaign("creator", 1_000_000, start, start + 40, Kind.LP_HOLD, POOL, claim_window=WINDOW)
+        w.create(c, "creator")
+        w.advance_to(start + 21)
+        _, r = run_epoch(EngineState(w.launcher_id, height=start), [c], src, start + 20)
+        w.post(r)
+        w.advance_to(w.h + HEIGHT_WINDOW + w.cfg.dispute_blocks)
+        return w, c, r, alice
+
+    def test_a_first_claim_with_an_odd_insert_atom_still_replays(self):
+        for insert in (b"\x00", b"\x02", b"\x00\x01"):
+            with self.subTest(insert=insert.hex()):
+                w, c, r, alice = self.world()
+                call = w.claim_call(r, c.id, alice)
+                call.action.solution[5] = insert
+                before = w.balance(alice)
+                w.push([call])
+                self.assertGreater(w.balance(alice), before)  # the chain took the insert branch and paid
+                got = resync(w.sim, Puzzles(Clvm()), w.launcher_id)
+                self.assertEqual(got.distributor.snapshot(), w.d.snapshot())
+
+
 if __name__ == "__main__":
     unittest.main()

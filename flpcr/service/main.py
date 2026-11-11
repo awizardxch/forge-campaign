@@ -13,7 +13,10 @@ Environment (the host's service variables):
                          intake quotes but refuses to create.
     FLPCR_ROUTER_RULES   JSON RouterRules (the owner's values): {"min_amount": {asset hex: mojos},
                          "min_per_day": {asset hex: mojos}, "max_live_per_creator": n,
-                         "nft_collections": [DID hex, ...]}. Unset: RouterRules() defaults.
+                         "nft_collections": [DID hex, ...], "kinds": ["LP_HOLD", ...],
+                         "min_claim_window": blocks, "max_start_lead": blocks}. A key left out
+                         keeps its RouterRules() default: LP_HOLD only, 0.1 XCH or more, a claim
+                         window of 7 days or more, a start within 30 days.
     FLPCR_LEASE_SECONDS  how long a create quote holds the singleton (default 120)
     FLPCR_EVERY          blocks between roots while campaigns run (default 180, ~1 h)
     FLPCR_LOOP_SECONDS   seconds between operator checks (default 60)
@@ -91,9 +94,22 @@ def rules_from_env(text: str) -> RouterRules:
         return RouterRules()
     raw = json.loads(text)
     per_asset = lambda m: {bytes.fromhex(k.removeprefix("0x")): int(v) for k, v in (m or {}).items()}  # noqa: E731
-    return RouterRules(min_amount=per_asset(raw.get("min_amount")), min_per_day=per_asset(raw.get("min_per_day")),
-                       max_live_per_creator=int(raw.get("max_live_per_creator", 4)),
-                       nft_collections=frozenset(bytes.fromhex(x.removeprefix("0x")) for x in raw.get("nft_collections") or []))
+    given = {}  # only what the owner set; everything else keeps its default
+    if "min_amount" in raw:
+        given["min_amount"] = per_asset(raw["min_amount"])
+    if "min_per_day" in raw:
+        given["min_per_day"] = per_asset(raw["min_per_day"])
+    if "max_live_per_creator" in raw:
+        given["max_live_per_creator"] = int(raw["max_live_per_creator"])
+    if "nft_collections" in raw:
+        given["nft_collections"] = frozenset(bytes.fromhex(x.removeprefix("0x")) for x in raw["nft_collections"] or [])
+    if "kinds" in raw:
+        given["kinds"] = frozenset(Kind[str(k).upper()] for k in raw["kinds"])
+    if "min_claim_window" in raw:
+        given["min_claim_window"] = int(raw["min_claim_window"])
+    if "max_start_lead" in raw:
+        given["max_start_lead"] = int(raw["max_start_lead"])
+    return RouterRules(**given)
 
 
 def main() -> int:

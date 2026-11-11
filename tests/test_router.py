@@ -12,30 +12,33 @@ WUSDC, SPACEBUCKS, UNLISTED = b"\x01" * 32, b"\x02" * 32, b"\x03" * 32
 REGISTRY = ForgeRegistry.from_pools({POOL: [XCH, WUSDC, SPACEBUCKS]})
 
 
+OPEN = RouterRules.permissive()  # these tests are about the registry and the named rules
+
+
 def campaign(reward, kind, target):
     return Campaign(DIST, CREATOR, reward, 1000, 100, 200, kind, target)
 
 
 class TestRouter(unittest.TestCase):
     def test_registry_assets_and_xch_are_routable(self):
-        check_campaign(campaign(WUSDC, Kind.LP_HOLD, POOL), REGISTRY)
-        check_campaign(campaign(XCH, Kind.CAT_HOLD, SPACEBUCKS), REGISTRY)
-        check_campaign(campaign(XCH, Kind.LP_HOLD, POOL), ForgeRegistry.from_pools({POOL: [WUSDC]}))
+        check_campaign(campaign(WUSDC, Kind.LP_HOLD, POOL), REGISTRY, OPEN)
+        check_campaign(campaign(XCH, Kind.CAT_HOLD, SPACEBUCKS), REGISTRY, OPEN)
+        check_campaign(campaign(XCH, Kind.LP_HOLD, POOL), ForgeRegistry.from_pools({POOL: [WUSDC]}), OPEN)
 
     def test_unlisted_reward_refused(self):
         with self.assertRaises(NotRoutable):
-            check_campaign(campaign(UNLISTED, Kind.LP_HOLD, POOL), REGISTRY)
+            check_campaign(campaign(UNLISTED, Kind.LP_HOLD, POOL), REGISTRY, OPEN)
 
     def test_unregistered_pool_refused(self):
         with self.assertRaises(NotRoutable):
-            check_campaign(campaign(WUSDC, Kind.LP_HOLD, b"\xb1" * 32), REGISTRY)
+            check_campaign(campaign(WUSDC, Kind.LP_HOLD, b"\xb1" * 32), REGISTRY, OPEN)
 
     def test_unlisted_cat_target_refused(self):
         with self.assertRaises(NotRoutable):
-            check_campaign(campaign(WUSDC, Kind.CAT_HOLD, UNLISTED), REGISTRY)
+            check_campaign(campaign(WUSDC, Kind.CAT_HOLD, UNLISTED), REGISTRY, OPEN)
 
     def test_rules_floor_and_creator_cap(self):
-        rules = RouterRules(min_amount={XCH: 1000}, min_per_day={XCH: 4608 * 10}, max_live_per_creator=2)
+        rules = RouterRules.permissive(min_amount={XCH: 1000}, min_per_day={XCH: 4608 * 10}, max_live_per_creator=2)
         check_campaign(campaign(XCH, Kind.LP_HOLD, POOL), REGISTRY, rules)  # 1000 over 100 blocks
         small = Campaign(DIST, CREATOR, XCH, 999, 100, 200, Kind.LP_HOLD, POOL)
         with self.assertRaises(NotRoutable):
@@ -58,12 +61,12 @@ class TestFeeWindowFloor(unittest.TestCase):
                         Params(time_bps=5000, fees_bps=5000, fee_window=window))
 
     def test_production_router_wants_a_day(self):
-        check_campaign(self.lp(BLOCKS_PER_DAY), REGISTRY)
+        check_campaign(self.lp(BLOCKS_PER_DAY), REGISTRY, OPEN)
         with self.assertRaises(NotRoutable):
-            check_campaign(self.lp(BLOCKS_PER_DAY - 1), REGISTRY)
+            check_campaign(self.lp(BLOCKS_PER_DAY - 1), REGISTRY, OPEN)
 
     def test_a_testnet_router_may_go_down_to_the_protocol_floor(self):
-        testnet = RouterRules(min_fee_window=MIN_FEE_WINDOW)
+        testnet = RouterRules.permissive(min_fee_window=MIN_FEE_WINDOW)
         check_campaign(self.lp(MIN_FEE_WINDOW), REGISTRY, testnet)
         with self.assertRaises(ValueError):
             RouterRules(min_fee_window=MIN_FEE_WINDOW - 1)

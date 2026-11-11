@@ -174,8 +174,10 @@ class TestForeignSpends(ServiceTest):
         svc = self.posted_root_one()
         w.rotate("engine2")
         svc.lease.take("q", svc.d.coin.coin_id())
+        svc.lease.pin("q")  # a pushed create: the intake's own spend, which it applies itself
         self.assertFalse(svc.follow())
         svc.lease.release("q")
+        svc.lease.take("other", svc.d.coin.coin_id())  # an open quote does not stop the check (CS-01)
         self.assertTrue(svc.follow())
 
     def test_a_create_by_another_builder_is_followed(self):

@@ -17,10 +17,22 @@ A request is everything one claimant brings:
   "k" + leaf in mode 16 from the claimed address and pay the fee. A lock's executed proposal
   is exactly such a bundle.
 
-Everything is checked before a request is queued: the key hashes to the address, the
-signatures verify, the messages are there, the coins are unspent, and the fee covers the
-request's share of the bundle's cost. A bad request is refused on its own; it never sinks a
-batch.
+Everything the service can check is checked before a request is queued: the key hashes to
+the address, the signatures verify, the messages are there, the coins are unspent and not
+already paying for another queued request, and the fee covers the request's share of the
+bundle's cost.
+
+That is not everything the chain checks. A request's own spends may be any puzzle (a lock's
+proposal is), so they can still carry a condition the chain refuses, or their coin can be
+spent elsewhere after intake. Such a request must not sink the batch it rides in (audit
+2026-11-10, CS-02: it did, on every retry, until a restart):
+
+* before a batch is built, a request whose coin has since been spent is refused;
+* when the chain refuses a batch of several requests, each of them becomes a *suspect* and
+  is next pushed alone, one per batch; requests that arrive later are batched together as
+  before;
+* a suspect the chain refuses alone `SOLO_TRIES` times is refused for good, with the
+  chain's reason.
 
 `run_batch` leaves the singleton alone while the create intake's lease is held, and calls
 `CampaignService.follow()` before it builds, so a batch is never built on a generation someone
@@ -46,6 +58,7 @@ from .http import puzzle_hash_of
 
 FEE_PER_CLAIM = 600_000_000  # 15 x the ~40M cost of a first claim: clear of the 5 mojo/cost floor
 MAX_REQUEST_CLAIMS = 32
+SOLO_TRIES = 2  # a suspect refused alone this many times is refused for good
 
 
 @dataclass
@@ -59,6 +72,8 @@ class Pending:
     detail: Optional[str] = None
     height: Optional[int] = None
     at: float = field(default_factory=time.time)
+    suspect: bool = False  # it rode in a batch the chain refused: pushed alone from now on
+    solo_refusals: int = 0
 
 
 def _bundle(clvm: Clvm, body: Optional[dict]):
@@ -143,16 +158,28 @@ class ClaimSequencer:
                 raise ValueError("the spend bundle's signature does not verify")
             if not req_pks and spends and not bundle_sig.is_infinity():
                 raise ValueError("the spend bundle carries a signature its spends do not ask for")
-        for s in spends:
-            state = svc.chain.reader.coin_state(s.coin.coin_id())
+        ids = [s.coin.coin_id() for s in spends]
+        if len(set(ids)) != len(ids):
+            raise ValueError("a coin is spent twice in one request")
+        with self.lock:
+            taken = {s.coin.coin_id() for p in self.queue.values() if p.status == "queued" for s in p.spends}
+        for cid in ids:
+            if cid in taken:  # one coin, one request: two would be a double spend in their batch
+                raise ValueError(f"coin {cid.hex()[:12]}… already pays for another queued request")
+            state = svc.chain.reader.coin_state(cid)
             if state is None or state.spent_height is not None:
-                raise ValueError(f"coin {s.coin.coin_id().hex()[:12]}… is not an unspent coin on chain")
+                raise ValueError(f"coin {cid.hex()[:12]}… is not an unspent coin on chain")
+        if any(c[0] == 51 and c[2] < 0 for c in conds):
+            raise ValueError("a spend creates a coin with a negative amount")
         fee = sum(s.coin.amount for s in spends) - sum(c[2] for c in conds if c[0] == 51)
         need = self.fee_per_claim * len(requests)
         if fee < need:
             raise ValueError(f"the bundle pays a fee of {fee:,} mojos; {len(requests)} claim(s) need {need:,}")
         pending = Pending(secrets.token_hex(8), requests, Signature.aggregate([claim_sig, bundle_sig]), spends, fee)
         with self.lock:
+            taken = {s.coin.coin_id() for p in self.queue.values() if p.status == "queued" for s in p.spends}
+            if taken & set(ids):  # checked again under the lock: two submits may race
+                raise ValueError("a coin of this request already pays for another queued request")
             self.queue[pending.id] = pending
         return {"request": pending.id, "status": pending.status, "claims": len(requests), "fee": fee}
 
@@ -199,7 +226,14 @@ class ClaimSequencer:
             svc.follow()  # another builder may have moved the singleton: build on the chain's state
             d = svc.d
             h = svc.chain.peak()
-            take = list(queued)
+            for p in queued:  # a coin spent since intake would fail the whole bundle
+                gone = next((s.coin.coin_id() for s in p.spends if svc.chain.spent(s.coin.coin_id())), None)
+                if gone is not None:
+                    p.status, p.detail = "refused", f"coin {gone.hex()[:12]}… was spent after the request was queued"
+            queued = [p for p in queued if p.status == "queued"]
+            fresh = [p for p in queued if not p.suspect]
+            # Suspects go alone, oldest first, so the chain's verdict names one request.
+            take = fresh if fresh else sorted((p for p in queued if p.suspect), key=lambda p: p.at)[:1]
             while take:
                 batch = d.sequence(h, [c for p in take for c in p.claims])
                 placed = set((c.campaign_id, c.puzzle_hash) for c in batch.placed)
@@ -219,11 +253,25 @@ class ClaimSequencer:
             successor = Coin(last.spends[0].coin.coin_id(), d.full_puzzle(last.new_state).tree_hash(), 1)
             try:
                 svc.chain.push(spends, signature)
-                at = svc._wait(successor.coin_id(), wait, poll)
-            except (PushRefused, RuntimeError) as e:
-                for p in take:
-                    p.detail = f"push failed, will retry: {e}"
+            except PushRefused as e:
+                if len(take) == 1 and take[0].suspect:
+                    p = take[0]
+                    p.solo_refusals += 1
+                    if p.solo_refusals >= SOLO_TRIES:
+                        p.status, p.detail = "refused", f"the chain refuses this request on its own: {e}"
+                    else:
+                        p.detail = f"refused alone, one more try: {e}"
+                else:
+                    for p in take:  # one of them may be the cause: each goes alone from here
+                        p.suspect, p.detail = True, f"its batch was refused; it will be pushed alone: {e}"
                 svc.boot()  # the distributor may have moved under us; rebuild from chain
+                return {"pushed": False, "error": str(e)}
+            try:
+                at = svc._wait(successor.coin_id(), wait, poll)
+            except RuntimeError as e:
+                for p in take:
+                    p.detail = f"pushed but not confirmed, will retry: {e}"
+                svc.boot()
                 return {"pushed": False, "error": str(e)}
             with svc.lock:
                 d.apply_batch(batch)

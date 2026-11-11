@@ -30,6 +30,8 @@ A quote that can no longer be honoured (lapsed lease, moved singleton) answers 4
 from __future__ import annotations
 
 import json
+import threading
+import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
@@ -47,9 +49,38 @@ def puzzle_hash_of(text: str) -> bytes:
     return raw
 
 
-def make_handler(service, sequencer=None, intake=None, watcher=None):
+class PostLimit:
+    """At most `per_minute` POSTs a minute from one client (audit 2026-11-10, CS-01, CS-09).
+    Every POST costs the service real work (a resync check and a fee estimate for a quote,
+    CLVM runs for a bundle), and none needs a key. The client is the last address in
+    X-Forwarded-For, which the proxy in front (Caddy) sets to the real peer; without the
+    header, the socket's peer."""
+
+    def __init__(self, per_minute: int = 30, clock=time.time):
+        self.per_minute, self.clock = per_minute, clock
+        self.hits: dict = {}
+        self.lock = threading.Lock()
+
+    def allow(self, client: str) -> bool:
+        now = self.clock()
+        with self.lock:
+            if len(self.hits) > 10_000:  # forget idle clients
+                self.hits = {k: v for k, v in self.hits.items() if v and now - v[-1] < 60}
+            recent = [t for t in self.hits.get(client, []) if now - t < 60]
+            if len(recent) >= self.per_minute:
+                self.hits[client] = recent
+                return False
+            recent.append(now)
+            self.hits[client] = recent
+            return True
+
+
+def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit: Optional[PostLimit] = None):
+    post_limit = post_limit or PostLimit()
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "flpcr-service/1.0"
+        timeout = 60  # a socket that sends nothing does not hold a thread forever (CS-09)
 
         def log_message(self, *a):  # quiet; the service logs what matters
             pass
@@ -119,7 +150,13 @@ def make_handler(service, sequencer=None, intake=None, watcher=None):
         def do_POST(self):
             path = self.path.split("?", 1)[0].rstrip("/")
             try:
+                forwarded = (self.headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
+                if not post_limit.allow(forwarded or self.client_address[0]):
+                    return self.send_json(429, {"success": False, "error": "too many requests; retry in a minute",
+                                                "retry_after": 60})
                 length = int(self.headers.get("Content-Length") or 0)
+                if length < 0:
+                    raise ValueError("Content-Length must not be negative")
                 if length > 1_000_000:
                     return self.send_json(413, {"success": False, "error": "request too large"})
                 body = json.loads(self.rfile.read(length) or b"{}")
@@ -150,5 +187,6 @@ def make_handler(service, sequencer=None, intake=None, watcher=None):
     return Handler
 
 
-def serve(service, port: int, sequencer=None, intake=None, watcher=None) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer(("0.0.0.0", port), make_handler(service, sequencer, intake, watcher))
+def serve(service, port: int, sequencer=None, intake=None, watcher=None,
+          post_limit: Optional[PostLimit] = None) -> ThreadingHTTPServer:
+    return ThreadingHTTPServer(("0.0.0.0", port), make_handler(service, sequencer, intake, watcher, post_limit))

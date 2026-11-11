@@ -200,6 +200,7 @@ class CampaignService:
         self.lease = SingletonLease()  # held by a create the intake has quoted (flpcr.service.lease)
         self.manifests_dir = pathlib.Path(manifests_dir) if manifests_dir else None  # <hash>.json per posted root
         self.registry = registry  # flpcr.registry.Registry for this network, or None
+        self._holder_index: Dict[int, tuple] = {}  # id(root) -> (root, holder -> its leaves)
 
     # --- boot -------------------------------------------------------------------------
 
@@ -261,13 +262,14 @@ class CampaignService:
 
         The service's own spends advance the driver as they confirm, so a spent coin here is
         a foreign spend (a dispute, veto, resolve, rotation, a create or post by another
-        builder). Skipped while a lease is held: the leased create is the intake's own spend,
-        and the intake applies it (or boots) when it settles."""
+        builder). Skipped while a create is pinned (pushed, waiting to confirm): that is the
+        intake's own spend, and the intake applies it (or boots) when it settles. An open quote
+        does not stop it: quotes are free, and the state must follow the chain (CS-01)."""
         with self.write_lock:
             if self.s is None:
                 self.boot()
                 return True
-            if self.lease.busy() or not self.chain.spent(self.d.coin.coin_id()):
+            if self.lease.pinned() or not self.chain.spent(self.d.coin.coin_id()):
                 return False
             before = self.d.coin.coin_id()
             self.boot()
@@ -298,8 +300,9 @@ class CampaignService:
     # --- reads --------------------------------------------------------------------------
 
     def status(self) -> dict:
+        h = self.chain.peak()  # a node call: never under `lock` (audit 2026-11-10, CS-03)
         with self.lock:
-            d, h = self.d, self.chain.peak()
+            d = self.d
             st = d.chain_state
             camps = []
             for c in st.campaigns:
@@ -341,13 +344,18 @@ class CampaignService:
                 "listed": mine.status if mine else None,
                 "distributors": reg.to_json()["distributors"] if reg else []}
 
-    def claimable(self, puzzle_hash: bytes) -> dict:
+    def claimable(self, puzzle_hash: bytes, h: Optional[int] = None) -> dict:
         """The holder's leaves in the claimable root: what each pays now, and the message a
-        key signature (AGG_SIG_UNSAFE) or a coin's mode-16 message ("k" + it) must carry."""
+        key signature (AGG_SIG_UNSAFE) or a coin's mode-16 message ("k" + it) must carry.
+
+        `h` is the chain's peak; read here, before the lock, when the caller has not read it.
+        The node call is never made under `lock`: one slow answer would stall every read and
+        every state swap behind it (audit 2026-11-10, CS-03)."""
+        if h is None:
+            h = self.chain.peak()
         with self.lock:
             d = self.d
             st = d.chain_state
-            h = self.chain.peak()
             active = st.pending if st.pending and h >= st.pending.activates_at and st.dispute is None else st.active
             if active is None:
                 return {"root_id": None, "claims": [], "pending": self._pending_for(puzzle_hash, None, None)}
@@ -356,9 +364,7 @@ class CampaignService:
                 return {"root_id": active.root_id, "claims": [], "pending": [],
                         "note": self.s.mismatch or "no proofs for this root"}
             out = []
-            for cl in root.claims:
-                if cl.puzzle_hash != puzzle_hash:
-                    continue
+            for cl in self._leaves_of(root, puzzle_hash):
                 slot = d.claims.get(d.claim_key(cl.campaign_id, puzzle_hash))
                 claimed = slot.claimed if slot else 0
                 owed = cl.cumulative - claimed
@@ -377,13 +383,27 @@ class CampaignService:
         if len(puzzle_hashes) > self.MAX_CLAIMABLE_BATCH:
             raise ValueError(f"at most {self.MAX_CLAIMABLE_BATCH} addresses per request")
         holders, root_id = [], None
+        h = self.chain.peak()  # once for the whole request, and outside the lock (CS-03)
         with self.lock:
             for ph in dict.fromkeys(puzzle_hashes):  # once each, in order
-                one = self.claimable(ph)
+                one = self.claimable(ph, h)
                 root_id = one.get("root_id", root_id)
                 if any(c["claimable"] > 0 for c in one["claims"]) or one.get("pending"):
                     holders.append({"puzzle_hash": ph.hex(), **{k: v for k, v in one.items() if k != "root_id"}})
         return {"root_id": root_id, "holders": holders}
+
+    def _leaves_of(self, root: Root, puzzle_hash: bytes) -> list:
+        """A root's leaves for one holder, from an index built once per root: a whole-wallet
+        lookup is then one dictionary read per address, not a scan of every leaf (CS-03)."""
+        index = self._holder_index.get(id(root))
+        if index is None or index[0] is not root:
+            by_holder: Dict[bytes, list] = {}
+            for cl in root.claims:
+                by_holder.setdefault(cl.puzzle_hash, []).append(cl)
+            if len(self._holder_index) > 8:  # only the claimable and pending roots are ever read
+                self._holder_index.clear()
+            index = self._holder_index[id(root)] = (root, by_holder)
+        return index[1].get(puzzle_hash, [])
 
     def _pending_for(self, puzzle_hash: bytes, effective, effective_root: Optional[Root]) -> list:
         """What the holder has in a posted root that is not claimable yet (in its dispute
@@ -395,9 +415,7 @@ class CampaignService:
         if root is None:
             return []
         out = []
-        for cl in root.claims:
-            if cl.puzzle_hash != puzzle_hash:
-                continue
+        for cl in self._leaves_of(root, puzzle_hash):
             before = effective_root.claim_for(cl.campaign_id, puzzle_hash) if effective_root else None
             slot = self.d.claims.get(self.d.claim_key(cl.campaign_id, puzzle_hash))
             base = max(before.cumulative if before else 0, slot.claimed if slot else 0)
@@ -410,8 +428,8 @@ class CampaignService:
     def campaign(self, campaign_id: bytes) -> Optional[dict]:
         """One campaign's page: its status row, its terms, what the schedule has released, and
         its total in every root the service rebuilt. None if the chain does not list it."""
+        st = self.status()  # reads the node's peak: before the lock (CS-03)
         with self.lock:
-            st = self.status()
             row = next((x for x in st["campaigns"] if x["id"] == campaign_id.hex()), None)
             if row is None:
                 return None

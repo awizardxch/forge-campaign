@@ -3,7 +3,8 @@
 A create needs two parties on chain (CLAUDE.md, FLPCR-07): our router's coin sends
 "c" + id and the creator's own coin sends "k" + id, both mode 23 to the singleton's
 *current* coin. The creator's spend therefore names one generation, and the intake
-holds that generation for it (`flpcr.service.lease`). No puzzle change.
+asks the service's other writers to wait for it, for a bounded time
+(`flpcr.service.lease`). No puzzle change.
 
     quote(body)   -> the campaign id, fee, budget, daily emission, reclaim height, the
                      singleton coin to message, the exact conditions the creator's spend
@@ -26,7 +27,7 @@ Quote request (JSON):
      "kind": "LP_HOLD" | "NFT_HOLD" | "CAT_HOLD",
      "target": pool launcher id | DID ("did:chia:1..." or hex) | "col1..." | CAT asset id,
      "collection": {"did": "did:chia:1..." | hex, "id": metadata collection id}, (NFT_HOLD by col1)
-     "claim_window": blocks (optional; default 7 days, floor 3 x dispute + 32),
+     "claim_window": blocks (optional; default 7 days; the router's floor is RouterRules.min_claim_window),
      "excluded": [address, ...] (at most 16),
      "reward_asset": hex (optional; must be the distributor's),
      "nonce": int (optional)}
@@ -195,7 +196,7 @@ class CampaignIntake:
         if not cfg.min_campaign_length <= length <= cfg.max_campaign_length:
             raise ValueError(f"length must be {cfg.min_campaign_length} to {cfg.max_campaign_length} blocks")
         window = _int(body, "claim_window")
-        window = max(cfg.min_claim_window, 7 * BLOCKS_PER_DAY) if window is None else window
+        window = max(cfg.min_claim_window, self.rules.min_claim_window, 7 * BLOCKS_PER_DAY) if window is None else window
         if not cfg.min_claim_window <= window <= cfg.max_campaign_length:
             raise ValueError(f"claim_window must be {cfg.min_claim_window} to {cfg.max_campaign_length} blocks")
         excluded = body.get("excluded") or []
@@ -230,7 +231,7 @@ class CampaignIntake:
                 break
         return campaign
 
-    def check_route(self, campaign: Campaign) -> None:
+    def check_route(self, campaign: Campaign, height: Optional[int] = None) -> None:
         pools = self.pools()
         if campaign.kind == Kind.LP_HOLD:
             info = pools.get(campaign.target)
@@ -239,7 +240,7 @@ class CampaignIntake:
         registry = ForgeRegistry.from_pools({k: v.assets for k, v in pools.items() if v.protocol >= MIN_PROTOCOL})
         st = self.service.d.chain_state
         live = sum(1 for c in st.campaigns if c.creator == campaign.creator)
-        check_campaign(campaign, registry, self.rules, live)
+        check_campaign(campaign, registry, self.rules, live, height)
         if len(st.campaigns) >= self.service.d.cfg.max_campaigns:
             raise NotRoutable("the distributor is full; try again after a campaign is reclaimed")
 
@@ -254,7 +255,7 @@ class CampaignIntake:
             h = svc.chain.peak()
             campaign = self.campaign_from(body, h)
             try:
-                self.check_route(campaign)
+                self.check_route(campaign, h)
             except NotRoutable as e:
                 raise ValueError(f"not routable: {e}") from e
             self._prune()
@@ -460,6 +461,8 @@ class CampaignIntake:
             raise ValueError(f"this quote is already {q.status}")
         if self.lease.held_by(q.id) is None:
             raise Requote("the quote's lease lapsed; re-quote and sign again")
+        if self.lease.pinned():  # another create is waiting to confirm on this coin
+            raise LeaseBusy("another campaign create is being confirmed; retry shortly", 30)
         spends, sig = _bundle(Clvm(), body.get("spend_bundle"))
         if not svc.write_lock.acquire(timeout=10):
             raise LeaseBusy("the distributor is being spent; retry shortly", 20)
