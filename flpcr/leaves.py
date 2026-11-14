@@ -10,7 +10,10 @@ rest of the package.
 LEAVES = ["init", "create", "post_root", "veto", "claim", "reclaim", "rotate", "delegate", "dispute", "resolve"]
 
 # Our puzzles that are not leaves: compiled and pinned beside them.
-EXTRA = ["bond_launcher"]
+# pinned_reserve_finalizer: upstream's reserve finalizer with the reserve's parent curried
+# instead of read from the solution (audit 2026-11-11, B2 CP-06). Distributors launched
+# before it run upstream's `reserve_finalizer`, which stays compiled and pinned beside it.
+EXTRA = ["bond_launcher", "pinned_reserve_finalizer"]
 
 # Yakuhito's slot-machine at 2d37ba1, vendored verbatim under contracts/puzzles/.
 UPSTREAM = {

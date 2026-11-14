@@ -80,7 +80,7 @@ class Requote(ValueError):
 @dataclass(frozen=True)
 class PoolInfo:
     assets: FrozenSet[bytes]  # bytes(32) for XCH
-    protocol: int  # Forge's poolVersion: 17 = V16
+    protocol: int  # Forge's poolVersion: 17 = V16, 18 = V17
 
 
 def forge_pool_infos(api: str) -> Dict[bytes, PoolInfo]:
@@ -496,7 +496,7 @@ class CampaignIntake:
                                  f"{need:,} (the quote's network_fee is {q.network_fee:,})")
             fee = reserved
             signature = Signature.aggregate([sig, KeySigner.for_network([self.router_sk], svc.network).sign(router)])
-            successor = Coin(d.coin.coin_id(), d.full_puzzle(prepared.new_state).tree_hash(), 1)
+            successor = d.successor_coin(prepared)
             self.lease.pin(q.id)
             try:
                 svc.chain.push(all_spends, signature)

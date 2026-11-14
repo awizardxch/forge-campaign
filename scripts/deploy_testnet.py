@@ -56,11 +56,12 @@ from flpcr.live_source import LiveLpSource  # noqa: E402
 from flpcr.chain.nfts import ChainNftSource, Combined, collection_id  # noqa: E402
 from flpcr.chain.node_reader import NodeReader  # noqa: E402
 from flpcr.chain.auth import ByAdmin, ByDelegate, ByMessage, BySignature  # noqa: E402
-from flpcr.chain.driver import HEIGHT_WINDOW, ClaimRequest, Distributor, LeafCall, Prepared, Puzzles  # noqa: E402
+from flpcr.chain.driver import FINALIZER_UPSTREAM, HEIGHT_WINDOW, ClaimRequest, Distributor, LeafCall, Prepared, Puzzles  # noqa: E402
 from flpcr.chain.values import to_program  # noqa: E402
 from flpcr.distributor import Config  # noqa: E402
 from flpcr.manifest import manifest_hash, publish_manifest, state_from_json, state_to_json  # noqa: E402
 from flpcr.networks import addresses  # noqa: E402
+from flpcr.fees import bundle_fee_from_node  # noqa: E402
 
 NETWORK = os.environ.get("FLPCR_NETWORK", "testnet11").strip() or "testnet11"
 if NETWORK != "testnet11":
@@ -351,7 +352,7 @@ def push_calls(wallet: Wallet, d: Distributor, calls: Sequence[LeafCall], label:
         alone = wallet_spends[-1]
         verdict = rpc("push_tx", {"spend_bundle": bundle_json([alone], wallet.sign([alone]))})
         print(f"{label}: probe, funding spend alone: {json.dumps({k: verdict.get(k) for k in ('success', 'status', 'error')})}", flush=True)
-    successor = Coin(d.coin.coin_id(), d.full_puzzle(prepared.new_state).tree_hash(), 1)
+    successor = d.successor_coin(prepared)
     result = push_and_wait(wallet, prepared.spends, wallet_spends, successor.coin_id(), label,
                            extra_signature=claim_signature)
     d.apply(prepared)
@@ -383,7 +384,10 @@ def distributor_from(state: dict, puzzles: Puzzles) -> Distributor:
     if "launcher_id" not in state:
         raise SystemExit("no distributor launched yet: run `launch`")
     launcher_id = bytes.fromhex(state["launcher_id"])
-    d = Distributor(puzzles, config_from(state, launcher_id), bytes.fromhex(state["engine_ph"]))
+    # Records written before the pinned reserve finalizer (audit B2 CP-06) carry no "finalizer":
+    # those distributors run upstream's.
+    d = Distributor(puzzles, config_from(state, launcher_id), bytes.fromhex(state["engine_ph"]),
+                    finalizer=state.get("finalizer", FINALIZER_UPSTREAM))
     d.restore(state["driver"])
     # The rebuilt puzzle must be the coin's: a Config field missing from the
     # record curries a different distributor, and the node answers WRONG_PUZZLE_HASH.
@@ -538,23 +542,23 @@ def cmd_launch(args, wallet: Wallet, state: dict, puzzles: Puzzles) -> None:
     conditions.append([51, wallet.phs[0], funding.amount - 1 - FEE, [wallet.phs[0]]])
     conditions.append([52, FEE])
     funding_spend = wallet.spend(funding, conditions)
-    launcher = d.launcher_spend(funding)
     wallet_spends = [funding_spend]
     if d.is_cat:
         # A coin of the reward CAT creates the empty reserve in its own ring and keeps its value.
+        # Named before the launcher spend: the eve's pinned finalizer is curried with its parent.
         seed = wallet.cat_coin(reward_asset, 1, "seed")
         owner = seed.info.p2_puzzle_hash
         c = wallet.clvm
         c.spend_cats([wallet.cat_spend(seed, [[51, d.reserve_ph, 0, [d.reserve_ph]], [51, owner, seed.coin.amount, [owner]]])])
         wallet_spends += c.coin_spends()
-        d.reserve_cat = seed.child(d.reserve_ph, 0)
-        d.reserve_coin = d.reserve_cat.coin
+        d.seed_reserve(seed)
+    launcher = d.launcher_spend(funding)
     kind = f"CAT {reward_asset.hex()[:12]}" if d.is_cat else "XCH"
     print(f"launching {kind} distributor {launcher_id.hex()} from {funding.coin_id().hex()[:12]}")
     result = push_and_wait(wallet, [launcher], wallet_spends, d.coin.coin_id(), "launch")
     state.clear()
     state.update({
-        "network": NETWORK, "launcher_id": launcher_id.hex(), "engine_ph": engine_ph.hex(),
+        "network": NETWORK, "launcher_id": launcher_id.hex(), "engine_ph": engine_ph.hex(), "finalizer": d.finalizer_kind,
         "service_keys": {"router": router_ph != wallet.ph("router"), "operator": engine_ph != wallet.ph("operator")},
         "wallet": wallet.name,
         "roles": {role: {"index": i, "puzzle_hash": wallet.ph(role).hex(), "address": wallet.address(wallet.ph(role))}
@@ -739,13 +743,18 @@ def cmd_claim_all(args, wallet: Wallet, state: dict, puzzles: Puzzles) -> None:
     before = {r.puzzle_hash: sum(x.amount for x in unspent_at([r.puzzle_hash])) for r in batch.placed}
     signature = wallet.sign_claims(batch.signatures)
     last = batch.generations[-1]
-    successor = Coin(last.spends[0].coin.coin_id(), d.full_puzzle(last.new_state).tree_hash(), 1)
+    successor = d.successor_coin(last)
     # A nonzero fee under 5 mojos per unit of cost is refused (INVALID_FEE_TOO_CLOSE_TO_ZERO), and a
     # bundle of several claims costs far more than one action: size the fee from the bundle. The
     # signatures (~1.2M each) and the fee coin's own spend (~30M) sit outside batch.cost.
     cost = batch.cost + 1_200_000 * len(batch.signatures) + 30_000_000
-    fee = max(FEE, 10 * cost)
-    print(f"{label}: cost ~{cost:,}, fee {fee:,} mojos ({fee / cost:.1f}/cost)")
+    # The router's rule (Forge PR 307, flpcr.fees): 0 while the mempool has room, the 5 mojos/cost
+    # floor (+10%) only when it is full. The fee coin's spend stays either way: it is the
+    # claimant's own coin spend in the bundle (FLPCR-07, off-puzzle).
+    chain = rpc("get_blockchain_state", {})["blockchain_state"]
+    fee = bundle_fee_from_node(cost, chain)
+    print(f"{label}: cost ~{cost:,}, mempool {chain.get('mempool_cost', 0) / 1e9:.1f}B of "
+          f"{(chain.get('mempool_max_total_cost') or 0) / 1e9:.0f}B, fee {fee:,} mojos ({fee / cost:.2f}/cost)")
     result = push_and_wait(wallet, batch.spends, [wallet.fee_spend(fee)], successor.coin_id(), label,
                            extra_signature=signature)
     d.apply_batch(batch)
@@ -858,7 +867,7 @@ def cmd_resolve(args, wallet: Wallet, state: dict, puzzles: Puzzles) -> None:
     label = f"resolve dispute: {'upheld, refund' if args.upheld else 'rejected, forfeit'}"
     prepared = d.prepare([call])
     wallet_spends = [wallet.send(m.sender, m.message, d.coin.coin_id(), fee=FEE) for m in prepared.messages]
-    successor = Coin(d.coin.coin_id(), d.full_puzzle(prepared.new_state).tree_hash(), 1)
+    successor = d.successor_coin(prepared)
     result = push_and_wait(wallet, prepared.spends, wallet_spends, successor.coin_id(), label)
     d.apply(prepared)
     if args.upheld:
@@ -922,6 +931,7 @@ def cmd_resync(args, wallet, state: dict, puzzles: Puzzles) -> None:
     state.setdefault("network", NETWORK)
     state["launcher_id"] = launcher.removeprefix("0x")
     state["engine_ph"] = state.get("engine_ph") or d.chain_state.engine_ph.hex()
+    state["finalizer"] = d.finalizer_kind
     config = state.setdefault("config", {})
     for name in ("reward_asset", "dev_fee_ph", "admin_ph", "guardian_ph", "router_ph"):
         config[name] = getattr(cfg, name).hex()

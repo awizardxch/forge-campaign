@@ -514,7 +514,7 @@ class CampaignService:
             if fee > MIN_FEE:  # rebuild the operator's spend with the fee the bundle's cost needs
                 own = self._message_spends(prepared, d.coin.coin_id(), fee)
                 spends = list(prepared.spends) + own
-            successor = Coin(d.coin.coin_id(), d.full_puzzle(prepared.new_state).tree_hash(), 1)
+            successor = d.successor_coin(prepared)
             self.chain.push(spends, self.signer.sign(own))
             self._wait(successor.coin_id(), wait, poll)  # `write_lock` only: reads go on meanwhile
             entry = {"step": "post_root", "root_id": root.root_id, "start": root.start, "end": root.end,

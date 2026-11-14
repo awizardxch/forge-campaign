@@ -170,7 +170,8 @@ class TestReader(unittest.TestCase):
 
 
 class TestProtocolScope(unittest.TestCase):
-    """Only Forge V16 (protocol 17) pools are read."""
+    """Forge V16 (protocol 17), V17 (protocol 18) and V18 (protocol 19) pools are read; V17's and
+    V18's own cases are in tests/test_v17_pools.py."""
 
     def test_the_lp_asset_proves_the_protocol(self):
         for pool in POOLS.values():
@@ -183,8 +184,12 @@ class TestProtocolScope(unittest.TestCase):
             with self.assertRaisesRegex(UnsupportedPool, "only Forge V16"):
                 check_protocol(XCH_POOL, lp, old)
         with self.assertRaisesRegex(UnsupportedPool, "no fee reader is pinned"):
-            check_protocol(XCH_POOL, lp, 18)
-        with self.assertRaisesRegex(UnsupportedPool, "not the V16 LP TAIL"):
+            check_protocol(XCH_POOL, lp, 20)   # V18 (19) is pinned since 2026-11-14; the next is not
+        with self.assertRaisesRegex(UnsupportedPool, "not the V18 LP TAIL"):
+            check_protocol(XCH_POOL, lp, 19)   # a V16 pool's LP, declared V18
+        with self.assertRaisesRegex(UnsupportedPool, "not the V17 LP TAIL"):
+            check_protocol(XCH_POOL, lp, 18)  # a V16 pool's LP, declared V17
+        with self.assertRaisesRegex(UnsupportedPool, "not any supported revision's LP TAIL"):
             check_protocol(XCH_POOL, b"\x42" * 32)  # a V15 pool's LP, whatever the responder says
 
     def test_responder_versions_are_read(self):

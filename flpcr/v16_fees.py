@@ -1,4 +1,11 @@
-"""Fee events of a Forge V16 pool (protocol 17), read from the pool's own spends.
+"""Fee events of a Forge V16 (protocol 17), V17 (protocol 18) or V18 (protocol 19) pool, read from the pool's own spends.
+
+V17 (2026-11-13): a V17 pool is the same shape, on the same action layer, with eight leaves
+(V16's six plus `rebase` and `refund`, the rCAT leaves) and its own LP TAIL; its swap leaf takes
+the same solution and the curve's `exact_swap_output` is unchanged, so its fees read the same
+way. An rCAT reserve is an amount in state like any other. Each revision's pins are in
+`REVISIONS`; a spend is read by the revision its leaves belong to. The module keeps its V16 name
+because the engine's cache and the fixtures name it.
 
 A V16 pool is a singleton whose inner puzzle is the slot-machine action layer
 curried with the pool's whole state (`ACTION_LAYER.curry(finalizer,
@@ -29,13 +36,19 @@ ever compared with each other, inside one pool (SPEC section 6.3), so one pool's
 fixed numeraire gives the same shares XCH would at a constant rate, without
 reading a second pool's price.
 
-Protocol scope: only V16 (protocol 17) is read. The leaf, action layer and LP
+Protocol scope: V16 (protocol 17), V17 (protocol 18) and V18 (protocol 19; pinned from Forge contracts/v18/compiled at `FORGE_V18_COMMIT`). The leaf, action layer and LP
 TAIL hashes below are pinned from awizardxch/forge-puzzles at
 `FORGE_PUZZLES_COMMIT` (`contracts/v16/compiled/*.rue.hash`); the parse is a
 minimal reimplementation of `forge_v16_resync.replay_spend`'s selector walk, so
 the engine needs no chia-blockchain and no forge-puzzles checkout at run time.
 A pool whose LP asset is not the V16 TAIL curried with its launcher id and
-protocol 17 is refused (`UnsupportedPool`); no V15 or V14 pool is read.
+protocol 17 is refused (`UnsupportedPool`); no V15 or V14 pool is read. The V17 pins are read
+from awizardxch/Forge `projects/chia-cfmm/contracts/v17/compiled/*.rue.hash` at `FORGE_V17_COMMIT`
+(V17 is not in forge-puzzles yet), and a V17 pool's LP asset must be the V17 TAIL curried with
+(launcher id, 18).
+
+Selectors are RUN on the revealed leaves, as the action layer runs them (audit 2026-11-11 CE-13,
+FP-07): the puzzle enforces no selector form, so `(q . leaf)` is a valid spend.
 
 `PoolFeeWalk` follows one pool's singleton from its launcher, spend by spend,
 through any `Rpc` (a full node or coinset.org; tests use recorded spends). It is
@@ -72,6 +85,79 @@ LEAF_MOD_HASHES = {
     "forge_action_dao_fee": bytes.fromhex("55784b2239f2eb04631c580e1c9a1b12f5a2895ba34f2d3156740fcda196cd86"),
 }
 LEAF_NAMES = {h: name for name, h in LEAF_MOD_HASHES.items()}
+
+# awizardxch/Forge (private), projects/chia-cfmm/contracts/v17/compiled/<name>.rue.hash at this commit.
+FORGE_V17_COMMIT = "350d023498df3edab4635aa381743435fd344ce9"
+PROTOCOL_V17 = 18
+V17_LP_TAIL_MOD_HASH = bytes.fromhex("a98d5affa08310efedd0ac9eef702dadbf1119805719b722996edc7e9e36ed79")
+V17_LEAF_MOD_HASHES = {
+    "forge_action_swap": bytes.fromhex("31f7e3d18635f2757fda518a0f5b1e542d0e39edd77faa8e543df6a8e11d1181"),
+    "forge_action_add": bytes.fromhex("46de1efcb499e0b4cafce23301de87531e85b88dcc9befac8e8140988b8f0131"),
+    "forge_action_remove": bytes.fromhex("741250464a11df9336bb89eca5112b0803b4a79a5393969cae4a171e974ef164"),
+    "forge_action_observe": bytes.fromhex("1a0813f06f4d34a947bf2b816fea73c8ebdc9f41afab8364589ea52c74fb095f"),
+    "forge_action_collect": bytes.fromhex("19be84b32d07cd79e742fb41e3674c9efd4bb42620dfe5ff44994a8f080793a4"),
+    "forge_action_dao_fee": bytes.fromhex("12b0e026b8146dc681f15e61ea4e25a4ff74043b120d555bb63186b20b4ec7ef"),
+    "forge_action_rebase": bytes.fromhex("939facab91a53ce17b2d09d1234918f4d77db0c532120b2c316562263139a8e9"),
+    "forge_action_refund": bytes.fromhex("4993423b5cec080efc24e418168fb6832401a83fead9d289b17f8d4514ba6313"),
+}
+
+
+# awizardxch/Forge (private), projects/chia-cfmm/contracts/v18/compiled/<name>.rue.hash at this commit.
+# V18 (protocol 19) = V17 + one `register` rule (FP-R05b). Its LP TAIL is a new build, and the
+# add/remove/rebase/refund leaves recompile with it (they curry the TAIL), so they are pinned again;
+# swap, observe, collect and dao_fee are V17's own hashes. The LP custody puzzles (mint, melt) are
+# unchanged, so the LP crawl reads V18 LP as it reads V16's and V17's.
+FORGE_V18_COMMIT = "57cab8339649a2e425c34346ffcf5b8d31406e37"
+PROTOCOL_V18 = 19
+V18_LP_TAIL_MOD_HASH = bytes.fromhex("de05823e03ae186b7431f0618621884a72be5997723c7134919acaea39142c8f")
+V18_LEAF_MOD_HASHES = {
+    "forge_action_swap": bytes.fromhex("31f7e3d18635f2757fda518a0f5b1e542d0e39edd77faa8e543df6a8e11d1181"),
+    "forge_action_add": bytes.fromhex("44bbab0c480fbb00bd7e1e6fd4fb08399ffa2df5846c9ebae84fa6aad7581dfa"),
+    "forge_action_remove": bytes.fromhex("ea4787013cb0f795f37398f10b3cb83391eaeb2292a5ee2276cf2d0eb5929a6f"),
+    "forge_action_observe": bytes.fromhex("1a0813f06f4d34a947bf2b816fea73c8ebdc9f41afab8364589ea52c74fb095f"),
+    "forge_action_collect": bytes.fromhex("19be84b32d07cd79e742fb41e3674c9efd4bb42620dfe5ff44994a8f080793a4"),
+    "forge_action_dao_fee": bytes.fromhex("12b0e026b8146dc681f15e61ea4e25a4ff74043b120d555bb63186b20b4ec7ef"),
+    "forge_action_rebase": bytes.fromhex("2479dfab10ef6f2b209f9a133c2a9f98256507ac91ce9d23f0888c19fccfff09"),
+    "forge_action_refund": bytes.fromhex("a80974593d68104932b72370571ff1ba0a432db096936f4b47c7e958bbb152ea"),
+}
+
+
+@dataclass(frozen=True)
+class Revision:
+    name: str
+    protocol: int
+    lp_tail_mod_hash: bytes
+    leaves: Dict[str, bytes]
+    source: str
+
+
+# Adding a revision is one entry here. A revision that keeps the previous one's pool leaves and
+# LP TAIL mod (V18 = V17 + a registry rule) reuses its dicts: the LP asset (TAIL curried with the
+# protocol number) is what tells the two apart, and a leaf hash may belong to several revisions.
+REVISIONS: Dict[int, Revision] = {
+    PROTOCOL_V16: Revision("V16", PROTOCOL_V16, LP_TAIL_MOD_HASH, LEAF_MOD_HASHES,
+                           f"forge-puzzles {FORGE_PUZZLES_COMMIT[:7]}"),
+    PROTOCOL_V17: Revision("V17", PROTOCOL_V17, V17_LP_TAIL_MOD_HASH, V17_LEAF_MOD_HASHES,
+                           f"Forge {FORGE_V17_COMMIT[:7]}"),
+    PROTOCOL_V18: Revision("V18", PROTOCOL_V18, V18_LP_TAIL_MOD_HASH, V18_LEAF_MOD_HASHES,
+                           f"Forge {FORGE_V18_COMMIT[:7]}"),
+}
+MIN_PROTOCOL, MAX_PROTOCOL = min(REVISIONS), max(REVISIONS)
+
+
+def leaf_index(revisions: Dict[int, Revision]) -> Dict[bytes, Tuple[frozenset, str]]:
+    """leaf mod hash -> (the protocols whose pools run it, leaf name)."""
+    out: Dict[bytes, Tuple[frozenset, str]] = {}
+    for rev in revisions.values():
+        for name, h in rev.leaves.items():
+            seen, _ = out.get(h, (frozenset(), name))
+            out[h] = (seen | {rev.protocol}, name)
+    return out
+
+
+LEAVES_BY_HASH = leaf_index(REVISIONS)
+# What a walk's cache was read under: a cache read under other pins starts over.
+PINS_ID = "+".join(f"{p}:{r.source}" for p, r in sorted(REVISIONS.items()))
 WEIGHT_SCALE = 10_000  # forge_curve.rue
 SINGLE_LEAF_SELECTOR = 2  # the first puzzle in `puzzles` is path 2, then 5, 11, ...
 
@@ -81,33 +167,51 @@ class FeeReadError(Exception):
 
 
 class UnsupportedPool(FeeReadError):
-    """A pool this reader does not serve: anything but Forge V16 (protocol 17)."""
+    """A pool this reader does not serve: anything but Forge V16 (protocol 17) or V17 (protocol 18)."""
 
 
 def _hex(value: str) -> bytes:
     return bytes.fromhex(value.removeprefix("0x"))
 
 
+def lp_asset_id(launcher_id: bytes, protocol: int, clvm: Optional[Clvm] = None) -> bytes:
+    """The LP asset id a pool of this revision with this launcher has: the revision's LP TAIL
+    curried with (launcher id, protocol)."""
+    clvm = clvm or Clvm()
+    rev = REVISIONS[protocol]
+    return curry_tree_hash(rev.lp_tail_mod_hash, [clvm.alloc(launcher_id).tree_hash(), clvm.alloc(protocol).tree_hash()])
+
+
 def v16_lp_asset_id(launcher_id: bytes, clvm: Optional[Clvm] = None) -> bytes:
     """The LP asset id a V16 pool with this launcher has: the V16 LP TAIL
     curried with (launcher id, 17)."""
-    clvm = clvm or Clvm()
-    return curry_tree_hash(LP_TAIL_MOD_HASH, [clvm.alloc(launcher_id).tree_hash(), clvm.alloc(PROTOCOL_V16).tree_hash()])
+    return lp_asset_id(launcher_id, PROTOCOL_V16, clvm)
 
 
-def check_protocol(launcher_id: bytes, lp_asset_id: bytes, declared: Optional[int] = None) -> None:
-    """Refuse a pool that is not V16. `declared` is what the Forge responder
-    says (`poolVersion`); the LP asset id is checked against the chain's own
-    derivation whatever it says."""
-    if declared is not None and declared < PROTOCOL_V16:
+def v17_lp_asset_id(launcher_id: bytes, clvm: Optional[Clvm] = None) -> bytes:
+    """The LP asset id a V17 pool with this launcher has: the V17 LP TAIL curried with (launcher id, 18)."""
+    return lp_asset_id(launcher_id, PROTOCOL_V17, clvm)
+
+
+def check_protocol(launcher_id: bytes, lp_asset_id_: bytes, declared: Optional[int] = None) -> int:
+    """The pool's protocol, or `UnsupportedPool` for anything but V16 or V17. `declared` is what
+    the Forge responder says (`poolVersion`); the LP asset id is checked against the chain's own
+    derivation for that revision whatever it says (and, with nothing declared, against each)."""
+    if declared is not None and declared < MIN_PROTOCOL:
         raise UnsupportedPool(f"pool {launcher_id.hex()[:12]} is protocol {declared}: only Forge V16 (protocol 17) "
                               "and newer pools are supported")
-    if declared is not None and declared > PROTOCOL_V16:
+    if declared is not None and declared > MAX_PROTOCOL:
         raise UnsupportedPool(f"pool {launcher_id.hex()[:12]} is protocol {declared}: no fee reader is pinned for it yet "
-                              f"(this one reads protocol {PROTOCOL_V16}, forge-puzzles {FORGE_PUZZLES_COMMIT[:7]})")
-    if v16_lp_asset_id(launcher_id) != lp_asset_id:
-        raise UnsupportedPool(f"pool {launcher_id.hex()[:12]}: LP asset {lp_asset_id.hex()[:12]} is not the V16 LP TAIL "
-                              "for this launcher, so it is not a Forge V16 (protocol 17) pool")
+                              f"(this one reads protocols {MIN_PROTOCOL}-{MAX_PROTOCOL})")
+    candidates = [declared] if declared is not None else sorted(REVISIONS)
+    for protocol in candidates:
+        if lp_asset_id(launcher_id, protocol) == lp_asset_id_:
+            return protocol
+    rev = REVISIONS[declared] if declared is not None else None
+    what = f"the {rev.name} LP TAIL" if rev else "any supported revision's LP TAIL"
+    which = f"a Forge {rev.name} (protocol {rev.protocol})" if rev else "a Forge V16 or V17"
+    raise UnsupportedPool(f"pool {launcher_id.hex()[:12]}: LP asset {lp_asset_id_.hex()[:12]} is not {what} "
+                          f"for this launcher, so it is not {which} pool")
 
 
 def lp_fee(gross_input: int, fee_bps: int) -> int:
@@ -146,9 +250,9 @@ def _ints(p) -> List[int]:
 
 
 def parse_pool_spend(launcher_id: bytes, puzzle_reveal: bytes, solution: bytes, height: int,
-                     clvm: Optional[Clvm] = None) -> Tuple[List[str], List[Swap]]:
-    """The leaves one spend of a V16 pool coin ran, in execution order, and a
-    `Swap` for each swap among them."""
+                     clvm: Optional[Clvm] = None, protocol: Optional[int] = None) -> Tuple[List[str], List[Swap]]:
+    """The leaves one spend of a V16 or V17 pool coin ran, in execution order, and a `Swap` for
+    each swap among them. `protocol`, when known, must be the revision the leaves belong to."""
     clvm = clvm or Clvm()
     reveal = clvm.deserialize(puzzle_reveal)
     top = reveal.uncurry()
@@ -159,32 +263,38 @@ def parse_pool_spend(launcher_id: bytes, puzzle_reveal: bytes, solution: bytes, 
         raise FeeReadError(f"the coin is another singleton's, not pool {launcher_id.hex()[:12]}'s")
     layer = inner.uncurry()
     if layer is None or layer.program.tree_hash() != ACTION_LAYER_HASH:
-        raise UnsupportedPool(f"pool {launcher_id.hex()[:12]} is not on the V16 action layer")
+        raise UnsupportedPool(f"pool {launcher_id.hex()[:12]} is not on the V16/V17 action layer")
     _finalizer, _root, state = layer.args
     reserves = _ints(state.first())
 
     inner_solution = clvm.deserialize(solution).to_list()[2]
     puzzles, selectors, solutions = inner_solution.to_list()[:3]
-    puzzle_list = puzzles.to_list()
-    selector_list = [entry.first().to_int() for entry in selectors.to_list()][::-1]
+    selector_list = [entry.first() for entry in selectors.to_list()][::-1]
     solution_list = solutions.to_list()
     if len(selector_list) != len(solution_list):
         raise FeeReadError("a pool spend has a selector count its solutions do not match")
 
-    def leaf_for(selector: int):
-        index, value = 0, SINGLE_LEAF_SELECTOR
-        while value != selector:
-            value, index = value * 2 + 1, index + 1
-            if index >= len(puzzle_list):
-                raise FeeReadError("a pool spend names a leaf selector it does not reveal")
-        return puzzle_list[index]
+    def leaf_for(selector):
+        # The action layer runs `selector(...puzzles)`: a path atom is that path, and any other
+        # program (`(q . leaf)`) is just as valid on chain (CE-13 / FP-07). Run it the same way.
+        try:
+            return selector.run(puzzles, 11_000_000_000, False).value
+        except Exception as exc:  # noqa: BLE001 -- the action layer could not have run it either
+            raise FeeReadError("a pool spend names a leaf selector that does not run on its revealed leaves") from exc
 
     names, swaps = [], []
+    # The protocols every leaf so far belongs to; the spend must fit one of them (and `protocol`).
+    candidates = frozenset(REVISIONS) if protocol is None else frozenset({protocol})
     for selector, leaf_solution in zip(selector_list, solution_list):
         leaf = leaf_for(selector).uncurry()
-        name = LEAF_NAMES.get(leaf.program.tree_hash()) if leaf is not None else None
-        if name is None:
-            raise UnsupportedPool(f"pool {launcher_id.hex()[:12]} ran a leaf that is not a V16 leaf")
+        found = LEAVES_BY_HASH.get(leaf.program.tree_hash()) if leaf is not None else None
+        if found is None:
+            raise UnsupportedPool(f"pool {launcher_id.hex()[:12]} ran a leaf of no supported revision")
+        leaf_protocols, name = found
+        if not candidates & leaf_protocols:
+            raise UnsupportedPool(f"pool {launcher_id.hex()[:12]} ran a protocol {'/'.join(map(str, sorted(leaf_protocols)))} "
+                                  f"leaf, not protocol {'/'.join(map(str, sorted(candidates)))}")
+        candidates &= leaf_protocols
         names.append(name)
         if name != "forge_action_swap":
             continue
@@ -203,6 +313,7 @@ class PoolFeeWalk:
     """One V16 pool's swaps, from its launcher to the last spend read."""
 
     launcher_id: bytes
+    protocol: Optional[int] = None  # V16 (17) or V17 (18); None reads whichever the leaves are
     tip: Optional[bytes] = None  # the last pool coin found; unspent when last read
     tip_created: int = 0
     swaps: List[Swap] = field(default_factory=list)
@@ -232,7 +343,7 @@ class PoolFeeWalk:
             reveal = _hex(out["puzzle_reveal"])
             if clvm.deserialize(reveal).tree_hash() != _hex(record["coin"]["puzzle_hash"]):
                 raise FeeReadError(f"the reveal of pool coin {self.tip.hex()[:12]} does not hash to its puzzle hash")
-            _, swaps = parse_pool_spend(self.launcher_id, reveal, _hex(out["solution"]), height, clvm)
+            _, swaps = parse_pool_spend(self.launcher_id, reveal, _hex(out["solution"]), height, clvm, self.protocol)
             self.swaps.extend(swaps)
             self.spends += 1
             read += 1
@@ -261,12 +372,14 @@ class PoolFeeWalk:
     def to_json(self) -> dict:
         return {"launcher_id": self.launcher_id.hex(), "tip": self.tip.hex() if self.tip else None,
                 "tip_created": self.tip_created, "spends": self.spends, "swaps": [s.to_json() for s in self.swaps],
-                "forge_puzzles": FORGE_PUZZLES_COMMIT}
+                "forge_puzzles": FORGE_PUZZLES_COMMIT, "pins": PINS_ID, "protocol": self.protocol}
 
     @classmethod
     def from_json(cls, data: dict) -> "PoolFeeWalk":
-        if data.get("forge_puzzles") != FORGE_PUZZLES_COMMIT:
-            # Read under other pins: start over rather than mix two readers' weights.
-            return cls(bytes.fromhex(data["launcher_id"]))
-        return cls(bytes.fromhex(data["launcher_id"]), bytes.fromhex(data["tip"]) if data.get("tip") else None,
+        protocol = data.get("protocol")
+        if data.get("forge_puzzles") != FORGE_PUZZLES_COMMIT or data.get("pins", PINS_ID) != PINS_ID:
+            # Read under other pins: start over rather than mix two readers' weights. A walk
+            # cached before V17 (no "pins") was read under the same V16 pins, so it stands.
+            return cls(bytes.fromhex(data["launcher_id"]), protocol)
+        return cls(bytes.fromhex(data["launcher_id"]), protocol, bytes.fromhex(data["tip"]) if data.get("tip") else None,
                    data.get("tip_created", 0), [Swap.from_json(x) for x in data.get("swaps", [])], data.get("spends", 0))

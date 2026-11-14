@@ -14,9 +14,10 @@ what is new.
 
 Fee events come from each target pool's own spends (`v16_fees.PoolFeeWalk`):
 one per `swap`, weighted by the LP fee it paid valued at the pool's pre-spend
-spot price, exact. Only Forge V16 (protocol 17) pools are served: a pool the
-responder lists at another protocol, or whose LP asset is not the V16 LP TAIL for
-its launcher, is refused with `UnsupportedPool`. NFT events, links and
+spot price, exact. Forge V16 (protocol 17) and V17 (protocol 18) pools are served: a
+pool the responder lists at another protocol, or whose LP asset is not that revision's
+LP TAIL for its launcher, is refused with `UnsupportedPool`. A V17 pool's LP is a plain
+CAT minted through the same custody puzzles as V16's, so the LP crawl is unchanged. NFT events, links and
 forwarders are not served here (NFTs come from `chain.nfts.Combined`).
 """
 
@@ -105,8 +106,10 @@ class LiveLpSource:
     def refresh_fees(self, pools) -> None:
         """Bring the fee walk of each pool up to the chain's tip, then save the cache."""
         for pool in pools:
-            self.lp_asset(pool)  # refuses anything but a V16 pool
-            walk = self.fee_walks.setdefault(pool, PoolFeeWalk(pool))
+            protocol = self.protocol(pool)  # refuses anything but a V16 or V17 pool
+            walk = self.fee_walks.setdefault(pool, PoolFeeWalk(pool, protocol))
+            if walk.protocol is None:
+                walk.protocol = protocol
             walk.update(self.rpc)
             self._walked.add(pool)
         self.save_cache()
@@ -114,12 +117,15 @@ class LiveLpSource:
     # --- Source ---------------------------------------------------------------------------
 
     def lp_asset(self, pool_launcher: bytes) -> bytes:
-        """The pool's LP asset; refuses (`UnsupportedPool`) a pool that is not Forge V16."""
+        """The pool's LP asset; refuses (`UnsupportedPool`) a pool that is not Forge V16 or V17."""
+        self.protocol(pool_launcher)
+        return self.lp_assets[pool_launcher]
+
+    def protocol(self, pool_launcher: bytes) -> int:
+        """The pool's protocol (17 = V16, 18 = V17), proved by its LP asset; refuses any other."""
         if pool_launcher not in self.lp_assets:
             raise KeyError(f"pool {pool_launcher.hex()[:12]} is not a Forge pool the responder lists")
-        lp = self.lp_assets[pool_launcher]
-        check_protocol(pool_launcher, lp, self.versions.get(pool_launcher))
-        return lp
+        return check_protocol(pool_launcher, self.lp_assets[pool_launcher], self.versions.get(pool_launcher))
 
     def holder_events(self, asset_id: bytes, before: int) -> List[HolderEvent]:
         if asset_id not in self.crawls:

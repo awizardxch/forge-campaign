@@ -26,6 +26,7 @@ fn check_totals(
         let total = totals.first.rest;
         let campaign = get_campaign(campaigns, id);
         assert id > last_id;
+        assert total == total + 0;  // CP-08: a stored total has one spelling
         assert total >= total_for(previous, id);
         assert total <= emittable(campaign, end);
         check_totals(campaigns, previous, totals.rest, end, id)
@@ -76,6 +77,11 @@ fn main(
     assert state.pending is nil;
     assert start < end;
     assert end <= h;
+    // CP-08 (audit 2026-11-11): the root's stored fields are canonical, as the operator's message
+    // names them; this no longer relies on the operator alone.
+    assert start == start + 0;
+    assert end == end + 0;
+    assert root.length == 32;
 
     let previous: List<(Bytes32, Int)> = if state.active is nil {
         assert root_id == 1;

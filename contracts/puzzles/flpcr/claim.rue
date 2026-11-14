@@ -55,6 +55,9 @@ fn main(
     let (pinned, conditions) = prologue(truth, h);
     let state = pinned.state;
     assert puzzle_hash.length == 32;
+    // CE-02 (audit 2026-11-10): `insert` is compared as an atom below, so only the two canonical
+    // spellings are accepted (0x00 used to take the insert branch).
+    assert (insert == 0) | (insert == 1);
     assert !(state.active is nil);
     let campaign = get_campaign(state.campaigns, campaign_id);
     assert puzzle_hash != BURN_PUZZLE_HASH;

@@ -144,10 +144,11 @@ class TestResyncRefusals(unittest.TestCase):
 
 @unittest.skipUnless(HAVE_CHAIN, "chia-wallet-sdk or compiled puzzles missing")
 class TestResyncReadsAtomsAsTheLeafDoes(unittest.TestCase):
-    """Audit 2026-11-10, CE-02. A leaf's `insert == 0` is true only for the empty atom, so a
-    holder's own first claim with `insert` encoded as any other atom (0x00 included) takes the
-    insert branch on chain. Resync must take the same branch, or one such claim stops every
-    boot of the service."""
+    """Audit 2026-11-10, CE-02. A leaf's `insert == 0` is true only for the empty atom. Up to the
+    2026-11-13 re-pin a holder's own first claim with `insert` encoded as any other atom (0x00
+    included) took the insert branch on chain, and resync branches on the raw atom the same way
+    (it still must, for distributors on those leaves). The re-pinned `claim` accepts only 0 and 1
+    (tests/test_b2_fixes.py), so here: an odd atom is refused, and the canonical claim replays."""
 
     def world(self):
         w = SimWorld(delegate_fee=0)
@@ -163,17 +164,19 @@ class TestResyncReadsAtomsAsTheLeafDoes(unittest.TestCase):
         w.advance_to(w.h + HEIGHT_WINDOW + w.cfg.dispute_blocks)
         return w, c, r, alice
 
-    def test_a_first_claim_with_an_odd_insert_atom_still_replays(self):
+    def test_an_odd_insert_atom_is_refused_and_the_canonical_claim_replays(self):
+        w, c, r, alice = self.world()
         for insert in (b"\x00", b"\x02", b"\x00\x01"):
             with self.subTest(insert=insert.hex()):
-                w, c, r, alice = self.world()
                 call = w.claim_call(r, c.id, alice)
                 call.action.solution[5] = insert
-                before = w.balance(alice)
-                w.push([call])
-                self.assertGreater(w.balance(alice), before)  # the chain took the insert branch and paid
-                got = resync(w.sim, Puzzles(Clvm()), w.launcher_id)
-                self.assertEqual(got.distributor.snapshot(), w.d.snapshot())
+                with self.assertRaises(ValueError):
+                    w.push([call])
+        before = w.balance(alice)
+        w.push([w.claim_call(r, c.id, alice)])
+        self.assertGreater(w.balance(alice), before)
+        got = resync(w.sim, Puzzles(Clvm()), w.launcher_id)
+        self.assertEqual(got.distributor.snapshot(), w.d.snapshot())
 
 
 if __name__ == "__main__":
