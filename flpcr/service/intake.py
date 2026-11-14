@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import threading
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -75,6 +76,15 @@ H_MARGIN = 6
 
 class Requote(ValueError):
     """The quote can no longer be honoured: its lease lapsed or the singleton moved."""
+
+
+class Moved(Requote):
+    """This distributor takes no new campaigns: `distributor` is the reward asset's canonical one
+    (flpcr.build_pin: the first launch to confirm). Quote there instead."""
+
+    def __init__(self, message: str, distributor: bytes):
+        super().__init__(message)
+        self.distributor = distributor
 
 
 @dataclass(frozen=True)
@@ -143,6 +153,30 @@ class Quote:
     network_fee: int = 0  # what the creator's spends must RESERVE_FEE, estimated at quote time
 
 
+class RouterCoins:
+    """Which router coins carry a pushed create that has not confirmed yet. One router coin serves
+    every create, but a coin can sit in only one bundle per block: two creates in one block (two
+    distributors, or a launch beside a create) each need their own coin. Shared by every intake
+    of a fleet; the host keeps as many router coins as creates it wants in one block."""
+
+    def __init__(self):
+        self.busy: set = set()
+        self.lock = threading.Lock()
+
+    def take(self, coins: List[Coin]) -> Coin:
+        with self.lock:
+            for coin in coins:
+                if coin.coin_id() not in self.busy:
+                    self.busy.add(coin.coin_id())
+                    return coin
+        raise LeaseBusy("every router coin is carrying a create waiting to confirm; retry shortly", 20)
+
+    def release(self, coin: Optional[Coin]) -> None:
+        if coin is not None:
+            with self.lock:
+                self.busy.discard(coin.coin_id())
+
+
 def _hex(v) -> bytes:
     return bytes.fromhex(str(v).strip().removeprefix("0x"))
 
@@ -170,8 +204,13 @@ def _int(body: dict, key: str, default=None) -> Optional[int]:
 class CampaignIntake:
     def __init__(self, service, pools: Callable[[], Dict[bytes, PoolInfo]], rules: RouterRules = RouterRules(),
                  router_sk: Optional[SecretKey] = None, lease_seconds: float = LEASE_SECONDS,
-                 cat_policies: Optional[Callable[[], Dict[bytes, CatPolicy]]] = None):
+                 cat_policies: Optional[Callable[[], Dict[bytes, CatPolicy]]] = None,
+                 gate: Optional[Callable[[], Optional[bytes]]] = None, router_coins: Optional[RouterCoins] = None):
         self.service = service
+        self.router_coins = router_coins or RouterCoins()
+        # The fleet's word on whether this distributor takes new campaigns: None when it does, else
+        # the launcher id of the reward asset's canonical distributor (flpcr.service.fleet).
+        self.gate = gate
         self.pools = pools
         self.rules = rules
         # The Forge router's word on each CAT reward (forge_cat_policies, cached by the caller).
@@ -184,6 +223,11 @@ class CampaignIntake:
     @property
     def lease(self) -> SingletonLease:
         return self.service.lease
+
+    def check_gate(self) -> None:
+        other = self.gate() if self.gate is not None else None
+        if other is not None:
+            raise Moved(f"this distributor takes no new campaigns; its reward asset's distributor is {other.hex()}", other)
 
     # --- quote ----------------------------------------------------------------------------
 
@@ -278,10 +322,11 @@ class CampaignIntake:
         except Exception:  # noqa: BLE001 -- an unreadable router is a refusal, never a free pass
             return None
 
-    def terms(self) -> dict:
-        """What this router signs for in the distributor's reward asset (GET /api/v1/router-rules):
-        the create dialog shows the same floor the quote enforces."""
-        asset = self.service.d.cfg.reward_asset
+    def terms(self, asset: Optional[bytes] = None) -> dict:
+        """What this router signs for in the distributor's reward asset (GET /api/v1/router-rules),
+        or in `asset` for a distributor not launched yet (GET /api/v1/launch/terms/<asset>): the
+        create dialog shows the same floor the quote enforces."""
+        asset = self.service.d.cfg.reward_asset if asset is None else asset
         out = {"reward_asset": asset.hex(), "kinds": sorted(k.name for k in self.rules.kinds),
                "min_claim_window": self.rules.min_claim_window, "max_start_lead": self.rules.max_start_lead,
                "max_live_per_creator": self.rules.max_live_per_creator,
@@ -303,6 +348,7 @@ class CampaignIntake:
         svc = self.service
         if svc.s is None:
             raise ValueError("booting: resyncing from chain")
+        self.check_gate()
         if not svc.write_lock.acquire(timeout=10):
             raise LeaseBusy("the distributor is being spent; retry shortly", 20)
         try:
@@ -516,6 +562,7 @@ class CampaignIntake:
             raise ValueError("this host does not hold the router key: it quotes, but cannot create")
         if svc.d.cfg.router_ph != self.router_ph:
             raise ValueError("the router key on this host is not this distributor's router")
+        self.check_gate()
         q = self.quotes.get(str(body.get("quote") or ""))
         if q is None:
             raise Requote("unknown or expired quote; re-quote")
@@ -550,32 +597,39 @@ class CampaignIntake:
                            key=lambda x: x.amount)
             if not coins:
                 raise ValueError("the router address holds no coin; the host must send it one (any amount: it is recreated whole)")
-            router = self._router_spend(coins[0], q.coin_id, c.id)
+            router_coin = self.router_coins.take(coins)
+            router = self._router_spend(router_coin, q.coin_id, c.id)
             all_spends = list(prepared.spends) + xch + router
             need = max(MIN_FEE, FEE_PER_COST * d.spend_cost(all_spends))
-            if reserved < need:
-                raise ValueError(f"the creator's spends reserve {reserved:,} mojos for the network fee; this create needs "
-                                 f"{need:,} (the quote's network_fee is {q.network_fee:,})")
             fee = reserved
-            signature = Signature.aggregate([sig, self.sign_router(router)])
-            successor = d.successor_coin(prepared)
-            self.lease.pin(q.id)
             try:
-                svc.chain.push(all_spends, signature)
-            except PushRefused as e:
-                self.lease.release(q.id)
-                q.status, q.detail = "failed", str(e)
-                raise ValueError(f"the chain refused the create: {e}") from e
+                if reserved < need:
+                    raise ValueError(f"the creator's spends reserve {reserved:,} mojos for the network fee; this create needs "
+                                     f"{need:,} (the quote's network_fee is {q.network_fee:,})")
+                signature = Signature.aggregate([sig, self.sign_router(router)])
+                successor = d.successor_coin(prepared)
+                self.lease.pin(q.id)
+                try:
+                    svc.chain.push(all_spends, signature)
+                except PushRefused as e:
+                    self.lease.release(q.id)
+                    q.status, q.detail = "failed", str(e)
+                    raise ValueError(f"the chain refused the create: {e}") from e
+            except BaseException:
+                self.router_coins.release(router_coin)
+                raise
             q.status = "pushed"
         finally:
             svc.write_lock.release()
         try:
             at = svc._wait(successor.coin_id(), wait, poll)
         except RuntimeError as e:
+            self.router_coins.release(router_coin)
             q.status, q.detail = "failed", f"not confirmed: {e}"
             self.lease.release(q.id)
             svc.boot()  # it may still land; rebuild from chain either way (boot takes its own locks)
             raise ValueError(f"the create was pushed but not confirmed: {e}") from e
+        self.router_coins.release(router_coin)
         with svc.lock:
             d.apply(prepared)
             svc.s.campaigns[c.id] = c

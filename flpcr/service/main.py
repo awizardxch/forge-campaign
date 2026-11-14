@@ -3,7 +3,14 @@
 Environment (the host's service variables):
 
     FLPCR_NETWORK        testnet11 | mainnet                          (required)
-    FLPCR_LAUNCHER       the distributor's launcher id, hex           (required)
+    FLPCR_LAUNCHER       the primary distributor's launcher id, hex   (required). Its Config and
+                         operator are the build pin (flpcr.build_pin) every other distributor
+                         this service hosts must match; it must name this host's keys.
+    FLPCR_LAUNCHERS      more launcher ids to host, comma-separated (optional): each takes
+                         creates only if it passes the build pin, else reads and claims only
+    FLPCR_DISCOVER       1 (default): also host every distributor launched for this host (hinted
+                         with the build pin's hint on chain) that passes the build pin; 0: off
+    FLPCR_DISCOVER_EVERY loop passes between discovery passes (default 5)
     FLPCR_NODE_URL       full node or coinset RPC (default: coinset for the network)
     FLPCR_FORGE_API      Forge router for pool -> LP asset ids, and for each CAT reward's terms
                          (/api/campaign-assets: the operator's switch and minimum, the Forge price
@@ -58,12 +65,12 @@ from ..chain.nfts import ChainNftSource, Combined
 from ..live_source import LiveLpSource
 from ..model import Kind
 from .chain import NodeChain
-from .core import CampaignService, OperatorKey
+from .core import OperatorKey
+from .fleet import Fleet
 from .http import serve
-from .intake import CampaignIntake, cached, forge_cat_policies, forge_pool_infos
+from .intake import cached, forge_cat_policies, forge_pool_infos
 from ..registry import Registry
 from ..router import RouterRules
-from .sequencer import ClaimSequencer
 from .watcher import AlertSink, Watcher, manifest_lookup
 
 NODES = {"mainnet": "https://api.coinset.org", "testnet11": "https://testnet11.api.coinset.org"}
@@ -133,32 +140,39 @@ def main() -> int:
     chain = NodeChain(node)
     source_for = live_source_factory(network, node, api, cache)
     manifests_dir = cache / "manifests"
-    service = CampaignService(chain, bytes.fromhex(launcher), network, source_for, operator=operator, every=every,
-                              manifests_dir=manifests_dir,
-                              registry=Registry.load(network, env.get("FLPCR_REGISTRY_DIR", "").strip() or None))
-    sequencer = ClaimSequencer(service)
     router_hex = env.get("FLPCR_ROUTER_SK", "").strip().removeprefix("0x")
     router_sk = SecretKey.from_bytes(bytes.fromhex(router_hex)) if router_hex else None
-    intake = CampaignIntake(service, cached(lambda: forge_pool_infos(api)), rules_from_env(env.get("FLPCR_ROUTER_RULES", "")),
-                            router_sk=router_sk, lease_seconds=float(env.get("FLPCR_LEASE_SECONDS", "120")),
-                            cat_policies=cached(lambda: forge_cat_policies(api), 120))
+    more = [bytes.fromhex(x.strip().removeprefix("0x")) for x in env.get("FLPCR_LAUNCHERS", "").split(",")
+            if len(x.strip().removeprefix("0x")) == 64]
+    fleet = Fleet(chain, network, bytes.fromhex(launcher), source_for, operator=operator, router_sk=router_sk,
+                  rules=rules_from_env(env.get("FLPCR_ROUTER_RULES", "")), pools=cached(lambda: forge_pool_infos(api)),
+                  cat_policies=cached(lambda: forge_cat_policies(api), 120), every=every, manifests_dir=manifests_dir,
+                  registry=Registry.load(network, env.get("FLPCR_REGISTRY_DIR", "").strip() or None),
+                  configured=more, discover=env.get("FLPCR_DISCOVER", "1").strip() != "0",
+                  lease_seconds=float(env.get("FLPCR_LEASE_SECONDS", "120")))
+    discover_every = max(1, int(env.get("FLPCR_DISCOVER_EVERY", "5")))
     watcher = sink = None
     if env.get("FLPCR_WATCH", "0").strip() == "1":  # an observer: the service holds no guardian key or bond
         watcher = Watcher(chain, bytes.fromhex(launcher), source_for, network=network,
                           manifests=manifest_lookup(env.get("FLPCR_MANIFESTS", "").strip() or str(manifests_dir)))
         sink = AlertSink(env.get("FLPCR_WATCH_WEBHOOK", "").strip() or None)
-    server = serve(service, port, sequencer, intake, watcher)
+    server = serve(None, port, None, None, watcher, fleet=fleet)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    print(f"flpcr-service: {network} distributor {launcher[:12]}…, node {node}, port {port}, "
+    print(f"flpcr-service: {network} primary distributor {launcher[:12]}…, node {node}, port {port}, "
           f"operator {'set (' + operator.puzzle_hash.hex()[:12] + '…)' if operator else 'not set: reads and claims only'}, "
-          f"router key {'set' if router_sk else 'not set: quotes only'}",
+          f"router key {'set' if router_sk else 'not set: quotes only'}, discovery {'on' if fleet.discover else 'off'}",
           flush=True)
 
-    while service.s is None:  # boot: retried until the chain answers
+    while fleet.get(fleet.primary) is None:  # boot: retried until the chain answers
         try:
-            st = service.boot()
-            print(f"booted: {st.resynced.generations} generations, {len(st.campaigns)} campaigns, "
-                  f"proofs through root {max(st.roots, default=0)}" + (f"; {st.mismatch}" if st.mismatch else ""), flush=True)
+            fleet.boot()
+            for h in fleet.hosted.values():
+                st = h.service.s
+                print(f"hosting {h.launcher_id.hex()[:12]}… ({'XCH' if h.asset == bytes(32) else h.asset.hex()[:12] + '…'}): "
+                      f"{st.resynced.generations} generations, {len(st.campaigns)} campaigns"
+                      + ("" if h.build_pinned else f"; no creates ({h.why_not})"), flush=True)
+            for lid, why in fleet.rejected.items():
+                print(f"refused {lid.hex()[:12]}…: {why}", flush=True)
         except Exception:  # noqa: BLE001
             traceback.print_exc()
             time.sleep(30)
@@ -167,26 +181,11 @@ def main() -> int:
     while True:
         passes += 1
         try:
-            if service.follow():
-                st = service.s
-                print(f"resynced after another builder's spend: proofs through root {max(st.roots, default=0)}"
-                      + (f"; {st.mismatch}" if st.mismatch else ""), flush=True)
-            elif service.s.mismatch and passes % 10 == 0:  # a source may have been down: retry the rebuild
-                service.boot()
-            posted = service.operator_step()
-            if posted:
-                print(f"posted root {posted['root_id']} [{posted['start']}, {posted['end']}) fee {posted['fee']:,}", flush=True)
-            paid = sequencer.run_batch()
-            if paid:
-                print(f"claims: {paid}", flush=True)
+            fleet.step(discover=passes % discover_every == 0, log=lambda m: print(m, flush=True))
             if watcher is not None:
                 sink(watcher.check())
         except Exception:  # noqa: BLE001
             traceback.print_exc()
-            try:  # resync: the record may be behind the chain (another builder spent the distributor)
-                service.boot()
-            except Exception:  # noqa: BLE001
-                traceback.print_exc()
         time.sleep(loop_seconds)
 
 

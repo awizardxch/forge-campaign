@@ -80,6 +80,18 @@ Address links (SPEC §6.8), one log per distributor.
 
 The registry contents: per reward asset, the launcher, the config, and a summary of current state.
 
+### `GET /api/v1/fleet` (the hosted service, flpcr/service/fleet.py)
+
+Every distributor the one service hosts: `{ network, primary, build, router_ready, operator_ready,
+distributors: [{ launcher_id, reward_asset, launched_at, build_pinned, why_not, canonical, creates,
+api: "/d/<launcher>", booted, campaigns, coin }], refused: { launcher: reason } }`. `build` is the
+build pin (`flpcr.build_pin.BuildPin`: the Config template, the operator, the compiled build's
+fingerprint and the discovery hint). An index: the site checks a distributor's build on chain
+before it signs (chia-cfmm `src/lib/campaigns/build.ts`). Every `/api/v1/...` route is also served
+per distributor at `/d/<launcher>/api/v1/...` and, for an asset's canonical one, `/a/<asset>/api/v1/...`.
+A create quoted on a distributor that is not its asset's canonical one answers 409 with
+`"distributor"`: the launcher to quote on instead.
+
 ## Write (keyless: the user's wallet signs every user spend; the resolve build is server-side)
 
 ### `POST /campaigns/quote`
@@ -130,6 +142,21 @@ quote enforces: `{ reward_asset, enabled, min_amount, source, floor_usd, price_u
 min_claim_window, max_start_lead, max_live_per_creator, router_ready }`. `min_amount` is in mojos of
 the reward (1000 to a CAT token), `null` when no floor can be set; `source` is `rules` (XCH),
 `usd`, `operator` or `unavailable`.
+
+### `GET /api/v1/launch/terms/<asset>`, `POST /api/v1/launch/quote`, `POST /api/v1/launch/create`
+
+The first campaign of a CAT with no distributor launches it (flpcr/service/launch.py). The terms are
+`/router-rules`' for that asset plus `distributor` (the canonical launcher, or null). The quote takes
+the create quote's body plus `reward_asset`, `funding_coin` (an unspent XCH coin at the creator's
+address: its child is the launcher, and it sends the creator's consent) and, for a CAT, `seed_coin`
+(an unspent coin of the CAT at the creator's address: the empty reserve's parent, and part of the
+deposit). It answers the create quote's fields, with the eve singleton as the receiving coin, and a
+`launch` block (launcher id, eve coin, reserve puzzle hash and parent, hint, the launcher's
+announcement, the Config). The creator's spends must add, on the funding coin, `CREATE_COIN launcher
+1 (hint)`, `ASSERT_COIN_ANNOUNCEMENT` of the launcher, and for XCH `CREATE_COIN reserve 0`; on the
+seed coin, `CREATE_COIN reserve 0 (reserve)`. The creator pays the launcher's mojo and the whole
+bundle's network fee. Once a distributor for the asset exists, a launch quote or create answers 409
+with its launcher id; while another launch for the asset waits to confirm, 503 with `retry_after`.
 
 ### `POST /campaigns/create`
 

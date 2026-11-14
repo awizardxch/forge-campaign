@@ -29,6 +29,20 @@
 
 A quote that can no longer be honoured (lapsed lease, moved singleton) answers 409 with
 "requote": true; another create holding the distributor answers 503 with "retry_after".
+A create on a distributor that takes no new campaigns answers 409 with "distributor": the
+reward asset's canonical launcher id (flpcr.service.fleet).
+
+With a fleet (flpcr.service.fleet, one service hosting a distributor per reward asset), every
+path above is also served per distributor:
+
+    /d/<launcher id>/api/v1/...          that hosted distributor
+    /a/<asset id>/api/v1/...             the reward asset's canonical distributor
+    GET  /api/v1/fleet                   every hosted distributor, which takes creates, the build pin
+    GET  /api/v1/launch/terms/<asset>    the router's terms for an asset with no distributor yet
+    POST /api/v1/launch/quote            a first campaign that also launches its asset's distributor
+    POST /api/v1/launch/create           the creator's signed launch bundle; the router co-signs
+
+and the bare `/api/v1/...` paths answer for the primary distributor, as before.
 """
 
 from __future__ import annotations
@@ -79,8 +93,35 @@ class PostLimit:
             return True
 
 
-def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit: Optional[PostLimit] = None):
+def _hex32(text: str) -> Optional[bytes]:
+    try:
+        raw = bytes.fromhex(text.removeprefix("0x"))
+    except ValueError:
+        return None
+    return raw if len(raw) == 32 else None
+
+
+def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit: Optional[PostLimit] = None,
+                 fleet=None):
     post_limit = post_limit or PostLimit()
+    fixed = (service, sequencer, intake, watcher)
+
+    def resolve(path: str):
+        """(service, sequencer, intake, watcher, the path inside it) for a request path; None for
+        an unknown distributor. Without a fleet, the one distributor answers every path."""
+        if fleet is None:
+            return (*fixed, path)
+        parts = path.split("/")
+        if len(parts) >= 3 and parts[1] in ("d", "a"):
+            key = _hex32(parts[2])
+            h = None if key is None else fleet.get(key) if parts[1] == "d" else fleet.for_asset(key)
+            if h is None:
+                return None
+            return (h.service, h.sequencer, h.intake, h.watcher, "/" + "/".join(parts[3:]))
+        h = fleet.get(fleet.primary)
+        if h is None:
+            return (*fixed, path)
+        return (h.service, h.sequencer, h.intake, h.watcher if h.watcher is not None else watcher, path)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "flpcr-service/1.0"
@@ -111,8 +152,24 @@ def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit:
             self.end_headers()
 
         def do_GET(self):
-            path = self.path.split("?", 1)[0].rstrip("/")
+            full = self.path.split("?", 1)[0].rstrip("/")
             try:
+                if fleet is not None and full == "/api/v1/fleet":
+                    return self.send_json(200, {"success": True, **fleet.describe()})
+                if fleet is not None and full.startswith("/api/v1/launch/terms/"):
+                    asset = _hex32(full.rsplit("/", 1)[1])
+                    if asset is None:
+                        raise ValueError("an asset id is 32 bytes of hex")
+                    primary = fleet.get(fleet.primary)
+                    if primary is None:
+                        return self.send_json(503, {"success": False, "error": "booting: resyncing from chain"})
+                    best = fleet.canonical(asset)
+                    return self.send_json(200, {"success": True, **primary.intake.terms(asset),
+                                                "distributor": best.hex() if best else None})
+                found = resolve(full)
+                if found is None:
+                    return self.send_json(404, {"success": False, "error": "this service hosts no such distributor"})
+                service, sequencer, intake, watcher, path = found
                 if path == "/health":
                     if service.s is None:
                         return self.send_json(503, {"ok": False, "status": "booting"})
@@ -154,7 +211,7 @@ def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit:
                 return self.send_json(500, {"success": False, "error": f"{type(e).__name__}"})
 
         def do_POST(self):
-            path = self.path.split("?", 1)[0].rstrip("/")
+            full = self.path.split("?", 1)[0].rstrip("/")
             try:
                 forwarded = (self.headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
                 if not post_limit.allow(forwarded or self.client_address[0]):
@@ -166,6 +223,14 @@ def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit:
                 if length > 1_000_000:
                     return self.send_json(413, {"success": False, "error": "request too large"})
                 body = json.loads(self.rfile.read(length) or b"{}")
+                if fleet is not None and full == "/api/v1/launch/quote":
+                    return self.send_json(200, {"success": True, **fleet.launches.quote(body)})
+                if fleet is not None and full == "/api/v1/launch/create":
+                    return self.send_json(200, {"success": True, **fleet.launches.create(body)})
+                found = resolve(full)
+                if found is None:
+                    return self.send_json(404, {"success": False, "error": "this service hosts no such distributor"})
+                service, sequencer, intake, watcher, path = found
                 if path == "/api/v1/claims" and sequencer is not None:
                     return self.send_json(202, {"success": True, **sequencer.submit(body)})
                 if path == "/api/v1/claimable":
@@ -181,8 +246,10 @@ def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit:
                     return self.send_json(200, {"success": True, **intake.create(body)})
                 return self.send_json(404, {"success": False, "error": "not found"})
             except ValueError as e:
-                if type(e).__name__ == "Requote":
-                    return self.send_json(409, {"success": False, "error": str(e), "requote": True})
+                if type(e).__name__ in ("Requote", "Moved"):
+                    moved = getattr(e, "distributor", None)
+                    return self.send_json(409, {"success": False, "error": str(e), "requote": True,
+                                                **({"distributor": moved.hex()} if moved is not None else {})})
                 if type(e).__name__ == "LeaseBusy":
                     return self.send_json(503, {"success": False, "error": str(e), "retry_after": e.retry_after})
                 return self.send_json(400, {"success": False, "error": str(e)})
@@ -194,5 +261,5 @@ def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit:
 
 
 def serve(service, port: int, sequencer=None, intake=None, watcher=None,
-          post_limit: Optional[PostLimit] = None) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer(("0.0.0.0", port), make_handler(service, sequencer, intake, watcher, post_limit))
+          post_limit: Optional[PostLimit] = None, fleet=None) -> ThreadingHTTPServer:
+    return ThreadingHTTPServer(("0.0.0.0", port), make_handler(service, sequencer, intake, watcher, post_limit, fleet))
