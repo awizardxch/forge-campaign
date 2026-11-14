@@ -29,7 +29,7 @@ except (ImportError, FileNotFoundError):  # pragma: no cover
     HAVE_CHAIN = False
 
 from flpcr import FixtureSource, HolderEvent
-from flpcr.router import XCH, RouterRules
+from flpcr.router import XCH, CatPolicy, RouterRules
 
 POOL, OLD_POOL, LP = b"\xb0" * 32, b"\xb1" * 32, b"\x1b" * 32
 ASSET = b"\xca" * 32
@@ -428,6 +428,118 @@ class TestCatCreate(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cannot burn"):
             x.intake.create({"quote": q["quote"], "spend_bundle": x.cat_bundle(q, leave=1_000_001)})
         self.assertTrue(x.svc.lease.busy())
+
+    def test_a_ring_of_several_creator_cat_coins(self):
+        """The site's layout (forge-ui catCreatorSpends, vectors cat_creates): several of the creator's
+        CAT coins, the first returning the change, laid out as their own ring; the intake joins them
+        to the reserve's ring."""
+        x = self.x
+        q = x.intake.quote(x.request())
+        w, amount = x.w, q["fields"]["amount"]
+        clvm = Clvm()
+        msg = bytes.fromhex(q["conditions"]["message"]["message"])
+        fee = q["network_fee"]
+        coin = w.sim.new_coin(x.creator.puzzle_hash, fee + 1)
+        clvm.spend_standard_coin(coin, x.creator.pk, clvm.delegated_spend(
+            [to_program(clvm, [66, 23, msg, bytes.fromhex(q["singleton"]["coin_id"])]),
+             to_program(clvm, [51, x.creator.puzzle_hash, 1]), to_program(clvm, [52, fee])]))
+        info = CatInfo(ASSET, None, x.creator.puzzle_hash)
+        ring, cats = (400_000, 700_000), []
+        for i, held in enumerate(ring):
+            grand = clvm.atom(b"creator-cat-ring" + bytes([i])).tree_hash()
+            cat_coin = Coin(Coin(grand, info.puzzle_hash(), held).coin_id(), info.puzzle_hash(), held)
+            w.sim.insert_coin(cat_coin)
+            conds = [to_program(clvm, [51, x.creator.puzzle_hash, sum(ring) - amount, [x.creator.puzzle_hash]])] if i == 0 else []
+            cats.append(CatSpend(Cat(cat_coin, LineageProof(grand, x.creator.puzzle_hash, held), info),
+                                 clvm.standard_spend(x.creator.pk, clvm.delegated_spend(conds))))
+        clvm.spend_cats(cats)
+        spends = list(clvm.coin_spends())
+        out = x.intake.create({"quote": q["quote"], "spend_bundle": bundle_json(spends, x.sign(spends))})
+        self.assertEqual(out["status"], "created")
+        self.assertEqual(x.svc.d.reserve_coin.amount, 970_000)
+        self.assertEqual(x.w.balance(x.creator.puzzle_hash), sum(ring) - amount)
+
+    def test_cat_floor_and_switch_at_quote(self):
+        """The router's $1 floor and the operator's switch, enforced where the router co-signs."""
+        x = IntakeWorld(reward_asset=ASSET, rules=RouterRules.permissive(cat_policy_required=True))
+        policies = {}
+        x.intake.cat_policies = lambda: policies
+        with self.assertRaisesRegex(ValueError, "not routable: the Forge router's terms for this CAT could not be read"):
+            x.intake.quote(x.request())
+        policies[ASSET] = CatPolicy(price_usd=0.0005)  # $1 = 2,000 tokens = 2,000,000 mojos
+        with self.assertRaisesRegex(ValueError, "not routable: amount is below this CAT's floor of 2,000,000 mojos"):
+            x.intake.quote(x.request())
+        self.assertEqual(x.intake.terms()["min_amount"], 2_000_000)
+        self.assertEqual(x.intake.terms()["source"], "usd")
+        policies[ASSET] = CatPolicy(price_usd=0.0005, enabled=False)
+        with self.assertRaisesRegex(ValueError, "turned this CAT off"):
+            x.intake.quote(x.request())
+        self.assertFalse(x.intake.terms()["enabled"])
+        policies[ASSET] = CatPolicy(price_usd=0.0005, min_amount=1_000_000)  # the operator's minimum
+        q = x.intake.quote(x.request())
+        self.assertEqual(x.intake.terms()["source"], "operator")
+        out = x.intake.create({"quote": q["quote"], "spend_bundle": x.cat_bundle(q)})
+        self.assertEqual(out["status"], "created")
+
+    def test_an_unreadable_forge_router_refuses_a_cat(self):
+        x = IntakeWorld(reward_asset=ASSET, rules=RouterRules.permissive(cat_policy_required=True))
+
+        def down():
+            raise OSError("forge router down")
+
+        x.intake.cat_policies = down
+        with self.assertRaisesRegex(ValueError, "could not be read"):
+            x.intake.quote(x.request())
+        self.assertIsNone(x.intake.terms()["min_amount"])
+        self.assertFalse(x.intake.terms()["enabled"])
+
+    def test_forge_router_rows_become_policies(self):
+        """forge-ui GET /api/campaign-assets (api/_campaignAssets.js campaignAssetRows) as the service reads it."""
+        import http.server
+
+        from flpcr.service.intake import forge_cat_policies
+
+        rows = {"assets": [
+            {"asset_id": ASSET.hex(), "decimals": 3, "price_usd": 2.83, "enabled": True, "min_amount_override": None},
+            {"asset_id": (b"\xcb" * 32).hex(), "decimals": 3, "price_usd": None, "enabled": False, "min_amount_override": "50000"},
+            {"asset_id": XCH.hex(), "price_usd": 1.0, "enabled": True},  # XCH is never a CAT policy
+            {"asset_id": "zz", "enabled": True},
+        ]}
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                data = json.dumps(rows).encode()
+                self.send_response(200 if self.path == "/api/campaign-assets" else 404)
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *a):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            got = forge_cat_policies(f"http://127.0.0.1:{server.server_address[1]}/")
+        finally:
+            server.shutdown()
+        self.assertEqual(set(got), {ASSET, b"\xcb" * 32})
+        self.assertEqual(got[ASSET].floor, 354)
+        self.assertEqual((got[b"\xcb" * 32].enabled, got[b"\xcb" * 32].floor), (False, 50_000))
+
+    def test_router_rules_are_served(self):
+        x = IntakeWorld(reward_asset=ASSET, rules=RouterRules.permissive(cat_policy_required=True))
+        x.intake.cat_policies = lambda: {ASSET: CatPolicy(price_usd=2.0)}
+        server = serve(x.svc, 0, intake=x.intake)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/api/v1/router-rules") as r:
+                body = json.loads(r.read())
+            self.assertEqual(body["reward_asset"], ASSET.hex())
+            self.assertEqual(body["min_amount"], 500)  # $1 at $2 a token
+            self.assertTrue(body["enabled"])
+            self.assertEqual(body["floor_usd"], "1")
+        finally:
+            server.shutdown()
 
     def test_reward_cat_must_be_in_a_v16_pool(self):
         x = self.x

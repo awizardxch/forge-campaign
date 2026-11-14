@@ -59,7 +59,7 @@ from ..chain.signer import ADDITIONAL_DATA, AGG_SIG_ME, AGG_SIG_UNSAFE, MAX_COST
 from ..chain.values import to_bytes, to_int, to_list, to_program
 from ..engine import EngineState
 from ..model import BLOCKS_PER_DAY, MAX_EXCLUDED, Campaign, Kind, Params
-from ..router import XCH, ForgeRegistry, NotRoutable, RouterRules, check_campaign
+from ..router import CAT_FLOOR_USD, XCH, CatPolicy, ForgeRegistry, NotRoutable, RouterRules, check_campaign
 from .chain import PushRefused
 from .core import FEE_PER_COST, MIN_FEE
 from .http import puzzle_hash_of
@@ -98,7 +98,28 @@ def forge_pool_infos(api: str) -> Dict[bytes, PoolInfo]:
     return out
 
 
-def cached(fetch: Callable[[], Dict[bytes, PoolInfo]], seconds: float = 300) -> Callable[[], Dict[bytes, PoolInfo]]:
+def forge_cat_policies(api: str) -> Dict[bytes, CatPolicy]:
+    """CAT asset id -> CatPolicy, from a Forge responder's /api/campaign-assets: the operator's
+    switch and minimum per CAT, and its Forge price in USD (the Markets page's chained price)."""
+    req = urllib.request.Request(f"{api.rstrip('/')}/api/campaign-assets", headers={"User-Agent": "flpcr-intake/1.0"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        data = json.loads(r.read())
+    out = {}
+    for row in data.get("assets") or []:
+        try:
+            asset = bytes.fromhex(str(row.get("asset_id") or "").removeprefix("0x"))
+        except ValueError:
+            continue
+        if len(asset) != 32 or asset == XCH:
+            continue
+        override = row.get("min_amount_override")
+        out[asset] = CatPolicy(enabled=row.get("enabled") is not False,
+                               min_amount=int(override) if override is not None and str(override).isdigit() else None,
+                               price_usd=row.get("price_usd"), decimals=int(row.get("decimals") or 3))
+    return out
+
+
+def cached(fetch: Callable[[], Dict], seconds: float = 300) -> Callable[[], Dict]:
     memo = {"at": 0.0, "value": None}
 
     def get():
@@ -148,10 +169,13 @@ def _int(body: dict, key: str, default=None) -> Optional[int]:
 
 class CampaignIntake:
     def __init__(self, service, pools: Callable[[], Dict[bytes, PoolInfo]], rules: RouterRules = RouterRules(),
-                 router_sk: Optional[SecretKey] = None, lease_seconds: float = LEASE_SECONDS):
+                 router_sk: Optional[SecretKey] = None, lease_seconds: float = LEASE_SECONDS,
+                 cat_policies: Optional[Callable[[], Dict[bytes, CatPolicy]]] = None):
         self.service = service
         self.pools = pools
         self.rules = rules
+        # The Forge router's word on each CAT reward (forge_cat_policies, cached by the caller).
+        self.cat_policies = cat_policies
         self.router_sk = router_sk
         self.router_ph = standard_puzzle_hash(router_sk.public_key()) if router_sk else None
         self.lease_seconds = lease_seconds
@@ -240,9 +264,40 @@ class CampaignIntake:
         registry = ForgeRegistry.from_pools({k: v.assets for k, v in pools.items() if v.protocol >= MIN_PROTOCOL})
         st = self.service.d.chain_state
         live = sum(1 for c in st.campaigns if c.creator == campaign.creator)
-        check_campaign(campaign, registry, self.rules, live, height)
+        check_campaign(campaign, registry, self.rules, live, height, cat_policy=self.cat_policy(campaign.reward_asset))
         if len(st.campaigns) >= self.service.d.cfg.max_campaigns:
             raise NotRoutable("the distributor is full; try again after a campaign is reclaimed")
+
+    def cat_policy(self, asset: bytes) -> Optional[CatPolicy]:
+        """The Forge router's word on a CAT reward; None for XCH, or when it cannot be read (check_campaign
+        then refuses a CAT under the default rules)."""
+        if asset == XCH or self.cat_policies is None:
+            return None
+        try:
+            return self.cat_policies().get(asset)
+        except Exception:  # noqa: BLE001 -- an unreadable router is a refusal, never a free pass
+            return None
+
+    def terms(self) -> dict:
+        """What this router signs for in the distributor's reward asset (GET /api/v1/router-rules):
+        the create dialog shows the same floor the quote enforces."""
+        asset = self.service.d.cfg.reward_asset
+        out = {"reward_asset": asset.hex(), "kinds": sorted(k.name for k in self.rules.kinds),
+               "min_claim_window": self.rules.min_claim_window, "max_start_lead": self.rules.max_start_lead,
+               "max_live_per_creator": self.rules.max_live_per_creator,
+               "router_ready": self.router_sk is not None}
+        static = self.rules.min_amount.get(asset, 0)
+        if asset == XCH:
+            return {**out, "enabled": True, "min_amount": static, "source": "rules"}
+        policy = self.cat_policy(asset)
+        if policy is None:
+            needed = self.rules.cat_policy_required
+            return {**out, "enabled": not needed, "min_amount": None if needed else static, "source": "unavailable",
+                    "floor_usd": str(CAT_FLOOR_USD), "price_usd": None}
+        floor = policy.floor
+        return {**out, "enabled": policy.enabled and floor is not None,
+                "min_amount": None if floor is None else max(floor, static),
+                "source": policy.source, "floor_usd": str(CAT_FLOOR_USD), "price_usd": policy.price_usd}
 
     def quote(self, body: dict) -> dict:
         svc = self.service
@@ -444,9 +499,16 @@ class CampaignIntake:
         clvm = Clvm()
         ph = self.router_ph
         conds = [[66, MODE_CREATE, b"c" + cid, coin_id], [51, ph, coin.amount, [ph]]]
-        clvm.spend_standard_coin(coin, self.router_sk.public_key(),
+        clvm.spend_standard_coin(coin, self.router_public_key(),
                                  clvm.delegated_spend([to_program(clvm, x) for x in conds]))
         return list(clvm.coin_spends())
+
+    def router_public_key(self) -> PublicKey:
+        return self.router_sk.public_key()
+
+    def sign_router(self, router_spends: List[CoinSpend]) -> Signature:
+        """The router's signature over its own consent spend, and nothing else."""
+        return KeySigner.for_network([self.router_sk], self.service.network).sign(router_spends)
 
     def create(self, body: dict, wait: float = 1800, poll: float = 15) -> dict:
         svc = self.service
@@ -495,7 +557,7 @@ class CampaignIntake:
                 raise ValueError(f"the creator's spends reserve {reserved:,} mojos for the network fee; this create needs "
                                  f"{need:,} (the quote's network_fee is {q.network_fee:,})")
             fee = reserved
-            signature = Signature.aggregate([sig, KeySigner.for_network([self.router_sk], svc.network).sign(router)])
+            signature = Signature.aggregate([sig, self.sign_router(router)])
             successor = d.successor_coin(prepared)
             self.lease.pin(q.id)
             try:

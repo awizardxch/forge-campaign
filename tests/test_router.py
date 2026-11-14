@@ -2,7 +2,7 @@ import unittest
 
 from flpcr import Campaign, Kind, Params
 from flpcr.model import BLOCKS_PER_DAY, MIN_FEE_WINDOW
-from flpcr.router import XCH, ForgeRegistry, NotRoutable, RouterRules, check_campaign
+from flpcr.router import XCH, CatPolicy, ForgeRegistry, NotRoutable, RouterRules, check_campaign, usd_floor_mojos
 
 DIST = b"\xd1" * 32
 CREATOR = b"\xcc" * 32
@@ -72,6 +72,59 @@ class TestFeeWindowFloor(unittest.TestCase):
             RouterRules(min_fee_window=MIN_FEE_WINDOW - 1)
         with self.assertRaises(ValueError):
             self.lp(MIN_FEE_WINDOW - 1)
+
+
+class TestCatFloor(unittest.TestCase):
+    """Owner, 2026-11-11: a CAT reward's floor is the equivalent of $1 at its Forge price, set by
+    the router; the operator can turn a CAT off for campaigns or set its minimum."""
+
+    RULES = RouterRules(kinds=frozenset({Kind.LP_HOLD}), min_claim_window=0)  # the service's default CAT path
+
+    def cat(self, amount):
+        return Campaign(DIST, CREATOR, WUSDC, amount, 100, 200, Kind.LP_HOLD, POOL)
+
+    def test_usd_floor_rounds_up_in_cat_mojos(self):
+        self.assertEqual(usd_floor_mojos(1.0), 1000)  # $1 a token: one token
+        self.assertEqual(usd_floor_mojos(0.25), 4000)
+        self.assertEqual(usd_floor_mojos(3.0), 334)  # 333.33… rounds up
+        self.assertEqual(usd_floor_mojos("0.000123"), 8130082)
+        for bad in (None, 0, -1, "nan", "inf", "x", True):
+            self.assertIsNone(usd_floor_mojos(bad), bad)
+
+    def test_a_cat_reward_needs_the_routers_word(self):
+        with self.assertRaisesRegex(NotRoutable, "could not be read"):
+            check_campaign(self.cat(10**9), REGISTRY, self.RULES)
+        check_campaign(self.cat(1000), REGISTRY, self.RULES, cat_policy=CatPolicy(price_usd=1.0))
+
+    def test_amount_under_the_dollar_floor_is_refused(self):
+        policy = CatPolicy(price_usd=0.5)  # $1 = 2 tokens = 2000 mojos
+        check_campaign(self.cat(2000), REGISTRY, self.RULES, cat_policy=policy)
+        with self.assertRaisesRegex(NotRoutable, "floor of 2,000 mojos .the equivalent of \\$1"):
+            check_campaign(self.cat(1999), REGISTRY, self.RULES, cat_policy=policy)
+
+    def test_no_price_no_floor_no_campaign(self):
+        with self.assertRaisesRegex(NotRoutable, "no Forge price"):
+            check_campaign(self.cat(10**12), REGISTRY, self.RULES, cat_policy=CatPolicy(price_usd=None))
+
+    def test_operator_minimum_wins_over_the_price(self):
+        policy = CatPolicy(price_usd=0.5, min_amount=10_000)
+        with self.assertRaisesRegex(NotRoutable, "operator's minimum"):
+            check_campaign(self.cat(9_999), REGISTRY, self.RULES, cat_policy=policy)
+        check_campaign(self.cat(10_000), REGISTRY, self.RULES, cat_policy=policy)
+        # A minimum with no price still sets a floor.
+        check_campaign(self.cat(10_000), REGISTRY, self.RULES, cat_policy=CatPolicy(min_amount=10_000))
+
+    def test_operator_switch_turns_a_cat_off(self):
+        with self.assertRaisesRegex(NotRoutable, "turned this CAT off"):
+            check_campaign(self.cat(10**12), REGISTRY, self.RULES, cat_policy=CatPolicy(enabled=False, price_usd=1.0))
+
+    def test_xch_ignores_cat_policy(self):
+        check_campaign(Campaign(DIST, CREATOR, XCH, 10**11, 100, 200, Kind.LP_HOLD, POOL), REGISTRY, self.RULES)
+
+    def test_static_rules_floor_still_applies_to_a_cat(self):
+        rules = RouterRules(kinds=frozenset({Kind.LP_HOLD}), min_claim_window=0, min_amount={WUSDC: 5000})
+        with self.assertRaisesRegex(NotRoutable, "below the minimum for this reward asset"):
+            check_campaign(self.cat(4000), REGISTRY, rules, cat_policy=CatPolicy(price_usd=1.0))
 
 
 class TestNetworks(unittest.TestCase):

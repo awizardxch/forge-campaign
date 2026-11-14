@@ -44,7 +44,7 @@ records and owner decisions are kept privately. **Simulator-tested and running o
 
 ```bash
 cargo install rue-cli --version 0.8.4 --locked
-python -m pip install chia-wallet-sdk==0.36.0 pytest clvm
+python -m pip install chia-wallet-sdk==0.38.0 pytest clvm
 python contracts/build.py      # compile and check pins
 python -m pytest tests -q      # 492 tests (Windows: .venv/Scripts/python.exe)
 python scripts/mutate.py       # optional, ~3 min

@@ -36,6 +36,14 @@ CAT_ASSET = b"\xa5" * 32  # a reward CAT; every test class also runs with it bel
 # Puzzle refusals all surface as `clvm raise`; consensus refusals name their rule.
 CLVM_RAISE = "clvm raise"
 
+# chia-wallet-sdk 0.38.0's simulator checks each puzzle reveal against its coin's
+# puzzle hash while collecting signatures, before consensus runs, so the refusal
+# 0.36.0 named WrongPuzzleHash reads "Signer error: Puzzle reveal hash ... does not
+# match coin puzzle hash" on 0.38.0. Either text pins that one rule.
+CONSENSUS_ALIASES = {
+    "WrongPuzzleHash": ("WrongPuzzleHash", "does not match coin puzzle hash"),
+}
+
 
 def refused(test, fn, *args, expect=None, **kwargs):
     """A genuine refusal only: the leaf raised when run (`clvm raise`) or
@@ -49,7 +57,8 @@ def refused(test, fn, *args, expect=None, **kwargs):
     message = str(ctx.exception)
     test.assertTrue("clvm raise" in message or "Simulator error" in message, message)
     if expect is not None:
-        test.assertIn(expect, message)
+        texts = CONSENSUS_ALIASES.get(expect, (expect,))
+        test.assertTrue(any(text in message for text in texts), f"expected {expect!r} in {message!r}")
 
 
 def lifecycle_src(*holders):
