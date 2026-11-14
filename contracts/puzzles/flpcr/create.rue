@@ -64,6 +64,14 @@ fn main(
 
     assert state.initialized == 1;
     assert creator.length == 32;
+    // CP-08 (audit 2026-11-11): every integer the campaign id and row store is canonical, and the
+    // target is a 32-byte id, so no second spelling of a campaign reaches the hashed state (the
+    // router's and the creator's messages name the canonical id; this no longer relies on them).
+    assert amount == amount + 0;
+    assert start == start + 0;
+    assert end == end + 0;
+    assert claim_window == claim_window + 0;
+    assert target.length == 32;
     assert amount > 0;
     assert budget > 0;
     // Not in the past, even with `h` understated by up to HEIGHT_WINDOW - 1

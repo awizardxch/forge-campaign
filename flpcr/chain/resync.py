@@ -11,8 +11,8 @@ with):
    rebuilt Config must hash to the revealed one, or these leaves are not the
    ones the distributor was launched with.
 3. Each spend reveals the singleton's puzzle (the state is curried into it)
-   and the actions it ran (leaf puzzles, CHIP-0050 selectors as CLVM paths,
-   solutions). Every action is run again, and the resulting puzzle hash must
+   and the actions it ran (leaf puzzles, CHIP-0050 selectors, run on the revealed
+   leaves as the action layer runs them, and solutions). Every action is run again, and the resulting puzzle hash must
    be the next singleton coin's: a wrong replay cannot go one generation
    without failing.
 4. Claim and delegation slot records are rebuilt from the values each action
@@ -41,7 +41,7 @@ from ..clvm import sha256tree
 from ..distributor import Config
 from ..leaves import LEAVES
 from .auth import AUTH_DELEGATE
-from .driver import HIGH, LOW, MAX_COST, Distributor, Prepared, Puzzles
+from .driver import FINALIZER_PINNED, FINALIZER_UPSTREAM, HIGH, LOW, MAX_COST, Distributor, Prepared, Puzzles
 from .state import ChainState
 from .values import to_bytes, to_int, to_list
 
@@ -66,16 +66,9 @@ class Resynced:
     actions: List[ReplayedAction] = field(default_factory=list)
     campaigns: Dict[str, dict] = field(default_factory=dict)  # id -> what its create solution says
     roots: Dict[str, dict] = field(default_factory=dict)  # root id -> start, end, root, totals, posted at
-
-
-def _path(node: Program, path: int) -> Program:
-    """A CLVM path: from the least significant bit, 0 takes first and 1 takes rest, until 1 is left."""
-    if path < 1:
-        raise ResyncError(f"bad selector {path}")
-    while path > 1:
-        node = node.rest() if path & 1 else node.first()
-        path >>= 1
-    return node
+    # Generations whose spend named a reserve other than the replayed one (upstream finalizer
+    # only, CP-06): (generation, height, the reserve coin id the chain followed instead).
+    reserve_forks: List[Tuple[int, int, str]] = field(default_factory=list)
 
 
 def _config_from_value(v: List[Program]) -> Config:
@@ -86,10 +79,51 @@ def _config_from_value(v: List[Program]) -> Config:
                   max_campaign_length=ints(11), max_campaigns=ints(12), dispute_bond=ints(15))
 
 
-def _reserve_parent(clvm: Clvm, spend) -> bytes:
-    """The reserve coin's parent, which every singleton spend names in the action layer's solution."""
+def _finalizer_kind(clvm: Clvm, spend) -> str:
+    """Which reserve finalizer the spent coin runs: the pinned one is curried a second time with
+    the reserve's parent (two arguments), upstream's with its own hash only (one)."""
+    inner = clvm.deserialize(spend.puzzle_reveal).uncurry().args[1].uncurry()
+    if inner is None:
+        raise ResyncError("the singleton's inner puzzle is not an action layer")
+    finalizer = inner.args[0].uncurry()
+    n = len(finalizer.args) if finalizer is not None else 0
+    if n == 2:
+        return FINALIZER_PINNED
+    if n == 1:
+        return FINALIZER_UPSTREAM
+    raise ResyncError("the action layer's finalizer is neither reserve finalizer this build knows")
+
+
+def _reserve_parent(clvm: Clvm, spend, kind: str) -> bytes:
+    """The parent of the reserve coin a singleton spend messages. The pinned finalizer carries
+    it curried into the coin's own puzzle (bound by consensus to the coin); upstream's reads it
+    from the action layer's solution, so ANY coin at the reserve's puzzle hash holding the
+    state's amount can be named there (audit 2026-11-11, B2 CP-06)."""
+    if kind == FINALIZER_PINNED:
+        inner = clvm.deserialize(spend.puzzle_reveal).uncurry().args[1].uncurry()
+        return to_bytes(inner.args[0].uncurry().args[1])
     inner_solution = to_list(clvm.deserialize(spend.solution))[2]
     return to_bytes(inner_solution.rest().rest().rest())
+
+
+def _reserve_at(reader, clvm: Clvm, d: Distributor, parent_id: bytes, amount: int) -> None:
+    """Point `d` at the reserve coin born from `parent_id` holding `amount`: for a CAT, with the
+    lineage its next spend needs, read from the parent's own spend."""
+    reserve = Coin(parent_id, d.reserve_full_ph, amount)
+    if not d.is_cat:
+        d.reserve_coin = reserve
+        return
+    parent = reader.coin_state(parent_id)
+    parent_spend = reader.coin_spend(parent_id)
+    if parent is None or parent_spend is None:
+        raise ResyncError("the CAT reserve's parent is not on chain")
+    puzzle, solution = clvm.deserialize(parent_spend.puzzle_reveal).puzzle(), clvm.deserialize(parent_spend.solution)
+    cats = puzzle.parse_child_cats(parent.coin, solution) or []
+    match = [c for c in cats if c.coin.coin_id() == reserve.coin_id()]
+    if not match:
+        raise ResyncError("the CAT reserve's parent did not create this distributor's reserve")
+    d.reserve_cat = match[0]
+    d.reserve_coin = d.reserve_cat.coin
 
 
 def _decode(clvm: Clvm, spend) -> Tuple[Program, List[Tuple[Program, Program]]]:
@@ -110,8 +144,25 @@ def _decode(clvm: Clvm, spend) -> Tuple[Program, List[Tuple[Program, Program]]]:
     if len(selectors) != len(solutions):
         raise ResyncError("selectors and solutions do not pair up")
     # The builder lists selectors in reverse action order (driver._action_layer_spend).
-    runs = [(_path(leaves, to_int(sel.first())), sol) for sel, sol in zip(reversed(selectors), solutions)]
+    runs = [(_select(leaves, sel.first()), sol) for sel, sol in zip(reversed(selectors), solutions)]
     return state, runs
+
+
+def _select(leaves: Program, selector: Program) -> Program:
+    """The leaf a selector picks, found the way the action layer finds it: by RUNNING the
+    selector with the revealed puzzle list as its environment (`selector(...puzzles)`).
+
+    Our driver writes paths (2, 5, 11, ...), and a path atom run on the list is that path, but
+    the puzzle enforces no form: `(q . leaf)` returns the leaf whatever the list holds, and the
+    chain accepts it (audit 2026-11-11, CE-13: `to_int` of a pair raised, so one such claim made
+    every later boot fail). A selector reused without a proof (`item_in_list`) is an earlier
+    entry's selector, so it runs the same way. The caller then names the leaf by its tree hash,
+    so a selector that returns anything but one of this distributor's leaves is refused there.
+    """
+    try:
+        return selector.run(leaves, MAX_COST, False).value
+    except Exception as exc:  # noqa: BLE001 -- a selector the action layer could not have run either
+        raise ResyncError("a spend names a leaf selector that does not run on its revealed leaves") from exc
 
 
 def _is_zero(program: Program) -> bool:
@@ -193,7 +244,10 @@ def resync(reader, puzzles: Puzzles, launcher_id: bytes) -> Resynced:
     if cfg.distributor_id != launcher_id:
         raise ResyncError("the revealed Config names another distributor")
     state0, _ = _decode(clvm, first)
-    d = Distributor(puzzles, cfg, ChainState.from_program(state0).engine_ph)
+    kind = _finalizer_kind(clvm, first)
+    if kind not in puzzles.mods:
+        raise ResyncError(f"the distributor runs {kind}, which these compiled puzzles do not contain")
+    d = Distributor(puzzles, cfg, ChainState.from_program(state0).engine_ph, finalizer=kind)
     if sha256tree(d.config_value()) != config_program.tree_hash():
         raise ResyncError("these leaves curry a different Config than the distributor was launched with "
                           "(another build of the puzzles): resync with the matching compiled folder")
@@ -208,25 +262,10 @@ def resync(reader, puzzles: Puzzles, launcher_id: bytes) -> Resynced:
     d.coin = coin
     d.lineage = [funding, 1]
     # The empty reserve, created at launch: by the funding coin for XCH, by a seed coin of the
-    # reward CAT for a CAT. The first spend names its parent either way.
-    reserve_parent = _reserve_parent(clvm, first)
-    reserve = Coin(reserve_parent, d.reserve_full_ph, 0)
-    if d.is_cat:
-        parent = reader.coin_state(reserve_parent)
-        parent_spend = reader.coin_spend(reserve_parent)
-        if parent is None or parent_spend is None:
-            raise ResyncError("the CAT reserve's parent is not on chain")
-        puzzle, solution = clvm.deserialize(parent_spend.puzzle_reveal).puzzle(), clvm.deserialize(parent_spend.solution)
-        cats = puzzle.parse_child_cats(parent.coin, solution) or []
-        match = [c for c in cats if c.coin.coin_id() == reserve.coin_id()]
-        if not match:
-            raise ResyncError("the CAT reserve's parent did not create this distributor's reserve")
-        d.reserve_cat = match[0]
-        d.reserve_coin = d.reserve_cat.coin
-    else:
-        if reserve_parent != funding:
-            raise ResyncError("the first spend names a reserve the launch did not create")
-        d.reserve_coin = reserve
+    # reward CAT for a CAT. The first spend names its parent either way (curried into the eve
+    # under the pinned finalizer). Under upstream's, the first spend (a permissionless `init`)
+    # may name a decoy instead; the chain then follows the decoy, and so does the replay.
+    _reserve_at(reader, clvm, d, _reserve_parent(clvm, first, kind), ChainState.from_program(state0).reserve)
     if d.full_puzzle(d.state).tree_hash() != coin.puzzle_hash:
         raise ResyncError("the eve coin's puzzle is not what these compiled leaves build (the leaf set's merkle "
                           "root differs): the distributor was launched with another build of the leaves. Resync "
@@ -241,6 +280,17 @@ def resync(reader, puzzles: Puzzles, launcher_id: bytes) -> Resynced:
         state, runs = _decode(clvm, spend)
         if state.tree_hash() != d.state.tree_hash():
             raise ResyncError(f"generation {out.generations}: the revealed state is not the replayed one")
+        # The reserve this spend messaged is the reserve, whatever the replay expected: the spend
+        # confirmed, so that coin received the singleton's message. Upstream's finalizer lets a
+        # solution name any coin at the reserve's puzzle hash holding the state's amount (CP-06);
+        # follow it rather than refuse to boot. Under the pinned finalizer the parent is part of
+        # the coin's own puzzle, so a mismatch means the replay itself is wrong.
+        named = _reserve_parent(clvm, spend, kind)
+        if named != d.reserve_coin.parent_coin_info:
+            if kind == FINALIZER_PINNED:
+                raise ResyncError(f"generation {out.generations}: the coin's pinned reserve is not the replayed one")
+            _reserve_at(reader, clvm, d, named, d.chain_state.reserve)
+            out.reserve_forks.append((out.generations, height, d.reserve_coin.coin_id().hex()))
         truth = clvm.pair(clvm.nil(), d.state)
         claim_updates: dict = {}
         delegation_updates: dict = {}
@@ -258,7 +308,7 @@ def resync(reader, puzzles: Puzzles, launcher_id: bytes) -> Resynced:
             out.actions.append(ReplayedAction(height, name, leaf_solution))
             _note(out, name, sol, height)
         new_state = truth.rest()
-        nxt = Coin(d.coin.coin_id(), d.full_puzzle(new_state).tree_hash(), 1)
+        nxt = Coin(d.coin.coin_id(), d.successor_puzzle_hash(new_state), 1)
         children = {c.coin.coin_id() for c in reader.children(d.coin.coin_id())}
         if nxt.coin_id() not in children:
             raise ResyncError(f"generation {out.generations}: the replay does not create the next singleton coin")

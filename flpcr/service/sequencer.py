@@ -250,7 +250,7 @@ class ClaimSequencer:
             spends = list(batch.spends) + [s for p in take for s in p.spends]
             signature = Signature.aggregate([p.signature for p in take])
             last = batch.generations[-1]
-            successor = Coin(last.spends[0].coin.coin_id(), d.full_puzzle(last.new_state).tree_hash(), 1)
+            successor = d.successor_coin(last)
             try:
                 svc.chain.push(spends, signature)
             except PushRefused as e:

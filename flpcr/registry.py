@@ -57,7 +57,11 @@ def pins_fingerprint(compiled: Optional[pathlib.Path] = None) -> str:
     from .chain.driver import COMPILED  # the folder the driver loads (FLPCR_COMPILED aware)
 
     folder = pathlib.Path(compiled or COMPILED)
-    lines = "".join(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n" for p in sorted(folder.glob("*.hex")))
+    # Line endings normalized: a Windows checkout (core.autocrlf) holds the same build as CRLF
+    # text, and the fingerprint names the build, not the checkout.
+    crlf, lf = b"\r\n", b"\n"
+    lines = "".join(f"{hashlib.sha256(p.read_bytes().replace(crlf, lf)).hexdigest()}  {p.name}\n"
+                    for p in sorted(folder.glob("*.hex")))
     return hashlib.sha256(lines.encode()).hexdigest()
 
 

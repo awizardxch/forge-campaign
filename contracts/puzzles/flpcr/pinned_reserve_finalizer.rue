@@ -1,0 +1,127 @@
+// pinned_reserve_finalizer.rue: the distributor's finalizer.
+//
+// Yakuhito's reserve_finalizer.rue (slot-machine@2d37ba1, vendored unedited under
+// upstream/singleton/) with one change: the reserve's parent is CURRIED, not read from
+// the finalizer's solution (audit 2026-11-11, B2 CP-06).
+//
+// Upstream messages `coinid(reserve_parent_id, RESERVE_FULL_PUZZLE_HASH, state.reserve)`
+// with `reserve_parent_id` taken from the solution, so any coin at the reserve's puzzle
+// hash holding exactly `state.reserve` can stand in for the reserve. While the reserve is
+// 0 such a decoy costs nothing: one valid spend forks the reserve lineage and the real
+// reserve is never spent again. Here the parent is the second-curry RESERVE_PARENT_ID and
+// every spend re-curries it with the id of the reserve it spends (the coin the new reserve
+// is born from), so nothing in a solution can name a reserve. The Forge pool closed the
+// same class in V12 by keeping reserve parents in state.
+//
+// The leaves never see the parent: State, Config and every leaf are unchanged. The
+// solution's trailing value, which upstream reads as the parent, is ignored.
+
+import super::upstream::singleton::action::StateTruth;
+import super::upstream::singleton::finalizer::*;
+
+fn parse_conditions(
+    list_of_lists: List<List<Condition>>,
+    conditions: List<Condition>,
+    extracted_reserve_conditions: List<Condition>,
+) -> (List<Condition>, List<Condition>) {
+    inline let (first_thing, the_rest) = unchecked_cast::<(List<Condition>, List<List<Condition>>)>(list_of_lists);
+    if first_thing is nil {
+        if the_rest is nil {
+            (conditions, extracted_reserve_conditions)
+        } else {
+            parse_conditions(
+                the_rest,
+                conditions,
+                extracted_reserve_conditions
+            )
+        }
+    } else {
+        inline let (opcode, condition) = unchecked_cast::<(Int, Condition)>(first_thing.first);
+        if opcode == -42 {
+            parse_conditions(
+                (first_thing.rest, the_rest),
+                conditions,
+                (condition, extracted_reserve_conditions)
+            )
+        } else {
+            parse_conditions(
+                (first_thing.rest, the_rest),
+                (first_thing.first, conditions),
+                extracted_reserve_conditions
+            )
+        }
+    }
+}
+
+fn main(
+    ACTION_LAYER_MOD_HASH: Bytes32,
+    RESERVE_FULL_PUZZLE_HASH: Bytes32,
+    RESERVE_INNER_PUZZLE_HASH: Bytes32,
+    RESERVE_AMOUNT_FROM_STATE_PROGRAM: fn(...state: Any) -> Int, // 02, i.e. (f State)
+    HINT: Bytes32,
+    // 2nd curry
+    FINALIZER_SELF_HASH: Bytes32,
+    RESERVE_PARENT_ID: Bytes32,
+    Truth: FinalizerTruths,
+    last_action_output: (StateTruth, List<List<Condition>>),
+    ..._ignored: Any,
+) -> List<Condition> {
+    let (base_conditions, reserve_conditions) = parse_conditions(
+        last_action_output.rest, nil, nil
+    );
+
+    // The reserve this generation spends: born from RESERVE_PARENT_ID, holding what the
+    // state before the spend says.
+    let reserve_id = coinid(
+        RESERVE_PARENT_ID,
+        RESERVE_FULL_PUZZLE_HASH,
+        RESERVE_AMOUNT_FROM_STATE_PROGRAM(...Truth.State)
+    );
+
+    let recreate_reserve = CreateCoin {
+        puzzle_hash: RESERVE_INNER_PUZZLE_HASH,
+        amount: RESERVE_AMOUNT_FROM_STATE_PROGRAM(...last_action_output.first.actual_state),
+        memos: Memos {
+            value: [RESERVE_INNER_PUZZLE_HASH],
+        }
+    };
+
+    let reserve_send_message = SendMessage {
+        mode: SENDER_PUZZLE | RECEIVER_COIN,
+        message: tree_hash(
+            (1, // this is the leading 'q . ' in the delegated puzzle
+                (recreate_reserve, reserve_conditions)
+            )
+        ),
+        receiver: [reserve_id]
+    };
+
+    // The next generation's finalizer names the reserve this spend recreates, whose parent
+    // is the reserve spent here.
+    let recreate_singleton = CreateCoin {
+        puzzle_hash: curry_tree_hash(
+            ACTION_LAYER_MOD_HASH,
+            [
+                curry_tree_hash(
+                    FINALIZER_SELF_HASH,
+                    [
+                        tree_hash_atom(FINALIZER_SELF_HASH),
+                        tree_hash_atom(reserve_id),
+                    ]
+                ), // finalizer puzzle hash
+                tree_hash_atom(Truth.Merkle_Root),
+                tree_hash(last_action_output.first.actual_state)
+            ]
+        ), // new inner ph
+        amount: 1,
+        memos: Memos {
+            value: [HINT],
+        }
+    };
+
+    [
+        recreate_singleton,
+        reserve_send_message,
+        ...base_conditions
+    ]
+}

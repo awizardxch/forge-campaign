@@ -38,7 +38,7 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CONTRACTS = ROOT / "contracts"
 ARGUMENTS = ROOT / "scripts" / "mutation-arguments.json"
-SUITES = ["tests/test_chain.py", "tests/test_differential.py"]
+SUITES = ["tests/test_chain.py", "tests/test_differential.py", "tests/test_b2_fixes.py"]  # b2: CP-08/CE-02 canonical atoms
 
 sys.path.insert(0, str(CONTRACTS))
 import build  # noqa: E402  (contracts/build.py: one compile path for the build and the mutants)

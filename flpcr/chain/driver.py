@@ -271,8 +271,16 @@ class ClaimBatch:
         return [u for g in self.generations for u in g.unresolved]
 
 
+# Which reserve finalizer a distributor runs. PINNED (the default for every new launch) curries
+# the reserve's parent into the finalizer, so no solution can name a decoy reserve (audit
+# 2026-11-11, B2 CP-06). UPSTREAM is slot-machine's own, which reads the parent from the
+# solution: every distributor launched before the fix. `resync` tells them apart from chain.
+FINALIZER_PINNED = "pinned_reserve_finalizer"
+FINALIZER_UPSTREAM = "reserve_finalizer"
+
+
 class Distributor:
-    def __init__(self, puzzles: Puzzles, cfg: Config, engine_ph: bytes):
+    def __init__(self, puzzles: Puzzles, cfg: Config, engine_ph: bytes, finalizer: Optional[str] = None):
         self.p = puzzles
         self.clvm = puzzles.clvm
         self.cfg = cfg
@@ -308,7 +316,12 @@ class Distributor:
         self.leaf_hashes = {name: prog.tree_hash() for name, prog in self.leaves.items()}
         self.merkle_root, self.leaf_proofs = build_tree([self.leaf_hashes[n] for n in LEAVES])
 
-        finalizer_1st = puzzles.mods["reserve_finalizer"].curry(
+        if finalizer is None:
+            finalizer = FINALIZER_PINNED if FINALIZER_PINNED in puzzles.mods else FINALIZER_UPSTREAM
+        if finalizer not in puzzles.mods:
+            raise FileNotFoundError(f"compiled puzzles missing {finalizer}; run contracts/build.py")
+        self.finalizer_kind = finalizer
+        finalizer_1st = puzzles.mods[finalizer].curry(
             [
                 c.atom(puzzles.hash("action")),
                 c.atom(self.reserve_full_ph),
@@ -317,7 +330,8 @@ class Distributor:
                 c.atom(self.launcher_id),  # hint
             ]
         )
-        self.finalizer = finalizer_1st.curry([c.atom(finalizer_1st.tree_hash())])
+        self._finalizer_1st = finalizer_1st
+        self._upstream_finalizer = finalizer_1st.curry([c.atom(finalizer_1st.tree_hash())])
 
         # Live chain state, kept by `apply`.
         self.state: Program = to_program(c, ChainState.genesis(engine_ph).to_value())
@@ -357,11 +371,50 @@ class Distributor:
 
     # --- puzzles -------------------------------------------------------------------
 
-    def inner_puzzle(self, state: Program) -> Program:
-        return self.p.mods["action"].curry([self.finalizer, self.clvm.atom(self.merkle_root), state])
+    @property
+    def pinned(self) -> bool:
+        return self.finalizer_kind == FINALIZER_PINNED
 
-    def full_puzzle(self, state: Program) -> Program:
-        return self.p.singleton_mod.curry([self.singleton_struct, self.inner_puzzle(state)])
+    def finalizer_for(self, reserve_parent: Optional[bytes] = None) -> Program:
+        """The finalizer of a generation whose reserve was born from `reserve_parent` (default:
+        the current reserve's parent). The upstream finalizer is the same in every generation."""
+        if not self.pinned:
+            return self._upstream_finalizer
+        if reserve_parent is None:
+            if self.reserve_coin is None:
+                raise ValueError("a pinned finalizer needs the reserve's parent: launch or resync first")
+            reserve_parent = self.reserve_coin.parent_coin_info
+        c = self.clvm
+        return self._finalizer_1st.curry([c.atom(self._finalizer_1st.tree_hash()), c.atom(reserve_parent)])
+
+    @property
+    def finalizer(self) -> Program:
+        return self.finalizer_for()
+
+    def inner_puzzle(self, state: Program, reserve_parent: Optional[bytes] = None) -> Program:
+        return self.p.mods["action"].curry([self.finalizer_for(reserve_parent), self.clvm.atom(self.merkle_root), state])
+
+    def full_puzzle(self, state: Program, reserve_parent: Optional[bytes] = None) -> Program:
+        return self.p.singleton_mod.curry([self.singleton_struct, self.inner_puzzle(state, reserve_parent)])
+
+    def successor_coin(self, prepared: "Prepared") -> Coin:
+        """The singleton coin `prepared` creates, from its own spends: its first spend is the
+        singleton's, and (pinned finalizer) the reserve it spends is the next reserve's parent.
+        Works for any generation of a chained batch, whatever generation this driver is at."""
+        singleton = prepared.spends[0].coin
+        parent = None
+        if self.pinned:
+            reserves = [s.coin for s in prepared.spends if s.coin.puzzle_hash == self.reserve_full_ph]
+            if len(reserves) != 1:
+                raise ValueError("a prepared spend must spend exactly one reserve coin")
+            parent = reserves[0].coin_id()
+        return Coin(singleton.coin_id(), self.full_puzzle(prepared.new_state, parent).tree_hash(), 1)
+
+    def successor_puzzle_hash(self, new_state: Program) -> bytes:
+        """The puzzle hash of the singleton coin a spend of the current generation creates: the
+        new state, and (pinned finalizer) the reserve spent now as the next reserve's parent."""
+        nxt_parent = self.reserve_coin.coin_id() if self.pinned else None
+        return self.full_puzzle(new_state, nxt_parent).tree_hash()
 
     def full_puzzle_hash_for_inner(self, inner_ph: bytes) -> bytes:
         return curry_tree_hash(Constants.singleton_top_layer_v1_1_hash(), [self.singleton_struct.tree_hash(), inner_ph])
@@ -396,11 +449,14 @@ class Distributor:
         coin, its lineage and (for XCH) the empty reserve the funding coin made."""
         c = self.clvm
         launcher_coin = Coin(funding.coin_id(), Constants.singleton_launcher_hash(), 1)
+        if not self.is_cat:
+            self.reserve_coin = Coin(funding.coin_id(), self.reserve_ph, 0)
+        elif self.reserve_coin is None:
+            raise ValueError("a CAT distributor's reserve comes from its seed coin: set it before the launcher "
+                             "spend (launch_spends does, or `seed_reserve`)")
         eve_ph = self.full_puzzle(self.state).tree_hash()
         self.coin = Coin(self.launcher_id, eve_ph, 1)
         self.lineage = [funding.coin_id(), 1]
-        if not self.is_cat:
-            self.reserve_coin = Coin(funding.coin_id(), self.reserve_ph, 0)
         return CoinSpend(launcher_coin, self.p.launcher.serialize(), to_program(c, [eve_ph, 1, None]).serialize())
 
     def launch_spends(self, funding: Coin, funding_puzzle: Program,
@@ -412,22 +468,27 @@ class Distributor:
         owner; only a 0-mojo reserve child is added)."""
         c = self.clvm
         conditions = self.funding_conditions(funding)
+        if self.is_cat:
+            if seed_cat is None or seed_puzzle is None:
+                raise ValueError("a CAT distributor needs a seed coin of the reward CAT")
+            self.seed_reserve(seed_cat)  # the eve's pinned finalizer names this reserve
         spends = [
             CoinSpend(funding, funding_puzzle.serialize(), to_program(c, conditions).serialize()),
             self.launcher_spend(funding),
         ]
         if not self.is_cat:
             return spends
-        if seed_cat is None or seed_puzzle is None:
-            raise ValueError("a CAT distributor needs a seed coin of the reward CAT")
         owner = seed_cat.info.p2_puzzle_hash
         seed_conditions = [[OP_CREATE_COIN, self.reserve_ph, 0, [self.reserve_ph]],
                            [OP_CREATE_COIN, owner, seed_cat.coin.amount, [owner]]]
         c.spend_cats([CatSpend(seed_cat, Spend(seed_puzzle, to_program(c, seed_conditions)))])
         spends.extend(c.coin_spends())
+        return spends
+
+    def seed_reserve(self, seed_cat: Cat) -> None:
+        """A CAT distributor's empty reserve: the 0-mojo child the seed coin's spend creates."""
         self.reserve_cat = seed_cat.child(self.reserve_ph, 0)
         self.reserve_coin = self.reserve_cat.coin
-        return spends
 
     # --- authorization -----------------------------------------------------------------
 
@@ -812,7 +873,7 @@ class Distributor:
             self.delegations[key] = DelegationRecord(active, uses, left, right, parent, old_inner_ph)
         self.lineage = [parent, old_inner_ph, 1]
         self.state = prepared.new_state
-        self.coin = Coin(old_coin.coin_id(), self.full_puzzle(prepared.new_state).tree_hash(), 1)
+        self.coin = Coin(old_coin.coin_id(), self.successor_puzzle_hash(prepared.new_state), 1)
         new_reserve = to_int(prepared.new_state.first())
         if self.is_cat:
             self.reserve_cat = self.reserve_cat.child(self.reserve_ph, new_reserve)

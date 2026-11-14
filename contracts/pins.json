@@ -9,16 +9,17 @@
   },
   "leaves": {
     "init": "35e27f0adc9f8936ca13f3665e93fdc45c9ee49465f6af2218a50719fba07f1c",
-    "create": "0ca90412646c724803dccc72acb1afc738c7c0be6c598439f5cb59f887de91b9",
-    "post_root": "eaa49e6838c17f8d238fac08a26be560a696287008866369a429c7d65ad9d651",
+    "create": "d2b66d652d1f9f2e3974b9525c52f7d2882e8cbde8376666b31ec53383ec250a",
+    "post_root": "68778cba8878ca278f30c62e0b913dce7236601cd0addcd1109a4fe5fc4a9c9f",
     "veto": "5118a3bf2155fca153a29053dde4248e9366fb6e907f16dbd646d8e4203fca89",
-    "claim": "910aab961eb8caee189b61a29c9c832579aa7b381dce1e8bf300f53b56aa4704",
+    "claim": "f48ae62d5204802e6eecc4cd1213e4463f4ddd7cf79b332e54d76ac8be8956ca",
     "reclaim": "b8e4e9335443fdf4e2dd3cd7069c91810be1cec744172f24c51db3cb5b2d4245",
     "rotate": "18e8284c309d9800bb0bad9ceab1f423af7db2bd9ae1927b19e32ca893d61066",
-    "delegate": "850f2cefc5be7d6036b77a37253f0201637c9f6c1801fd171aaecd3027f50428",
+    "delegate": "2602eb9d9cc0cbdccfdc12dc6625f1a57356688719b3508f0396f53467729edb",
     "dispute": "3716c72c54092e0d4c4bcd999d4b5eb742e6729f70a895cb4f24725242bcdf09",
     "resolve": "a816e0862b837d11cd83aee42abaa36d30d2fb75e13130c3c3ddb4a0c71d3839",
-    "bond_launcher": "e2bcdd66695ee02bfdf4059718a22506a872b47bf4a1fea5d1966cccc582e13a"
+    "bond_launcher": "e2bcdd66695ee02bfdf4059718a22506a872b47bf4a1fea5d1966cccc582e13a",
+    "pinned_reserve_finalizer": "7dffc07a066b52d8a0e25c3255e47c2794110fbea0f1ca5b7adc0931a0bc226d"
   },
   "upstream_sources_sha256": {
     "upstream/common_types.rue": "9abe900c733d03c711e07b537687dd25fbc35fd94950c35d002db566c558f122",

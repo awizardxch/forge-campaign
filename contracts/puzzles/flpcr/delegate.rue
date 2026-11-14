@@ -53,6 +53,8 @@ fn main(
 ) -> (Truth, List<Condition>) {
     let (pinned, conditions) = prologue(truth, h);
     assert (grant == 0) | (grant == 1);
+    // CE-02 (audit 2026-11-10): `insert` is compared as an atom below; only 0 and 1 are accepted.
+    assert (insert == 0) | (insert == 1);
     assert owner.length == 32;
     assert delegate.length == 32;
     let message = tree_hash(["flpcr-delegate-v2", CONFIG.distributor_id, owner, delegate, grant]);
