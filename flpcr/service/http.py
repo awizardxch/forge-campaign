@@ -5,6 +5,10 @@
                                          manifest_hash it committed, or null), dispute, rotation
     GET  /api/v1/distributors            the registry for this network (flpcr.registry): every listed
                                          distributor, which are current, and which one this is
+    GET  /api/v1/router-rules            what the router signs for in this distributor's reward asset:
+                                         its minimum amount (a CAT's: the equivalent of $1 at its Forge
+                                         price, or the operator's minimum), whether the operator has the
+                                         CAT on for campaigns, kinds and claim-window floor
     GET  /api/v1/manifests/<hash>        a posted root's manifest (flpcr.manifest.root_to_json),
                                          by the manifest_hash its post_root committed; ".json"
                                          may be appended. Served as published: check it against
@@ -119,6 +123,8 @@ def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit:
                     return self.send_json(200, {"success": True, **service.status()})
                 if path == "/api/v1/distributors":
                     return self.send_json(200, {"success": True, **service.distributors()})
+                if path == "/api/v1/router-rules" and intake is not None:
+                    return self.send_json(200, {"success": True, **intake.terms()})
                 if path.startswith("/api/v1/manifests/"):
                     found = service.manifest(path.rsplit("/", 1)[1])
                     return self.send_json(200 if found else 404, found if found else {"success": False, "error": "unknown manifest"})

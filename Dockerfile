@@ -4,7 +4,7 @@
 FROM python:3.11-slim
 
 WORKDIR /app
-RUN pip install --no-cache-dir chia-wallet-sdk==0.36.0
+RUN pip install --no-cache-dir chia-wallet-sdk==0.38.0
 
 # Only what the service runs: the package and the compiled, pinned puzzles.
 COPY flpcr ./flpcr

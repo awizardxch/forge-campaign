@@ -26,18 +26,65 @@ the router's own rules, applied at quote time:
   long took back what holders had earned. An operator widens any of these on purpose,
   in FLPCR_ROUTER_RULES; `RouterRules.permissive()` is for tests and probes.
 
+* a CAT reward (owner, 2026-11-11) also needs the Forge router's word on that CAT
+  (`CatPolicy`, read from `<forge>/api/campaign-assets`): the operator may turn a CAT off
+  for campaigns or set its minimum; otherwise its floor is the equivalent of
+  `CAT_FLOOR_USD` at the CAT's Forge price (the Markets page's chained price), and a CAT
+  with no Forge price and no operator minimum is refused. The floor is the router's, not
+  the puzzle's.
+
 The registry is read from chain by the caller; this module only applies it.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from typing import Dict, FrozenSet, Iterable, Optional
 
 from .model import BLOCKS_PER_DAY, MIN_FEE_WINDOW, Campaign, Kind
 
 XCH = bytes(32)
 DEFAULT_MIN_XCH = 100_000_000_000  # 0.1 XCH: the smallest XCH campaign the router signs for by default
+CAT_FLOOR_USD = Decimal(1)  # the smallest CAT campaign, in dollars at the CAT's Forge price (owner, 2026-11-11)
+CAT_DECIMALS = 3  # 1000 mojos to a CAT token
+
+
+def usd_floor_mojos(price_usd, decimals: int = CAT_DECIMALS, floor_usd: Decimal = CAT_FLOOR_USD) -> Optional[int]:
+    """Mojos of a CAT worth `floor_usd` at `price_usd` a token, rounded up; None without a usable price."""
+    if price_usd is None or isinstance(price_usd, bool):
+        return None
+    try:
+        price = Decimal(str(price_usd))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    if not price.is_finite() or price <= 0:
+        return None
+    return int((floor_usd * (Decimal(10) ** decimals) / price).to_integral_value(ROUND_CEILING))
+
+
+@dataclass(frozen=True)
+class CatPolicy:
+    """The Forge router's word on one CAT as a campaign reward (GET <forge>/api/campaign-assets).
+
+    `enabled`: the operator has not turned it off. `min_amount`: the operator's minimum in mojos,
+    or None for the dollar floor at `price_usd` (USD per token)."""
+
+    enabled: bool = True
+    min_amount: Optional[int] = None
+    price_usd: Optional[float] = None
+    decimals: int = CAT_DECIMALS
+
+    @property
+    def floor(self) -> Optional[int]:
+        """The smallest amount the router signs for; None when none can be set (no price, no minimum)."""
+        if self.min_amount is not None:
+            return self.min_amount
+        return usd_floor_mojos(self.price_usd, self.decimals)
+
+    @property
+    def source(self) -> str:
+        return "operator" if self.min_amount is not None else "usd"
 
 
 class NotRoutable(Exception):
@@ -88,6 +135,9 @@ class RouterRules:
     # it, so it is checked at quote time. Production: one day (the default);
     # a testnet router may lower it as far as MIN_FEE_WINDOW.
     min_fee_window: int = BLOCKS_PER_DAY
+    # A CAT reward needs the Forge router's CatPolicy for it (the $1 floor, the operator's
+    # switch). Off only in permissive() rules, for tests and probes.
+    cat_policy_required: bool = True
 
     def __post_init__(self) -> None:
         if self.min_fee_window < MIN_FEE_WINDOW:
@@ -97,17 +147,31 @@ class RouterRules:
     def permissive(cls, **kw) -> "RouterRules":
         """No amount floor, every kind, the puzzle's own claim window and start bounds: for
         tests and probes. Never a service's rules."""
-        base = dict(min_amount={}, kinds=frozenset(Kind), min_claim_window=0, max_start_lead=10**12)
+        base = dict(min_amount={}, kinds=frozenset(Kind), min_claim_window=0, max_start_lead=10**12,
+                    cat_policy_required=False)
         base.update(kw)
         return cls(**base)
 
 
 def check_campaign(campaign: Campaign, registry: ForgeRegistry, rules: RouterRules = RouterRules(),
-                   live_for_creator: int = 0, height: Optional[int] = None) -> None:
+                   live_for_creator: int = 0, height: Optional[int] = None,
+                   cat_policy: Optional[CatPolicy] = None) -> None:
     """`live_for_creator`: how many campaigns this creator already has live
     in the distributor (the caller reads it from chain state). `height`: the chain's
-    height now, for the start bound (skipped when the caller has none)."""
+    height now, for the start bound (skipped when the caller has none). `cat_policy`:
+    the Forge router's word on a CAT reward (ignored for XCH)."""
     asset = campaign.reward_asset
+    if asset != XCH and (cat_policy is not None or rules.cat_policy_required):
+        if cat_policy is None:
+            raise NotRoutable("the Forge router's terms for this CAT could not be read")
+        if not cat_policy.enabled:
+            raise NotRoutable("the operator has turned this CAT off for campaigns")
+        floor = cat_policy.floor
+        if floor is None:
+            raise NotRoutable("this CAT has no Forge price, so the router cannot set its $1 floor")
+        if campaign.amount < floor:
+            why = "the operator's minimum" if cat_policy.source == "operator" else "the equivalent of $1"
+            raise NotRoutable(f"amount is below this CAT's floor of {floor:,} mojos ({why})")
     if campaign.kind not in rules.kinds:
         raise NotRoutable(f"this router does not sign for {campaign.kind.name} campaigns")
     if campaign.claim_window < rules.min_claim_window:

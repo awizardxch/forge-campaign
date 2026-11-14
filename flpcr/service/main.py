@@ -5,7 +5,9 @@ Environment (the host's service variables):
     FLPCR_NETWORK        testnet11 | mainnet                          (required)
     FLPCR_LAUNCHER       the distributor's launcher id, hex           (required)
     FLPCR_NODE_URL       full node or coinset RPC (default: coinset for the network)
-    FLPCR_FORGE_API      Forge router for pool -> LP asset ids (default: the network's router)
+    FLPCR_FORGE_API      Forge router for pool -> LP asset ids, and for each CAT reward's terms
+                         (/api/campaign-assets: the operator's switch and minimum, the Forge price
+                         the $1 floor is set from) (default: the network's router)
     FLPCR_OPERATOR_SK    the operator's synthetic secret key, hex. Unset: the service serves
                          reads and claims but posts no roots.
     FLPCR_ROUTER_SK      the router's synthetic secret key, hex: a second key, separate from the
@@ -58,7 +60,7 @@ from ..model import Kind
 from .chain import NodeChain
 from .core import CampaignService, OperatorKey
 from .http import serve
-from .intake import CampaignIntake, cached, forge_pool_infos
+from .intake import CampaignIntake, cached, forge_cat_policies, forge_pool_infos
 from ..registry import Registry
 from ..router import RouterRules
 from .sequencer import ClaimSequencer
@@ -138,7 +140,8 @@ def main() -> int:
     router_hex = env.get("FLPCR_ROUTER_SK", "").strip().removeprefix("0x")
     router_sk = SecretKey.from_bytes(bytes.fromhex(router_hex)) if router_hex else None
     intake = CampaignIntake(service, cached(lambda: forge_pool_infos(api)), rules_from_env(env.get("FLPCR_ROUTER_RULES", "")),
-                            router_sk=router_sk, lease_seconds=float(env.get("FLPCR_LEASE_SECONDS", "120")))
+                            router_sk=router_sk, lease_seconds=float(env.get("FLPCR_LEASE_SECONDS", "120")),
+                            cat_policies=cached(lambda: forge_cat_policies(api), 120))
     watcher = sink = None
     if env.get("FLPCR_WATCH", "0").strip() == "1":  # an observer: the service holds no guardian key or bond
         watcher = Watcher(chain, bytes.fromhex(launcher), source_for, network=network,

@@ -93,6 +93,8 @@ def vectors() -> dict:
         "puzzle_reveal": puzzle.serialize().hex(), "puzzle_hash": puzzle.tree_hash().hex(),
     }
 
+    cat_creates = [cat_create_vector(ring) for ring in ((7_000,), (600, 9_400))]
+
     return {
         "about": "FLPCR reference vectors for front-end mirrors. Regenerate with scripts/make_vectors.py.",
         "claim_tag": "flpcr-claim-v1", "campaign_tag": "flpcr-campaign-v1",
@@ -103,6 +105,57 @@ def vectors() -> dict:
                           "id": col.hex()},
         "leaves": leaves,
         "claim_stand_in": stand_in,
+        "cat_creates": cat_creates,
+    }
+
+
+CAT_ASSET = bytes.fromhex("969289f721bed5723aa03c73efd7886c204e50ff4e80a8eacfb352b74e7305a7")
+
+
+def _coin_json(coin) -> dict:
+    return {"parent_coin_info": coin.parent_coin_info.hex(), "puzzle_hash": coin.puzzle_hash.hex(), "amount": coin.amount}
+
+
+def _spend_json(s) -> dict:
+    return {"coin": _coin_json(s.coin), "puzzle_reveal": s.puzzle_reveal.hex(), "solution": s.solution.hex()}
+
+
+def cat_create_vector(ring) -> dict:
+    """A CAT-reward create's creator spends, built by the SDK (as tests/test_intake.py cat_bundle builds
+    the bundle the intake accepts): an XCH coin sends "k" + id, returns its change and reserves the
+    fee; the reward CAT's coins (a ring of `ring` amounts) leave exactly `amount`, the first returning
+    the change to the creator, hinted. The site's catCreatorSpends must give the same bytes."""
+    from chia_wallet_sdk import Cat, CatInfo, CatSpend, Coin, LineageProof
+
+    from flpcr.chain.values import to_program
+
+    clvm = Clvm()
+    pk, ph = key(24)
+    amount, fee = sum(ring) - 1_234, 50_000_000
+    message = b"k" + hashlib.sha256(b"cat-create-campaign").digest()
+    receiver = hashlib.sha256(b"cat-create-singleton").digest()
+    xch = Coin(hashlib.sha256(b"cat-create-xch").digest(), ph, fee + 7_000_000)
+    clvm.spend_standard_coin(xch, pk, clvm.delegated_spend([
+        to_program(clvm, [66, 23, message, receiver]), to_program(clvm, [51, ph, xch.amount - fee]), to_program(clvm, [52, fee])]))
+    info = CatInfo(CAT_ASSET, None, ph)
+    cats, wallet = [], []
+    for i, held in enumerate(ring):
+        grand = hashlib.sha256(b"cat-create-grandparent" + bytes([i])).digest()
+        parent = Coin(grand, info.puzzle_hash(), held)
+        coin = Coin(parent.coin_id(), info.puzzle_hash(), held)
+        lineage = LineageProof(grand, ph, held)
+        conds = [to_program(clvm, [51, ph, sum(ring) - amount, [ph]])] if i == 0 else []
+        cats.append(CatSpend(Cat(coin, lineage, info), clvm.standard_spend(pk, clvm.delegated_spend(conds))))
+        wallet.append({"coin": _coin_json(coin), "lineageProof": {"parentName": grand.hex(), "innerPuzzleHash": ph.hex(), "amount": held}})
+    clvm.spend_cats(cats)
+    spends = list(clvm.coin_spends())
+    for w, s in zip(wallet, spends[1:]):
+        w["puzzle"] = s.puzzle_reveal.hex()
+    return {
+        "asset_id": CAT_ASSET.hex(), "amount": amount, "network_fee": fee, "message": message.hex(), "receiver": receiver.hex(),
+        "xch_coins": [{"coin": _coin_json(xch), "puzzle": spends[0].puzzle_reveal.hex()}],
+        "cat_coins": wallet,
+        "coin_spends": [_spend_json(s) for s in spends],
     }
 
 

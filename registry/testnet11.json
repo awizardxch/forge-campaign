@@ -47,8 +47,8 @@
    "dev_fee_ph": "16ca22dea994ce7077c93aba59d3e8ea804235a7fd232038a0da854ddde8ceac",
    "pins": "226110c2f28b070e9b360349c565f0870a19961b7ed2ac95d2ce486a6829c201",
    "status": "retired",
-   "api": "https://testnet-api.forge.awizard.dev/flpcr",
-   "note": "hosted router and operator keys (2026-11-10)"
+   "api": null,
+   "note": "hosted router and operator keys (2026-11-10); never held a campaign (reserve 0), not served since /flpcr moved to 7e252240 (2026-11-14)"
   },
   {
    "launcher_id": "7ad228d71ab3d764ce61be874d0f863383d85c7ac586facc49f23a7835c7c297",
@@ -84,7 +84,7 @@
    "pins": "402549b1de911eb472b597483e622e1f2315f1164a15918d8eed79972f5af2bc",
    "status": "current",
    "api": "https://testnet-api.forge.awizard.dev/flpcr",
-   "note": "replaces f4ddac86 (2026-11-13): hosted router and operator keys, re-pinned build; serve it by setting FLPCR_TESTNET_LAUNCHER and deploying this build"
+   "note": "replaces f4ddac86 (2026-11-13): hosted router and operator keys, re-pinned build; the compose default for /flpcr since 2026-11-14"
   },
   {
    "launcher_id": "0492b437f4e3801208cfb39c5cd241d65a223c7fd31e9d09bd1ce89c8542617e",
@@ -96,7 +96,7 @@
    "pins": "402549b1de911eb472b597483e622e1f2315f1164a15918d8eed79972f5af2bc",
    "status": "current",
    "api": null,
-   "note": "CAT (T6) reward distributor on the re-pinned build, replaces 31ad2dca (2026-11-13)"
+   "note": "CAT (T6) reward distributor on the re-pinned build, replaces 31ad2dca (2026-11-13); wallet-role router and operator (derivations 1 and 2), so the host cannot serve its creates: a hosted T6 distributor needs a launch with the host's keys"
   }
  ]
 }

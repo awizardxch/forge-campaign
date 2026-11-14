@@ -9,7 +9,7 @@
 
 ```bash
 cargo install rue-cli --version 0.8.4 --locked   # Forge's version; reproduces upstream's hashes
-pip install chia-wallet-sdk==0.36.0 pytest
+pip install chia-wallet-sdk==0.38.0 pytest
 python contracts/build.py            # compile to contracts/compiled/*.hex, refuse on pin drift
 python contracts/build.py --check    # CI: exit 1 if compiled/ is stale or any pin moved
 python contracts/build.py --repin    # after an intended leaf change; never touches upstream pins

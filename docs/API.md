@@ -117,7 +117,19 @@ to it.
 Validation errors follow the same rules as the `create` leaf, so a quote that passes builds. The quote
 also applies the router's rules (`flpcr/router.py`): the reward asset, and a `CAT_HOLD` target, must
 trade in a Forge registry pool (or be XCH), an `LP_HOLD` target must be a registered pool, and an
-`NFT_HOLD` target must be on `RouterRules.nft_collections` when that list is non-empty.
+`NFT_HOLD` target must be on `RouterRules.nft_collections` when that list is non-empty. A CAT reward
+also needs the Forge router's word on that CAT (`GET <forge>/api/campaign-assets`, owner 2026-11-11):
+the operator may turn it off for campaigns or set its minimum; otherwise the smallest campaign is the
+equivalent of $1 at the CAT's Forge price, rounded up to a whole mojo. No price and no minimum, or an
+unreadable Forge router, is a refusal.
+
+### `GET /router-rules`
+
+What this distributor's router signs for in its reward asset, so a front end shows the floor the
+quote enforces: `{ reward_asset, enabled, min_amount, source, floor_usd, price_usd, kinds,
+min_claim_window, max_start_lead, max_live_per_creator, router_ready }`. `min_amount` is in mojos of
+the reward (1000 to a CAT token), `null` when no floor can be set; `source` is `rules` (XCH),
+`usd`, `operator` or `unavailable`.
 
 ### `POST /campaigns/create`
 
