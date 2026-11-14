@@ -95,6 +95,17 @@ class NodeChain:
             coins.append(Coin(bytes.fromhex(c["parent_coin_info"][2:]), bytes.fromhex(c["puzzle_hash"][2:]), int(c["amount"])))
         return coins
 
+    def hinted(self, hint: bytes) -> List[Coin]:
+        """Every coin, spent or not, created with `hint` as its first memo (the fleet's discovery of
+        launches made for this host, flpcr.build_pin.BuildPin.hint)."""
+        out = self.rpc("get_coin_records_by_hint", {"hint": "0x" + hint.hex(), "include_spent_coins": True})
+        coins = []
+        for r in out.get("coin_records") or []:
+            c = r["coin"]
+            coins.append(Coin(bytes.fromhex(c["parent_coin_info"].removeprefix("0x")),
+                              bytes.fromhex(c["puzzle_hash"].removeprefix("0x")), int(c["amount"])))
+        return coins
+
 
 class SimChain:
     """The simulator as a chain: every push is a block."""
@@ -123,3 +134,11 @@ class SimChain:
 
     def unspent_at(self, puzzle_hashes: Sequence[bytes]) -> List[Coin]:
         return [coin for ph in puzzle_hashes for coin in self.sim.unspent_coins(ph, False)]
+
+    def hinted(self, hint: bytes) -> List[Coin]:
+        out = []
+        for coin_id in self.sim.hinted_coins(hint):
+            state = self.sim.coin_state(coin_id)
+            if state is not None:
+                out.append(state.coin)
+        return out
