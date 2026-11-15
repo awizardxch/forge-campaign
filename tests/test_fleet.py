@@ -31,6 +31,8 @@ try:
     from flpcr.chain.signer import KeySigner
     from flpcr.chain.sim import SimWorld
     from flpcr.chain.values import to_program
+    from flpcr.chain.state import ChainState
+    from flpcr.clvm import sha256tree
     from flpcr.registry import pins_fingerprint
     from flpcr.service.chain import SimChain, bundle_json
     from flpcr.service.core import OperatorKey
@@ -203,9 +205,10 @@ class FleetWorld:
         return s is not None and s.spent_height is None
 
 
-def raw_launch(fx, router_ph=None, engine_ph=None, asset=XCH, finalizer=None, config=None, hint=True):
+def raw_launch(fx, router_ph=None, engine_ph=None, asset=XCH, finalizer=None, config=None, hint=True, state=None):
     """A distributor launched outside the fleet, hinted for this host: what anyone can put on
-    chain. Its Config is the pin's template with `router_ph` / `config` overrides."""
+    chain. Its Config is the pin's template with `router_ph` / `config` overrides; `state`, when
+    given, maps the genesis State's value to the one the eve is launched with instead."""
     w, pin = fx.w, fx.fleet.pin
     k = w.keys
     fund = w.sim.new_coin(k.ph("deployer"), 1)
@@ -214,6 +217,8 @@ def raw_launch(fx, router_ph=None, engine_ph=None, asset=XCH, finalizer=None, co
     for name, value in dict(config or {}, **({"router_ph": router_ph} if router_ph else {})).items():
         object.__setattr__(cfg, name, value)
     d = Distributor(Puzzles(Clvm()), cfg, engine_ph or pin.operator_ph, finalizer=finalizer)
+    if state is not None:
+        d.state = to_program(d.clvm, state(ChainState.genesis(engine_ph or pin.operator_ph).to_value()))
     conditions = d.funding_conditions(fund)
     if hint:
         conditions[0].append([pin.hint])
@@ -304,6 +309,25 @@ class TestDiscovery(unittest.TestCase):
         self.assertEqual(fx.fleet.canonical(XCH), fx.w.launcher_id)
         self.assertEqual(fx.fleet.gate(good), fx.w.launcher_id)
 
+
+    def test_a_distributor_not_born_empty_is_refused_and_never_canonical(self):
+        """F-B1 (2026-11-14 conformance review, part B): the launch chooses the eve's State, so a
+        launch of the exact pinned build could start with a campaign row naming the launcher as
+        creator and reclaim from honest creators' deposits. Only the empty genesis is hosted, byte
+        for byte, and a refused launch never becomes an asset's distributor."""
+        fx = self.fx
+        good = raw_launch(fx)
+        row = [b"\xfa" * 32, fx.w.keys.ph("thief"), 500_000, 1, 2, 1, 0, sha256tree([])]
+        # The first (and only) launch for ASSET_A carries a row nobody created.
+        seeded = raw_launch(fx, asset=ASSET_A, state=lambda v: v[:3] + [[row]] + v[4:])
+        ninth = raw_launch(fx, state=lambda v: v + [b"\x01"])  # parses as genesis; bytes differ
+        fx.fleet.discover_new()
+        self.assertIn(good, fx.fleet.hosted)
+        self.assertTrue(fx.fleet.get(good).build_pinned, fx.fleet.get(good).why_not)
+        for bad in (seeded, ninth):
+            self.assertNotIn(bad, fx.fleet.hosted)
+            self.assertIn("not born empty", fx.fleet.rejected.get(bad, ""))
+        self.assertIsNone(fx.fleet.canonical(ASSET_A), "a refused first launch must not become the asset's distributor")
 
     def test_a_configured_distributor_off_the_pin_is_hosted_but_never_canonical(self):
         """FLPCR_LAUNCHERS hosts any launcher it names, for reads and claims; only the build pin
