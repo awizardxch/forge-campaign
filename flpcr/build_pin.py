@@ -105,6 +105,23 @@ class BuildPin:
                 raise NotPinned(f"wrong config: {name} is not the pinned build's")
         if reward_asset is not None and cfg.reward_asset != reward_asset:
             raise NotPinned("wrong asset: it pays another reward asset")
+        # Born empty. The launch, not a leaf, chooses the eve's State, so a launch of this exact
+        # build could start with campaign rows (or a reserve, roots, a rotation) already in it, and
+        # a row naming the launcher as creator would let them reclaim from the reserve that honest
+        # creators' deposits fill (2026-11-14 conformance review, part B, F-B1). Every launch this
+        # host or the site makes starts at ChainState.genesis (launch.py, src/lib/campaigns/build.ts
+        # genesisStateHash), so anything else is refused, and a refused launch is never an asset's
+        # canonical distributor (fleet.canonical counts only build-pinned ones).
+        from .chain.state import ChainState
+        from .clvm import sha256tree
+
+        born = getattr(resynced, "initial_state_hash", None)
+        if born is None:
+            raise NotPinned("not born empty: the distributor's first State is unknown")
+        # Byte-exact, as the site checks it (build.ts genesisStateHash): the State a launch of this
+        # host or the site builds (driver.Distributor: ChainState.genesis(...).to_value()).
+        if bytes(born) != bytes(sha256tree(ChainState.genesis(self.operator_ph).to_value())):
+            raise NotPinned("not born empty: it was launched with a State other than the empty genesis")
 
 
 def canonical_order(candidates: Iterable[Tuple[bytes, int]]) -> List[bytes]:

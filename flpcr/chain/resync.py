@@ -69,6 +69,14 @@ class Resynced:
     # Generations whose spend named a reserve other than the replayed one (upstream finalizer
     # only, CP-06): (generation, height, the reserve coin id the chain followed instead).
     reserve_forks: List[Tuple[int, int, str]] = field(default_factory=list)
+    # The State the eve coin was born with, as its first spend revealed it. A distributor of the
+    # pinned build can be launched with any State (the launch is the launcher's, not a leaf's), so
+    # this is what BuildPin.check holds against ChainState.genesis: a launch that starts with
+    # campaign rows in it is refused (2026-11-14 conformance review, part B, F-B1).
+    initial_state: Optional[ChainState] = None
+    # Its tree hash exactly as revealed: two spellings that parse to the same ChainState (a 0x00
+    # where nil belongs, a ninth element) still differ here, so "born empty" is byte-exact.
+    initial_state_hash: Optional[bytes] = None
 
 
 def _config_from_value(v: List[Program]) -> Config:
@@ -270,7 +278,8 @@ def resync(reader, puzzles: Puzzles, launcher_id: bytes) -> Resynced:
         raise ResyncError("the eve coin's puzzle is not what these compiled leaves build (the leaf set's merkle "
                           "root differs): the distributor was launched with another build of the leaves. Resync "
                           "with that build (FLPCR_COMPILED pointing at its compiled folder)")
-    out = Resynced(d, cfg, funding, 0)
+    out = Resynced(d, cfg, funding, 0, initial_state=ChainState.from_program(state0),
+                   initial_state_hash=bytes(state0.tree_hash()))
 
     while True:
         spend = reader.coin_spend(d.coin.coin_id())
