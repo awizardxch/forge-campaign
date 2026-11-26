@@ -246,6 +246,20 @@ def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit:
                     if not isinstance(raw, list):
                         raise ValueError("addresses is a list")
                     return self.send_json(200, {"success": True, **service.claimable_many([puzzle_hash_of(str(x)) for x in raw])})
+                # The guardian's veto (owner, 2026-11-25). The Forge router calls these over the compose
+                # network when a 🔐 lock proposes and executes a veto; Caddy refuses */api/v1/guardian/*
+                # from outside, since a hold makes the service's writers wait.
+                if path == "/api/v1/guardian/veto":
+                    if service.s is None:
+                        return self.send_json(503, {"success": False, "error": "booting: resyncing from chain"})
+                    root_id = body.get("root_id")
+                    if not isinstance(root_id, int) or isinstance(root_id, bool) or root_id < 0:
+                        raise ValueError("root_id is a whole number")
+                    sender = puzzle_hash_of(str(body.get("guardian") or ""))
+                    return self.send_json(200, {"success": True, **service.guardian_veto(root_id, sender, bool(body.get("hold")))})
+                if path == "/api/v1/guardian/release":
+                    service.release_guardian()
+                    return self.send_json(200, {"success": True})
                 if path == "/api/v1/campaigns/quote" and intake is not None:
                     return self.send_json(200, {"success": True, **intake.quote(body)})
                 if path == "/api/v1/campaigns/create" and intake is not None:

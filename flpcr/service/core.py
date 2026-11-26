@@ -272,11 +272,70 @@ class CampaignService:
             if self.lease.pinned() or not self.chain.spent(self.d.coin.coin_id()):
                 return False
             before = self.d.coin.coin_id()
+            held = self.lease.guardian()
+            if held is not None and held.coin_id == before:  # the coin a veto named is gone: no hold left
+                self.lease.release_guardian()
             self.boot()
             self.s.log.append({"step": "resync", "reason": "the singleton was spent by another builder",
                                "from_coin": before.hex(), "coin": self.d.coin.coin_id().hex(),
                                "time": int(time.time())})
             return True
+
+    # --- the guardian ---------------------------------------------------------------------
+
+    def guardian_veto(self, root_id: int, sender_ph: bytes, hold: bool = False) -> dict:
+        """The distributor's half of a guardian veto (owner, 2026-11-25): the keyless singleton
+        spend that runs `veto` on the pending root `root_id`, built at the chain's height now on the
+        singleton's current coin, and the one condition the guardian's coin must carry,
+        [66, 23, "v" + tree_hash(root_id), coin id]. Nothing is applied here: the spend lands only
+        beside the guardian's message (a 🔐 lock proposal), and `follow` picks it up after.
+
+        `hold`: also hold the service's own writers (roots, claim batches, creates) off this coin
+        until the root's dispute window closes, so the signed condition does not go stale while the
+        lock's owners sign it."""
+        from ..clvm import sha256tree
+        from .chain import bundle_json
+
+        with self.write_lock:
+            self.follow()
+            d = self.d
+            st = d.chain_state
+            if sender_ph != d.cfg.guardian_ph:
+                raise ValueError("this address is not the distributor's guardian")
+            h = self.chain.peak()
+            pending = st.pending
+            if pending is None or pending.root_id != root_id:
+                raise ValueError(f"root {root_id} is not this distributor's pending root")
+            if h >= pending.activates_at:
+                raise ValueError(f"root {root_id} left its dispute window at height {pending.activates_at:,}; "
+                                 "it is active and can no longer be vetoed")
+            if st.dispute is not None:
+                raise ValueError(f"root {root_id} is disputed: the guardian settles it with resolve, not veto")
+            if self.lease.pinned():
+                raise ValueError("a campaign create is confirming on this coin; retry in a minute")
+            coin_id = d.coin.coin_id()
+            mark = d._mark()
+            try:
+                prepared = d.prepare([d.veto(h, root_id, sender_ph)])
+                spends = list(prepared.spends)
+                cost = d.spend_cost(spends)
+            finally:
+                d._rewind(mark)
+            message = b"v" + sha256tree(root_id)
+            if hold:
+                self.lease.hold_for_guardian(coin_id, (pending.activates_at - h) * 18.75 + 60)
+            from chia_wallet_sdk import Signature
+            return {
+                "launcher_id": d.launcher_id.hex(), "root_id": root_id, "coin_id": coin_id.hex(), "height": h,
+                "activates_at": pending.activates_at, "blocks_left": pending.activates_at - h,
+                "guardian_ph": sender_ph.hex(), "message": message.hex(),
+                "condition": [66, 23, "0x" + message.hex(), "0x" + coin_id.hex()],
+                "spends": bundle_json(spends, Signature.infinity())["coin_spends"], "cost": cost,
+                "held": hold,
+            }
+
+    def release_guardian(self) -> None:
+        self.lease.release_guardian()
 
     def manifest(self, hash_hex: str) -> Optional[dict]:
         """A posted root's manifest by its hash: the published file if there is one (served as

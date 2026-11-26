@@ -147,9 +147,11 @@ class LaunchIntake:
             seed = self._seed(body, creator, asset, puzzles.clvm)
             d.seed_reserve(seed)
         d.launcher_spend(funding)  # sets the eve coin, its lineage and (XCH) the reserve
-        shim = types.SimpleNamespace(d=d, chain=fleet.chain, network=fleet.network, lease=SingletonLease(self.clock))
+        shim = types.SimpleNamespace(d=d, chain=fleet.chain, network=fleet.network, lease=SingletonLease(self.clock),
+                                     every=fleet.every)
         intake = CampaignIntake(shim, fleet.pools, fleet.rules, router_sk=fleet.router_sk,
-                                lease_seconds=self.lease_seconds, cat_policies=fleet.cat_policies)
+                                lease_seconds=self.lease_seconds, cat_policies=fleet.cat_policies,
+                                create_gate=fleet.create_gate)
         campaign = intake.campaign_from(body, h)
         try:
             intake.check_route(campaign, h)
@@ -157,6 +159,7 @@ class LaunchIntake:
             raise ValueError(f"not routable: {e}") from e
         qid = "L" + secrets.token_hex(8)
         q = Quote(qid, campaign, h, d.coin.coin_id(), self.clock() + self.lease_seconds)
+        intake.price(q, h)
         lq = LaunchQuote(q, d, funding, seed, d.coin, intake)
         q.network_fee = self.estimate_network_fee(lq)
         lq.launch = {
