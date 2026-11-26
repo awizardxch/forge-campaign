@@ -85,7 +85,7 @@ class TestV17Fees(unittest.TestCase):
 
     def test_a_v17_pool_read_as_v16_is_refused(self):
         # V18 shares V17's swap/observe/collect/dao_fee leaves, so the reader names both protocols
-        with self.assertRaisesRegex(UnsupportedPool, r"protocol 18(/19)? leaf, not protocol 17"):
+        with self.assertRaisesRegex(UnsupportedPool, r"protocol 18(/19)?(/21)? leaf, not protocol 17"):
             walk(RCAT_POOL, PROTOCOL_V16)
 
     def test_a_quoted_selector_reads_the_same(self):
@@ -123,7 +123,7 @@ class TestV18Pins(unittest.TestCase):
         import flpcr.v16_fees as fees
         launcher = h("256a9e8bf479365ac905563de5ab79143ae39b0a2c1776effb053f8744e7a673")
         lp = h("d537a5eb450c2816b2a2170adabd12b622b1fab5154492e15593b86c580e2279")
-        self.assertEqual(fees.MAX_PROTOCOL, 19)
+        self.assertIn(19, fees.REVISIONS)
         self.assertEqual(fees.lp_asset_id(launcher, 19), lp)
         self.assertEqual(fees.check_protocol(launcher, lp), 19)
         self.assertEqual(fees.check_protocol(launcher, lp, 19), 19)

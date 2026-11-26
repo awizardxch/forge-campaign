@@ -32,6 +32,7 @@ from flpcr import FixtureSource, HolderEvent
 from flpcr.router import XCH, CatPolicy, RouterRules
 
 POOL, OLD_POOL, LP = b"\xb0" * 32, b"\xb1" * 32, b"\x1b" * 32
+V1_POOL, V18_POOL = b"\xb2" * 32, b"\xb3" * 32
 ASSET = b"\xca" * 32
 EXTRA = bytes.fromhex("37a90eb5185a9c4439a91ddc98bbadce7b4feba060d50116a067de66bf236615")
 
@@ -63,7 +64,9 @@ class IntakeWorld:
         self.clock = Clock()
         self.svc.lease = SingletonLease(self.clock)
         self.svc.boot()
-        pools = {POOL: PoolInfo(frozenset({XCH, ASSET}), 17), OLD_POOL: PoolInfo(frozenset({XCH}), 16)}
+        # POOL is Forge V20 (21), the only revision a new campaign targets; V1_POOL is a v1 (V16) pool.
+        pools = {POOL: PoolInfo(frozenset({XCH, ASSET}), 21), OLD_POOL: PoolInfo(frozenset({XCH}), 16),
+                 V1_POOL: PoolInfo(frozenset({XCH, ASSET}), 17), V18_POOL: PoolInfo(frozenset({XCH, ASSET}), 19)}
         self.intake = CampaignIntake(self.svc, lambda: pools, rules, router_sk=self.router_sk if router else None)
         self.creator = w.sim.bls(0)
 
@@ -161,6 +164,11 @@ class TestXchCreate(unittest.TestCase):
         x = self.x
         with self.assertRaisesRegex(ValueError, "V15 pool"):
             x.intake.quote(x.request(target=OLD_POOL.hex()))
+        # Owner, 2026-11-25: new campaigns target Forge V20 pools only.
+        with self.assertRaisesRegex(ValueError, "V16 pool: campaigns target Forge V20"):
+            x.intake.quote(x.request(target=V1_POOL.hex()))
+        with self.assertRaisesRegex(ValueError, "V18 pool: campaigns target Forge V20"):
+            x.intake.quote(x.request(target=V18_POOL.hex()))
         with self.assertRaisesRegex(ValueError, "not a registered Forge pool"):
             x.intake.quote(x.request(target=(b"\x42" * 32).hex()))
         with self.assertRaisesRegex(ValueError, "claim_window"):
@@ -543,7 +551,7 @@ class TestCatCreate(unittest.TestCase):
 
     def test_reward_cat_must_be_in_a_v16_pool(self):
         x = self.x
-        x.intake.pools = lambda: {POOL: PoolInfo(frozenset({XCH}), 17), OLD_POOL: PoolInfo(frozenset({ASSET}), 16)}
+        x.intake.pools = lambda: {POOL: PoolInfo(frozenset({XCH}), 21), OLD_POOL: PoolInfo(frozenset({ASSET}), 16)}
         with self.assertRaisesRegex(ValueError, "reward asset is not in any Forge registry pool"):
             x.intake.quote(x.request())
 

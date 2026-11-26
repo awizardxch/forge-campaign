@@ -67,7 +67,10 @@ from .http import puzzle_hash_of
 from .lease import LEASE_SECONDS, LeaseBusy, SingletonLease
 from .sequencer import _bundle
 
-MIN_PROTOCOL = 17  # Forge V16 (owner decision 2026-11-09: no V15 or V14 pools)
+MIN_PROTOCOL = 17  # Forge V16: the oldest pool the registry prices reward CATs from (2026-11-09)
+# The only revision a new LP campaign may target (owner, 2026-11-25: "we only need v20 pools for
+# campaigns"). Campaigns created earlier on V16-V18 pools still score: the fee reader keeps them.
+CAMPAIGN_PROTOCOL = 21  # Forge V20
 MODE_CREATE = 23
 # The create spend names the quote's height `h`; the leaf accepts it while the block
 # that includes it is fewer than HEIGHT_WINDOW blocks later. Leave a margin.
@@ -90,7 +93,7 @@ class Moved(Requote):
 @dataclass(frozen=True)
 class PoolInfo:
     assets: FrozenSet[bytes]  # bytes(32) for XCH
-    protocol: int  # Forge's poolVersion: 17 = V16, 18 = V17
+    protocol: int  # Forge's poolVersion: 17 = V16, 18 = V17, 19 = V18, 20 = V19, 21 = V20
 
 
 def forge_pool_infos(api: str) -> Dict[bytes, PoolInfo]:
@@ -303,8 +306,9 @@ class CampaignIntake:
         pools = self.pools()
         if campaign.kind == Kind.LP_HOLD:
             info = pools.get(campaign.target)
-            if info is not None and info.protocol < MIN_PROTOCOL:
-                raise NotRoutable(f"Forge V{info.protocol - 1} pool: campaigns target Forge V16 pools and newer only")
+            # An unlisted target is refused by check_campaign ("not a registered Forge pool").
+            if info is not None and info.protocol != CAMPAIGN_PROTOCOL:
+                raise NotRoutable(f"Forge V{info.protocol - 1} pool: campaigns target Forge V20 (v2) pools only")
         registry = ForgeRegistry.from_pools({k: v.assets for k, v in pools.items() if v.protocol >= MIN_PROTOCOL})
         st = self.service.d.chain_state
         live = sum(1 for c in st.campaigns if c.creator == campaign.creator)

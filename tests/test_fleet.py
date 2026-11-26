@@ -93,7 +93,7 @@ class FleetWorld:
         w.advance_to(w.h + 3)
         self.alice = w.sim.bls(0)
         self.src = FixtureSource(lp_assets={POOL: LP}, events={LP: [HolderEvent(0, self.alice.puzzle_hash, 3)]})
-        self.pools = {POOL: PoolInfo(frozenset({XCH, ASSET_A, ASSET_B}), 17)}
+        self.pools = {POOL: PoolInfo(frozenset({XCH, ASSET_A, ASSET_B}), 21)}
         self.chain = (chain_cls or SimChain)(w.sim)
         self.fleet = self.new_fleet(discover=discover)
         self.fleet.boot()
