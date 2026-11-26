@@ -330,7 +330,8 @@ class CampaignIntake:
         """What this router signs for in the distributor's reward asset (GET /api/v1/router-rules),
         or in `asset` for a distributor not launched yet (GET /api/v1/launch/terms/<asset>): the
         create dialog shows the same floor the quote enforces."""
-        asset = self.service.d.cfg.reward_asset if asset is None else asset
+        if asset is None:
+            asset = self.service.d.cfg.reward_asset
         out = {"reward_asset": asset.hex(), "kinds": sorted(k.name for k in self.rules.kinds),
                "min_claim_window": self.rules.min_claim_window, "max_start_lead": self.rules.max_start_lead,
                "max_live_per_creator": self.rules.max_live_per_creator,

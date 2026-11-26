@@ -620,5 +620,147 @@ class TestFleetLoop(unittest.TestCase):
             server.shutdown()
 
 
+
+@unittest.skipUnless(HAVE_CHAIN, "needs chia_wallet_sdk and the compiled build")
+class TestTemplateMode(unittest.TestCase):
+    """Mainnet hosting (owner, 2026-11-25: "anyone should be able to launch a campaign"): no primary
+    distributor and no operator-paid launch. The build pin comes from the host's settings
+    (guardian, admin, dev fee, its two keys, production Config defaults) and the first creator's
+    campaign launches the first distributor, which the host then finds by its hint and serves."""
+
+    GUARDIAN, ADMIN, DEV = b"\x6a" * 32, b"\x6b" * 32, b"\x6c" * 32
+
+    def template(self, fx, **kw):
+        from flpcr.build_pin import BuildPin
+        roles = dict(operator_ph=fx.op.puzzle_hash, router_ph=fx.router_ph, guardian_ph=self.GUARDIAN,
+                     admin_ph=self.ADMIN, dev_fee_ph=self.DEV, pins=fx.fleet.pins)
+        roles.update(kw)
+        return BuildPin.template("testnet11", **roles)
+
+    def fleet(self, fx, template=None, discover=True):
+        return Fleet(fx.chain, "testnet11", None, lambda cs: fx.src, operator=fx.op, router_sk=fx.router_sk,
+                     rules=RouterRules.permissive(), pools=lambda: fx.pools, every=10, discover=discover,
+                     template=template or self.template(fx))
+
+    def test_the_template_is_the_production_config(self):
+        from flpcr.distributor import Config, DEFAULT_DISPUTE_BOND
+        fx = FleetWorld(discover=False)
+        pin = self.template(fx)
+        d = Config(bytes(32), bytes(32), self.DEV, self.ADMIN, self.GUARDIAN, fx.router_ph)
+        self.assertEqual((pin.dispute_blocks, pin.rotate_delay, pin.dispute_bond, pin.fee_bps, pin.max_campaigns),
+                         (d.dispute_blocks, d.rotate_delay, DEFAULT_DISPUTE_BOND, d.fee_bps, d.max_campaigns))
+        self.assertEqual((pin.guardian_ph, pin.admin_ph, pin.dev_fee_ph), (self.GUARDIAN, self.ADMIN, self.DEV))
+        with self.assertRaisesRegex(ValueError, "not template fields"):
+            self.template(fx, reward_asset=bytes(32))
+        with self.assertRaisesRegex(ValueError, "rotate_delay must exceed"):
+            self.template(fx, rotate_delay=1)
+
+    def test_boot_empty_then_the_first_creator_launches_xch(self):
+        fx = FleetWorld(discover=False)
+        fleet = self.fleet(fx)
+        fleet.boot()
+        self.assertTrue(fleet.booted)
+        self.assertEqual(fleet.hosted, {}, "the primary-mode world's distributor does not pass this pin")
+        self.assertIsNone(fleet.home())
+        self.assertTrue(fleet.describe()["template"])
+        self.assertEqual(fleet.terms(XCH)["reward_asset"], XCH.hex())
+        q, out = fx.launch(fx.creator(), XCH, fleet=fleet, length=80, claim_window=300)
+        lid = bytes.fromhex(out["distributor"])
+        self.assertEqual(fleet.canonical(XCH), lid)
+        self.assertIs(fleet.home(), fleet.get(lid))
+        h = fleet.get(lid)
+        self.assertTrue(h.build_pinned, h.why_not)
+        cfg = h.service.d.cfg
+        self.assertEqual((cfg.guardian_ph, cfg.admin_ph, cfg.dev_fee_ph, cfg.router_ph),
+                         (self.GUARDIAN, self.ADMIN, self.DEV, fx.router_ph))
+        self.assertEqual(len(h.service.s.campaigns), 1)
+        self.assertEqual(fx.w.sim.coin_state(bytes.fromhex(q["launch"]["funding_coin"])).spent_height is not None, True)
+        fleet.step()  # the operator loop runs on the launched distributor
+        # A cold restart finds it from chain alone, by its hint.
+        again = self.fleet(fx)
+        again.boot()
+        self.assertEqual(again.canonical(XCH), lid)
+        self.assertTrue(again.get(lid).build_pinned)
+
+    def test_a_template_must_name_this_hosts_keys(self):
+        fx = FleetWorld(discover=False)
+        with self.assertRaisesRegex(ValueError, "router is not this host's"):
+            self.fleet(fx, self.template(fx, router_ph=b"\x01" * 32)).boot()
+        with self.assertRaisesRegex(ValueError, "operator is not this host's"):
+            self.fleet(fx, self.template(fx, operator_ph=b"\x02" * 32)).boot()
+        with self.assertRaisesRegex(ValueError, "another compiled build"):
+            self.fleet(fx, self.template(fx, pins="0" * 64)).boot()
+        with self.assertRaisesRegex(ValueError, "no primary distributor and no template"):
+            Fleet(fx.chain, "testnet11", None, lambda cs: fx.src).boot()
+
+    def test_a_distributor_under_another_guardian_is_refused(self):
+        """Discovery only hosts what the template pins: a launch hinted for this host under any other
+        guardian (or admin) never takes creates."""
+        fx = FleetWorld(discover=False)
+        other = self.fleet(fx, self.template(fx, guardian_ph=b"\x99" * 32))
+        other.boot()
+        _, out = fx.launch(fx.creator(), XCH, fleet=other, length=80, claim_window=300)
+        stray = bytes.fromhex(out["distributor"])
+        fleet = self.fleet(fx)
+        fleet.boot()
+        self.assertNotIn(stray, fleet.hosted)
+        self.assertIn("guardian_ph", fleet.rejected.get(stray, ""))
+        self.assertIsNone(fleet.canonical(XCH))
+
+    def test_template_from_the_hosts_env(self):
+        """main.template_from_env: the guardian from FLPCR_GUARDIAN_ADDRESS, the admin and dev fee
+        from flpcr.networks (mainnet: the dev fee address only from its env), both keys required."""
+        from chia_wallet_sdk import Address
+        from flpcr.service.main import template_from_env
+        fx = FleetWorld(discover=False)
+        xch = lambda b: Address(b, "xch").encode()  # noqa: E731 -- made-up addresses, never the real ones
+        env = {"FLPCR_GUARDIAN_ADDRESS": xch(self.GUARDIAN), "VITE_CFMM_POOL_DEV_FEE_ADDRESS_MAINNET": xch(self.DEV)}
+        pin = template_from_env("mainnet", env, fx.op, fx.router_sk)
+        self.assertEqual((pin.network, pin.guardian_ph, pin.admin_ph, pin.dev_fee_ph, pin.router_ph, pin.operator_ph),
+                         ("mainnet", self.GUARDIAN, self.DEV, self.DEV, fx.router_ph, fx.op.puzzle_hash))
+        pin = template_from_env("mainnet", {**env, "FLPCR_ADMIN_ADDRESS": xch(self.ADMIN)}, fx.op, fx.router_sk)
+        self.assertEqual(pin.admin_ph, self.ADMIN)
+        with self.assertRaisesRegex(ValueError, "FLPCR_GUARDIAN_ADDRESS"):
+            template_from_env("mainnet", {k: v for k, v in env.items() if k != "FLPCR_GUARDIAN_ADDRESS"}, fx.op, fx.router_sk)
+        with self.assertRaisesRegex(ValueError, "needs FLPCR_OPERATOR_SK and FLPCR_ROUTER_SK"):
+            template_from_env("mainnet", env, None, fx.router_sk)
+        with self.assertRaises(ValueError):  # the dev fee address is required on mainnet
+            template_from_env("mainnet", {"FLPCR_GUARDIAN_ADDRESS": xch(self.GUARDIAN)}, fx.op, fx.router_sk)
+        with self.assertRaises(ValueError):  # a testnet address on mainnet
+            template_from_env("mainnet", {**env, "FLPCR_GUARDIAN_ADDRESS": Address(self.GUARDIAN, "txch").encode()},
+                              fx.op, fx.router_sk)
+
+    def test_http_before_and_after_the_first_launch(self):
+        fx = FleetWorld(discover=False)
+        fleet = self.fleet(fx)
+        fleet.boot()
+        server = serve(None, 0, fleet=fleet, post_limit=PostLimit(1000))
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+
+        def get(path):
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}") as r:
+                    return r.status, json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read())
+
+        try:
+            code, health = get("/health")
+            self.assertEqual((code, health["distributors"]), (200, 0))
+            self.assertEqual(get("/api/v1/status")[0], 404)
+            code, terms = get(f"/api/v1/launch/terms/{XCH.hex()}")
+            self.assertEqual((code, terms["distributor"]), (200, None))
+            code, desc = get("/api/v1/fleet")
+            self.assertEqual((code, desc["primary"], desc["template"]), (200, None, True))
+            self.assertEqual(desc["build"]["guardian_ph"], self.GUARDIAN.hex())
+            _, out = fx.launch(fx.creator(), XCH, fleet=fleet, length=80, claim_window=300)
+            code, status = get("/api/v1/status")
+            self.assertEqual((code, status["launcher_id"]), (200, out["distributor"]))
+            self.assertEqual(get(f"/api/v1/launch/terms/{XCH.hex()}")[1]["distributor"], out["distributor"])
+        finally:
+            server.shutdown()
+
+
 if __name__ == "__main__":
     unittest.main()

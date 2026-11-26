@@ -14,8 +14,11 @@ it is THIS build with THIS host's keys:
 * its reward asset is the one asked for.
 
 `BuildPin` is that template. The service takes it from its primary distributor (FLPCR_LAUNCHER,
-itself a launcher pin) and checks it against its own router and operator keys; the site keeps
-its own copy in `src/lib/campaigns/pins.ts` and rebuilds the puzzle hashes from it.
+itself a launcher pin) and checks it against its own router and operator keys, or, with no
+primary (template mode, mainnet 2026-11-25), builds it from its settings (`BuildPin.template`):
+the guardian, admin and dev fee addresses, its own two keys and the production Config defaults,
+so the first creator's campaign launches the first distributor. The site keeps its own copy in
+`src/lib/campaigns/pins.ts` and rebuilds the puzzle hashes from it.
 
 Canonical distributor: one asset may end up with more than one pinned distributor (two hosts
 launching at once, or a launch that confirmed late). The canonical one is the one whose
@@ -63,6 +66,19 @@ class BuildPin:
     @classmethod
     def from_config(cls, network: str, cfg: Config, operator_ph: bytes, pins: str) -> "BuildPin":
         return cls(network, operator_ph, pins=pins, **{f: getattr(cfg, f) for f in TEMPLATE_FIELDS})
+
+    @classmethod
+    def template(cls, network: str, *, operator_ph: bytes, router_ph: bytes, guardian_ph: bytes, admin_ph: bytes,
+                 dev_fee_ph: bytes, pins: str, **overrides) -> "BuildPin":
+        """The pin of a host that has no distributor yet: these roles, and every other Config field
+        at its production default (distributor.Config) unless overridden. A distributor launched
+        under it (flpcr.service.launch) is checked against it like any other."""
+        unknown = set(overrides) - set(TEMPLATE_FIELDS)
+        if unknown:
+            raise ValueError(f"not template fields: {sorted(unknown)}")
+        cfg = Config(bytes(32), bytes(32), dev_fee_ph=dev_fee_ph, admin_ph=admin_ph, guardian_ph=guardian_ph,
+                     router_ph=router_ph, **overrides)  # Config validates the clocks and bounds
+        return cls.from_config(network, cfg, operator_ph, pins)
 
     def config_for(self, launcher_id: bytes, reward_asset: bytes) -> Config:
         """The Config a distributor of this build pays `reward_asset` with, launched as `launcher_id`."""

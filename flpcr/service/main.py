@@ -3,9 +3,16 @@
 Environment (the host's service variables):
 
     FLPCR_NETWORK        testnet11 | mainnet                          (required)
-    FLPCR_LAUNCHER       the primary distributor's launcher id, hex   (required). Its Config and
-                         operator are the build pin (flpcr.build_pin) every other distributor
-                         this service hosts must match; it must name this host's keys.
+    FLPCR_LAUNCHER       the primary distributor's launcher id, hex. Its Config and operator are
+                         the build pin (flpcr.build_pin) every other distributor this service
+                         hosts must match; it must name this host's keys. Unset: template mode.
+    Template mode (no FLPCR_LAUNCHER; mainnet, 2026-11-25): the build pin comes from these and
+    the production Config defaults, and the first creator's campaign launches the first
+    distributor (flpcr.service.launch), found on chain by its hint and hosted. Needs both keys.
+    FLPCR_GUARDIAN_ADDRESS the guardian: a multisig whose coin sends veto / rotate / resolve
+                         messages (required in template mode)
+    FLPCR_ADMIN_ADDRESS  the admin (default: the dev fee address, flpcr.networks)
+    VITE_CFMM_POOL_DEV_FEE_ADDRESS_MAINNET  the mainnet dev fee address (flpcr.networks)
     FLPCR_LAUNCHERS      more launcher ids to host, comma-separated (optional): each takes
                          creates only if it passes the build pin, else reads and claims only
     FLPCR_DISCOVER       1 (default): also host every distributor launched for this host (hinted
@@ -59,7 +66,11 @@ import threading
 import time
 import traceback
 
-from chia_wallet_sdk import SecretKey
+from chia_wallet_sdk import SecretKey, standard_puzzle_hash
+
+from ..build_pin import BuildPin
+from ..networks import addresses, decode
+from ..registry import pins_fingerprint
 
 from ..chain.nfts import ChainNftSource, Combined
 from ..live_source import LiveLpSource
@@ -121,12 +132,28 @@ def rules_from_env(text: str) -> RouterRules:
     return RouterRules(**given)
 
 
+def template_from_env(network: str, env, operator, router_sk) -> BuildPin:
+    """Template mode's build pin: the guardian (FLPCR_GUARDIAN_ADDRESS), the admin and dev fee
+    address (flpcr.networks), this host's operator and router keys, production Config defaults."""
+    if operator is None or router_sk is None:
+        raise ValueError("needs FLPCR_OPERATOR_SK and FLPCR_ROUTER_SK: the build pin names both keys")
+    guardian = env.get("FLPCR_GUARDIAN_ADDRESS", "").strip()
+    if not guardian:
+        raise ValueError("needs FLPCR_GUARDIAN_ADDRESS (a multisig)")
+    roles = addresses(network, env)
+    return BuildPin.template(network, operator_ph=operator.puzzle_hash,
+                             router_ph=standard_puzzle_hash(router_sk.public_key()),
+                             guardian_ph=decode(guardian, network), admin_ph=roles.admin_ph,
+                             dev_fee_ph=roles.dev_fee_ph, pins=pins_fingerprint())
+
+
 def main() -> int:
     env = os.environ
     network = env.get("FLPCR_NETWORK", "").strip()
     launcher = env.get("FLPCR_LAUNCHER", "").strip().removeprefix("0x")
-    if network not in NODES or len(launcher) != 64:
-        print("set FLPCR_NETWORK (testnet11|mainnet) and FLPCR_LAUNCHER (64 hex)", file=sys.stderr)
+    if network not in NODES or len(launcher) not in (0, 64):
+        print("set FLPCR_NETWORK (testnet11|mainnet), and FLPCR_LAUNCHER (64 hex) or the template "
+              "mode's FLPCR_GUARDIAN_ADDRESS", file=sys.stderr)
         return 2
     node = env.get("FLPCR_NODE_URL", "").strip() or NODES[network]
     api = env.get("FLPCR_FORGE_API", "").strip() or ROUTERS[network]
@@ -144,7 +171,15 @@ def main() -> int:
     router_sk = SecretKey.from_bytes(bytes.fromhex(router_hex)) if router_hex else None
     more = [bytes.fromhex(x.strip().removeprefix("0x")) for x in env.get("FLPCR_LAUNCHERS", "").split(",")
             if len(x.strip().removeprefix("0x")) == 64]
-    fleet = Fleet(chain, network, bytes.fromhex(launcher), source_for, operator=operator, router_sk=router_sk,
+    template = None
+    if not launcher:
+        try:
+            template = template_from_env(network, env, operator, router_sk)
+        except ValueError as e:
+            print(f"template mode: {e}", file=sys.stderr)
+            return 2
+    fleet = Fleet(chain, network, bytes.fromhex(launcher) if launcher else None, source_for, operator=operator,
+                  router_sk=router_sk, template=template,
                   rules=rules_from_env(env.get("FLPCR_ROUTER_RULES", "")), pools=cached(lambda: forge_pool_infos(api)),
                   cat_policies=cached(lambda: forge_cat_policies(api), 120), every=every, manifests_dir=manifests_dir,
                   registry=Registry.load(network, env.get("FLPCR_REGISTRY_DIR", "").strip() or None),
@@ -153,17 +188,21 @@ def main() -> int:
     discover_every = max(1, int(env.get("FLPCR_DISCOVER_EVERY", "5")))
     watcher = sink = None
     if env.get("FLPCR_WATCH", "0").strip() == "1":  # an observer: the service holds no guardian key or bond
-        watcher = Watcher(chain, bytes.fromhex(launcher), source_for, network=network,
-                          manifests=manifest_lookup(env.get("FLPCR_MANIFESTS", "").strip() or str(manifests_dir)))
+        manifests = manifest_lookup(env.get("FLPCR_MANIFESTS", "").strip() or str(manifests_dir))
         sink = AlertSink(env.get("FLPCR_WATCH_WEBHOOK", "").strip() or None)
+        if launcher:
+            watcher = Watcher(chain, bytes.fromhex(launcher), source_for, network=network, manifests=manifests)
+        else:  # template mode: one watcher per hosted distributor, made as each is hosted
+            fleet.watcher_factory = lambda lid: Watcher(chain, lid, source_for, network=network, manifests=manifests)
     server = serve(None, port, None, None, watcher, fleet=fleet)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    print(f"flpcr-service: {network} primary distributor {launcher[:12]}…, node {node}, port {port}, "
+    where = f"primary distributor {launcher[:12]}…" if launcher else f"template mode (hint {template.hint.hex()[:12]}…)"
+    print(f"flpcr-service: {network} {where}, node {node}, port {port}, "
           f"operator {'set (' + operator.puzzle_hash.hex()[:12] + '…)' if operator else 'not set: reads and claims only'}, "
           f"router key {'set' if router_sk else 'not set: quotes only'}, discovery {'on' if fleet.discover else 'off'}",
           flush=True)
 
-    while fleet.get(fleet.primary) is None:  # boot: retried until the chain answers
+    while not fleet.booted:  # boot: retried until the chain answers
         try:
             fleet.boot()
             for h in fleet.hosted.values():
@@ -184,6 +223,10 @@ def main() -> int:
             fleet.step(discover=passes % discover_every == 0, log=lambda m: print(m, flush=True))
             if watcher is not None:
                 sink(watcher.check())
+            if fleet.watcher_factory is not None:
+                for h in list(fleet.hosted.values()):
+                    if h.watcher is not None:
+                        sink(h.watcher.check())
         except Exception:  # noqa: BLE001
             traceback.print_exc()
         time.sleep(loop_seconds)

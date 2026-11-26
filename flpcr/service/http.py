@@ -118,8 +118,10 @@ def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit:
             if h is None:
                 return None
             return (h.service, h.sequencer, h.intake, h.watcher, "/" + "/".join(parts[3:]))
-        h = fleet.get(fleet.primary)
+        h = fleet.home()
         if h is None:
+            if fleet.primary is None:  # template mode before the first launch: nothing to read yet
+                return None
             return (*fixed, path)
         return (h.service, h.sequencer, h.intake, h.watcher if h.watcher is not None else watcher, path)
 
@@ -160,12 +162,16 @@ def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit:
                     asset = _hex32(full.rsplit("/", 1)[1])
                     if asset is None:
                         raise ValueError("an asset id is 32 bytes of hex")
-                    primary = fleet.get(fleet.primary)
-                    if primary is None:
+                    if not fleet.booted:
                         return self.send_json(503, {"success": False, "error": "booting: resyncing from chain"})
                     best = fleet.canonical(asset)
-                    return self.send_json(200, {"success": True, **primary.intake.terms(asset),
+                    return self.send_json(200, {"success": True, **fleet.terms(asset),
                                                 "distributor": best.hex() if best else None})
+                if fleet is not None and full == "/health" and fleet.home() is None and fleet.primary is None:
+                    # Template mode before the first launch: up, with no distributor yet.
+                    if not fleet.booted:
+                        return self.send_json(503, {"ok": False, "status": "booting"})
+                    return self.send_json(200, {"ok": True, "peak": fleet.chain.peak(), "distributors": 0})
                 found = resolve(full)
                 if found is None:
                     return self.send_json(404, {"success": False, "error": "this service hosts no such distributor"})
