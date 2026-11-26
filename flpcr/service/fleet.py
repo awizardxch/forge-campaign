@@ -89,6 +89,7 @@ class Fleet:
     service_factory: Optional[Callable] = None  # (launcher_id) -> CampaignService, for tests
     pins: Optional[str] = None  # the compiled build's fingerprint (default: pins_fingerprint())
     template: Optional[BuildPin] = None  # the build pin when there is no primary
+    create_gate: Optional[Callable] = None  # creator ph -> (allowed, why not); None: anyone (intake.router_create_gate)
     watcher_factory: Optional[Callable] = None  # (launcher_id) -> a Watcher for each hosted one
 
     def __post_init__(self) -> None:
@@ -134,7 +135,9 @@ class Fleet:
     def terms(self, asset: bytes) -> dict:
         """What this router signs for in `asset`, with or without a distributor for it yet."""
         intake = CampaignIntake(None, self.pools, self.rules, router_sk=self.router_sk,
-                                lease_seconds=self.lease_seconds, cat_policies=self.cat_policies)
+                                lease_seconds=self.lease_seconds, cat_policies=self.cat_policies,
+                                create_gate=self.create_gate)
+        intake.every_default = self.every
         return intake.terms(asset)
 
     # --- hosting --------------------------------------------------------------------------
@@ -160,7 +163,8 @@ class Fleet:
             h.why_not = str(e)
         h.intake = CampaignIntake(service, self.pools, self.rules, router_sk=self.router_sk,
                                   lease_seconds=self.lease_seconds, cat_policies=self.cat_policies,
-                                  gate=lambda lid=launcher_id: self.gate(lid), router_coins=self.router_coins)
+                                  gate=lambda lid=launcher_id: self.gate(lid), router_coins=self.router_coins,
+                                  create_gate=self.create_gate)
         if self.watcher_factory is not None:
             h.watcher = self.watcher_factory(launcher_id)
         return h

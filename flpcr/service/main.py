@@ -30,10 +30,15 @@ Environment (the host's service variables):
     FLPCR_ROUTER_RULES   JSON RouterRules (the owner's values): {"min_amount": {asset hex: mojos},
                          "min_per_day": {asset hex: mojos}, "max_live_per_creator": n,
                          "nft_collections": [DID hex, ...], "kinds": ["LP_HOLD", ...],
-                         "min_claim_window": blocks, "max_start_lead": blocks}. A key left out
+                         "min_claim_window": blocks, "max_start_lead": blocks,
+                         "post_fee": mojos per root the creator prepays the operator}. A key left out
                          keeps its RouterRules() default: LP_HOLD only, 0.1 XCH or more, a claim
                          window of 7 days or more, a start within 30 days.
     FLPCR_LEASE_SECONDS  how long a create quote holds the singleton (default 120)
+    FLPCR_CREATE_GATE    router: a creator must pass the Forge router's creation gate (the approved
+                         wallets and NFT collections its Operator tab sets for pool deployment);
+                         unset or off: anyone may create (owner, 2026-11-25: router while mainnet
+                         is tested)
     FLPCR_EVERY          blocks between roots while campaigns run (default 180, ~1 h)
     FLPCR_LOOP_SECONDS   seconds between operator checks (default 60)
     FLPCR_CACHE_DIR      where the LP crawl cache and the published root manifests live (a
@@ -79,7 +84,7 @@ from .chain import NodeChain
 from .core import OperatorKey
 from .fleet import Fleet
 from .http import serve
-from .intake import cached, forge_cat_policies, forge_pool_infos
+from .intake import cached, forge_cat_policies, forge_pool_infos, router_create_gate
 from ..registry import Registry
 from ..router import RouterRules
 from .watcher import AlertSink, Watcher, manifest_lookup
@@ -129,6 +134,8 @@ def rules_from_env(text: str) -> RouterRules:
         given["min_claim_window"] = int(raw["min_claim_window"])
     if "max_start_lead" in raw:
         given["max_start_lead"] = int(raw["max_start_lead"])
+    if "post_fee" in raw:
+        given["post_fee"] = int(raw["post_fee"])
     return RouterRules(**given)
 
 
@@ -184,6 +191,7 @@ def main() -> int:
                   cat_policies=cached(lambda: forge_cat_policies(api), 120), every=every, manifests_dir=manifests_dir,
                   registry=Registry.load(network, env.get("FLPCR_REGISTRY_DIR", "").strip() or None),
                   configured=more, discover=env.get("FLPCR_DISCOVER", "1").strip() != "0",
+                  create_gate=router_create_gate(api, network) if env.get("FLPCR_CREATE_GATE", "").strip() == "router" else None,
                   lease_seconds=float(env.get("FLPCR_LEASE_SECONDS", "120")))
     discover_every = max(1, int(env.get("FLPCR_DISCOVER_EVERY", "5")))
     watcher = sink = None

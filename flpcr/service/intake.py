@@ -60,7 +60,7 @@ from ..chain.signer import ADDITIONAL_DATA, AGG_SIG_ME, AGG_SIG_UNSAFE, MAX_COST
 from ..chain.values import to_bytes, to_int, to_list, to_program
 from ..engine import EngineState
 from ..model import BLOCKS_PER_DAY, MAX_EXCLUDED, Campaign, Kind, Params
-from ..router import CAT_FLOOR_USD, XCH, CatPolicy, ForgeRegistry, NotRoutable, RouterRules, check_campaign
+from ..router import CAT_FLOOR_USD, XCH, CatPolicy, ForgeRegistry, NotRoutable, RouterRules, check_campaign, operator_fee
 from .chain import PushRefused
 from .core import FEE_PER_COST, MIN_FEE
 from .http import puzzle_hash_of
@@ -154,6 +154,8 @@ class Quote:
     detail: Optional[str] = None
     height: Optional[int] = None
     network_fee: int = 0  # what the creator's spends must RESERVE_FEE, estimated at quote time
+    operator_ph: bytes = b""  # where the creator prepays the operator's root posts
+    operator_fee: int = 0  # how much (flpcr.router.operator_fee); 0: nothing to prepay
 
 
 class RouterCoins:
@@ -208,8 +210,15 @@ class CampaignIntake:
     def __init__(self, service, pools: Callable[[], Dict[bytes, PoolInfo]], rules: RouterRules = RouterRules(),
                  router_sk: Optional[SecretKey] = None, lease_seconds: float = LEASE_SECONDS,
                  cat_policies: Optional[Callable[[], Dict[bytes, CatPolicy]]] = None,
-                 gate: Optional[Callable[[], Optional[bytes]]] = None, router_coins: Optional[RouterCoins] = None):
+                 gate: Optional[Callable[[], Optional[bytes]]] = None, router_coins: Optional[RouterCoins] = None,
+                 create_gate: Optional[Callable[[bytes], Tuple[bool, str]]] = None):
         self.service = service
+        # Who may create (owner, 2026-11-25: while mainnet is tested, only the wallets the
+        # operator approved for deployment; an NFT gate follows the same rules): creator puzzle hash
+        # -> (allowed, why not). None: anyone. router_create_gate reads the Forge router's own
+        # creation gate, the one its Operator tab edits for pool deployment.
+        self.create_gate = create_gate
+        self.every_default = 180  # posting interval when there is no service yet (the fleet sets its own)
         self.router_coins = router_coins or RouterCoins()
         # The fleet's word on whether this distributor takes new campaigns: None when it does, else
         # the launcher id of the reward asset's canonical distributor (flpcr.service.fleet).
@@ -302,7 +311,23 @@ class CampaignIntake:
                 break
         return campaign
 
+    def check_creator(self, creator: bytes) -> None:
+        """The creation gate, if there is one: refuses a creator it does not admit."""
+        if self.create_gate is None:
+            return
+        allowed, why = self.create_gate(creator)
+        if not allowed:
+            raise NotRoutable(why)
+
+    def price(self, q: Quote, h: int) -> None:
+        """What the creator prepays the operator for this campaign's roots (flpcr.router.operator_fee),
+        to the operator key the distributor answers to at `h`."""
+        svc = self.service
+        q.operator_ph = svc.d.engine_at(h)
+        q.operator_fee = operator_fee(self.rules, q.campaign.length, int(getattr(svc, "every", 180) or 180))
+
     def check_route(self, campaign: Campaign, height: Optional[int] = None) -> None:
+        self.check_creator(campaign.creator)
         pools = self.pools()
         if campaign.kind == Kind.LP_HOLD:
             info = pools.get(campaign.target)
@@ -335,7 +360,9 @@ class CampaignIntake:
         out = {"reward_asset": asset.hex(), "kinds": sorted(k.name for k in self.rules.kinds),
                "min_claim_window": self.rules.min_claim_window, "max_start_lead": self.rules.max_start_lead,
                "max_live_per_creator": self.rules.max_live_per_creator,
-               "router_ready": self.router_sk is not None}
+               "router_ready": self.router_sk is not None, "post_fee": self.rules.post_fee,
+               "every": int(getattr(self.service, "every", None) or self.every_default),
+               "create_gate": {"gated": self.create_gate is not None}}
         static = self.rules.min_amount.get(asset, 0)
         if asset == XCH:
             return {**out, "enabled": True, "min_amount": static, "source": "rules"}
@@ -369,6 +396,7 @@ class CampaignIntake:
             coin_id = svc.d.coin.coin_id()
             lease = self.lease.take(qid, coin_id, self.lease_seconds)
             q = self.quotes[qid] = Quote(qid, campaign, h, coin_id, lease.expires_at)
+            self.price(q, h)
             q.network_fee = self.estimate_network_fee(q)
         finally:
             svc.write_lock.release()
@@ -429,7 +457,8 @@ class CampaignIntake:
                        "params_hash": c.params.hash().hex(), "excluded": sorted(x.hex() for x in c.params.blacklist),
                        "collection": c.params.collection and {"did": c.params.collection[0].hex(), "id": c.params.collection[1]},
                        "nonce": c.nonce, "fee_bps": c.fee_bps, "claim_window": c.claim_window},
-            "fee": c.fee, "network_fee": q.network_fee, "budget": c.budget, "length": c.length,
+            "fee": c.fee, "network_fee": q.network_fee, "operator_fee": q.operator_fee, "budget": c.budget,
+            "length": c.length,
             "days": c.length / BLOCKS_PER_DAY,
             "daily_emission": c.budget * BLOCKS_PER_DAY // c.length, "reclaim_from": c.reclaim_from,
             "height": q.h, "singleton": {"launcher_id": d.launcher_id.hex(), "coin_id": q.coin_id.hex()},
@@ -438,6 +467,10 @@ class CampaignIntake:
                             "sender": c.creator.hex(),
                             "condition": [66, MODE_CREATE, "0x" + message.hex(), "0x" + q.coin_id.hex()]},
                 "deposit": deposit,
+                # The creator's XCH spends pay the operator's root posts for this campaign: CREATE_COINs
+                # at `puzzle_hash` adding up to at least `amount` (none when the amount is 0).
+                "operator_payment": {"puzzle_hash": q.operator_ph.hex(), "amount": q.operator_fee,
+                                     "condition": [51, "0x" + q.operator_ph.hex(), q.operator_fee]},
             },
             "lease": {"expires_at": int(q.expires_at), "seconds": int(self.lease_seconds)},
             "router_ready": self.router_sk is not None,
@@ -466,9 +499,13 @@ class CampaignIntake:
         if not spends:
             raise ValueError("the spend bundle has no coin spends")
         is_cat = c.reward_asset != XCH
+        try:  # the gate may have changed since the quote
+            self.check_creator(c.creator)
+        except NotRoutable as e:
+            raise ValueError(f"not routable: {e}") from e
         xch, cats = [], []
         messages, agg = [], []
-        inputs = outputs = reserved = 0
+        inputs = outputs = reserved = paid = 0
         cat_in = cat_out = 0
         for s in spends:
             puzzle, solution = clvm.deserialize(s.puzzle_reveal), clvm.deserialize(s.solution)
@@ -501,6 +538,8 @@ class CampaignIntake:
                     op = to_int(it[0])
                     if op == 51:
                         outputs += to_int(it[2])
+                        if q.operator_fee and to_bytes(it[1]) == q.operator_ph:
+                            paid += to_int(it[2])
                     elif op == 52:
                         reserved += to_int(it[1])
             for it in conds:
@@ -523,6 +562,9 @@ class CampaignIntake:
                 raise ValueError("the spend bundle's signature does not verify over exactly the signatures its spends need")
         elif not sig.is_infinity():
             raise ValueError("the spend bundle carries a signature its spends do not ask for")
+        if paid < q.operator_fee:
+            raise ValueError(f"the creator's XCH spends pay the operator {paid:,} mojos for this campaign's roots; "
+                             f"the quote asks {q.operator_fee:,} at {q.operator_ph.hex()[:12]}…")
         ids = [s.coin.coin_id() for s in spends]
         if len(set(ids)) != len(ids):
             raise ValueError("a coin is spent twice")
@@ -656,3 +698,52 @@ class CampaignIntake:
             q = next((q for q in self.quotes.values() if q.campaign.id == cid and q.status == "pushed"), None)
             return q and {"id": cid.hex(), "status": "pushed", "quote": q.id}
         return {**page, "status": "created"}
+
+
+def router_create_gate(api: str, network: str, ttl: float = 60.0, fetch=None) -> Callable[[bytes], Tuple[bool, str]]:
+    """The Forge router's creation gate as a campaign gate (owner, 2026-11-25): the creator passes
+    when the router's GET /api/forge-create?probe=gate&address=<creator> answers `allowed`, the
+    same list and NFT collections its Operator tab sets for pool deployment ("open", "list" or
+    "admin-only"). Answers are kept `ttl` seconds per creator. A router that cannot be read admits
+    nobody: the gate fails closed."""
+    import time as _time
+    import urllib.parse
+
+    from chia_wallet_sdk import Address
+
+    prefix = {"mainnet": "xch", "testnet11": "txch"}[network]
+    seen: Dict[bytes, Tuple[float, Tuple[bool, str]]] = {}
+    lock = threading.Lock()
+
+    def read(url: str) -> dict:
+        if fetch is not None:
+            return fetch(url)
+        req = urllib.request.Request(url, headers={"User-Agent": "flpcr-intake/1.0"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read())
+
+    def why_not(probe: dict) -> str:
+        names = [c.get("label") or c.get("id") for c in probe.get("collections") or [] if c.get("id")]
+        if probe.get("mode") == "list" and names:
+            return ("campaign creation needs a wallet the Forge approved, or an NFT from "
+                    f"{', '.join(names)}; this creator address has neither")
+        return "campaign creation is limited to wallets the Forge approved, and this creator address is not one"
+
+    def gate(creator: bytes) -> Tuple[bool, str]:
+        now = _time.time()
+        with lock:
+            hit = seen.get(creator)
+            if hit is not None and now - hit[0] < ttl:
+                return hit[1]
+        address = Address(creator, prefix).encode()
+        try:
+            probe = read(f"{api.rstrip('/')}/api/forge-create?probe=gate&address={urllib.parse.quote(address)}")
+        except Exception:  # noqa: BLE001 -- fail closed, and do not remember it
+            return False, "the Forge's creation gate could not be read; try again shortly"
+        verdict = (bool(probe.get("allowed")), why_not(probe)) if probe.get("success") else \
+            (False, "the Forge's creation gate could not be read; try again shortly")
+        with lock:
+            seen[creator] = (now, verdict)
+        return verdict
+
+    return gate

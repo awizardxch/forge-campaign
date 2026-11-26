@@ -46,6 +46,13 @@ from .model import BLOCKS_PER_DAY, MIN_FEE_WINDOW, Campaign, Kind
 
 XCH = bytes(32)
 DEFAULT_MIN_XCH = 100_000_000_000  # 0.1 XCH: the smallest XCH campaign the router signs for by default
+# What one root post costs the operator (flpcr.service.core MIN_FEE, the floor it pays). Each create
+# prepays its campaign's posts to the operator's address (owner, 2026-11-25: "every deployment
+# should fund its own deployment in lp campaigns just like the lp pairs deployment").
+DEFAULT_POST_FEE = 2_000_000_000
+# Posts a campaign is charged beyond one per `every` blocks of its length: the final root, and one
+# repost after a veto or an upheld dispute.
+EXTRA_POSTS = 2
 CAT_FLOOR_USD = Decimal(1)  # the smallest CAT campaign, in dollars at the CAT's Forge price (owner, 2026-11-11)
 CAT_DECIMALS = 3  # 1000 mojos to a CAT token
 
@@ -138,6 +145,8 @@ class RouterRules:
     # A CAT reward needs the Forge router's CatPolicy for it (the $1 floor, the operator's
     # switch). Off only in permissive() rules, for tests and probes.
     cat_policy_required: bool = True
+    # Mojos of XCH per root post the creator prepays to the operator's address (0: none).
+    post_fee: int = DEFAULT_POST_FEE
 
     def __post_init__(self) -> None:
         if self.min_fee_window < MIN_FEE_WINDOW:
@@ -148,7 +157,7 @@ class RouterRules:
         """No amount floor, every kind, the puzzle's own claim window and start bounds: for
         tests and probes. Never a service's rules."""
         base = dict(min_amount={}, kinds=frozenset(Kind), min_claim_window=0, max_start_lead=10**12,
-                    cat_policy_required=False)
+                    cat_policy_required=False, post_fee=0)
         base.update(kw)
         return cls(**base)
 
@@ -194,3 +203,11 @@ def check_campaign(campaign: Campaign, registry: ForgeRegistry, rules: RouterRul
         raise NotRoutable("CAT is not in any Forge registry pool")
     if campaign.kind == Kind.NFT_HOLD and rules.nft_collections and campaign.target not in rules.nft_collections:
         raise NotRoutable("collection is not one this router signs for")
+
+
+def operator_fee(rules: "RouterRules", length: int, every: int) -> int:
+    """What a campaign of `length` blocks prepays the operator for its roots: one post per `every`
+    blocks (rounded up), plus the final root and one repost (EXTRA_POSTS), at `rules.post_fee` each."""
+    if rules.post_fee <= 0 or length <= 0:
+        return 0
+    return rules.post_fee * (-(-length // max(1, every)) + EXTRA_POSTS)

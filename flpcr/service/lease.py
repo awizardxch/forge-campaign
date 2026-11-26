@@ -67,6 +67,28 @@ class SingletonLease:
         self._pinned: Optional[Lease] = None
         self._deferring_since: Optional[float] = None
         self._lock = threading.Lock()
+        # The guardian hold (owner, 2026-11-25: the guardian veto lock proposal). A veto is a
+        # mode-23 message from the guardian lock naming the singleton's current coin, signed by its
+        # owners over minutes; any other spend makes it stale. While held, the writers wait and no
+        # quote is taken. It ends at `until` (the pending root's dispute window, in seconds) or when
+        # the coin it names is spent (`release_guardian`).
+        self._guardian: Optional[Lease] = None
+
+    def hold_for_guardian(self, coin_id: bytes, seconds: float) -> Lease:
+        with self._lock:
+            self._guardian = Lease("guardian", coin_id, self.clock() + max(0.0, seconds))
+            return self._guardian
+
+    def guardian(self) -> Optional[Lease]:
+        """The guardian hold, if it has not lapsed."""
+        with self._lock:
+            if self._guardian is not None and self.clock() >= self._guardian.expires_at:
+                self._guardian = None
+            return self._guardian
+
+    def release_guardian(self) -> None:
+        with self._lock:
+            self._guardian = None
 
     def _prune(self) -> None:
         now = self.clock()
@@ -81,6 +103,8 @@ class SingletonLease:
     def busy(self) -> bool:
         """True while the writers should leave the singleton alone: a create is pinned, or
         quotes are open and have not yet kept the writers waiting `max_defer` seconds."""
+        if self.guardian() is not None:
+            return True
         with self._lock:
             if self._pinned is not None:
                 return True
@@ -94,6 +118,10 @@ class SingletonLease:
             return now - self._deferring_since < self.max_defer
 
     def take(self, holder: str, coin_id: bytes, seconds: float = LEASE_SECONDS) -> Lease:
+        held = self.guardian()
+        if held is not None:
+            raise LeaseBusy("the guardian is signing a veto of this distributor's pending root; retry in a few minutes",
+                            max(30, int(held.expires_at - self.clock()) + 1))
         with self._lock:
             if self._pinned is not None and self._pinned.holder != holder:
                 raise LeaseBusy("another campaign create is being confirmed; retry shortly", 30)
