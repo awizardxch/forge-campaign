@@ -1,4 +1,5 @@
-"""CAT rewards prepay their roots too (owner, 2026-11-26: "make sure this works for cat rewards as
+"""CAT rewards: the 3% Forge fee comes out of the CAT deposit; the network fee and the root posts are
+XCH. CAT rewards prepay their roots too (owner, 2026-11-26: "make sure this works for cat rewards as
 well"). The deposit is the CAT; the operator's root posts are paid in XCH from the creator's
 consent coin, beside the network fee, on every path a CAT campaign is created by:
 
@@ -34,8 +35,13 @@ class TestCatCreatePrepays(unittest.TestCase):
             x.intake.create({"quote": q["quote"], "spend_bundle": x.cat_bundle(q, pay=0)})
         with self.assertRaisesRegex(ValueError, f"pay the operator {want - 1:,} mojos"):
             x.intake.create({"quote": q["quote"], "spend_bundle": x.cat_bundle(q, pay=want - 1)})
+        dev_cat, dev_xch = x.w.balance("dev"), x.w.xch_balance("dev")
         out = x.intake.create({"quote": q["quote"], "spend_bundle": x.cat_bundle(q)})
         self.assertEqual(out["status"], "created")
+        # Owner, 2026-11-26: the network fee is XCH, the campaign percentage is the CAT.
+        self.assertEqual(x.w.balance("dev") - dev_cat, 30_000, "the 3% Forge fee is paid in the reward CAT")
+        self.assertEqual(x.w.xch_balance("dev") - dev_xch, 0, "no part of the 3% is taken in XCH")
+        self.assertGreater(q["network_fee"], 0, "the network fee is XCH, from the consent coin (RESERVE_FEE)")
         self.assertEqual(received(x.w, x.op.puzzle_hash, want), want, "the operator got the posts in XCH")
         self.assertEqual(x.svc.d.reserve_coin.amount, 970_000, "the CAT deposit is the campaign's, whole")
         self.assertEqual(x.w.balance(x.creator.puzzle_hash), 500, "the CAT change came back")
