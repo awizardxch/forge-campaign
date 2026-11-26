@@ -14,9 +14,9 @@ what is new.
 
 Fee events come from each target pool's own spends (`v16_fees.PoolFeeWalk`):
 one per `swap`, weighted by the LP fee it paid valued at the pool's pre-spend
-spot price, exact. Forge V16 (protocol 17) and V17 (protocol 18) pools are served: a
+spot price, exact. Forge V16 (protocol 17), V17 (18), V18 (19) and V20 (21) pools are served: a
 pool the responder lists at another protocol, or whose LP asset is not that revision's
-LP TAIL for its launcher, is refused with `UnsupportedPool`. A V17 pool's LP is a plain
+LP TAIL for its launcher, is refused with `UnsupportedPool`. A V17+ pool's LP is a plain
 CAT minted through the same custody puzzles as V16's, so the LP crawl is unchanged. NFT events, links and
 forwarders are not served here (NFTs come from `chain.nfts.Combined`).
 """
@@ -106,7 +106,7 @@ class LiveLpSource:
     def refresh_fees(self, pools) -> None:
         """Bring the fee walk of each pool up to the chain's tip, then save the cache."""
         for pool in pools:
-            protocol = self.protocol(pool)  # refuses anything but a V16 or V17 pool
+            protocol = self.protocol(pool)  # refuses any revision the fee reader does not pin
             walk = self.fee_walks.setdefault(pool, PoolFeeWalk(pool, protocol))
             if walk.protocol is None:
                 walk.protocol = protocol
@@ -117,12 +117,12 @@ class LiveLpSource:
     # --- Source ---------------------------------------------------------------------------
 
     def lp_asset(self, pool_launcher: bytes) -> bytes:
-        """The pool's LP asset; refuses (`UnsupportedPool`) a pool that is not Forge V16 or V17."""
+        """The pool's LP asset; refuses (`UnsupportedPool`) a pool of no pinned revision."""
         self.protocol(pool_launcher)
         return self.lp_assets[pool_launcher]
 
     def protocol(self, pool_launcher: bytes) -> int:
-        """The pool's protocol (17 = V16, 18 = V17), proved by its LP asset; refuses any other."""
+        """The pool's protocol (17 = V16, 18 = V17, 19 = V18, 21 = V20), proved by its LP asset; refuses any other."""
         if pool_launcher not in self.lp_assets:
             raise KeyError(f"pool {pool_launcher.hex()[:12]} is not a Forge pool the responder lists")
         return check_protocol(pool_launcher, self.lp_assets[pool_launcher], self.versions.get(pool_launcher))

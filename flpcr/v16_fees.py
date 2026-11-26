@@ -1,4 +1,9 @@
-"""Fee events of a Forge V16 (protocol 17), V17 (protocol 18) or V18 (protocol 19) pool, read from the pool's own spends.
+"""Fee events of a Forge V16 (protocol 17), V17 (protocol 18), V18 (protocol 19) or V20 (protocol 21) pool, read from the pool's own spends.
+
+V20 (2026-11-25): the revision new campaigns target (owner: "we only need v20 pools for
+campaigns"). Same action layer, finalizer, swap leaf, curve `exact_swap_output` and LP custody
+puzzles as V18 (byte-equal builds); its LP TAIL and the add/remove/rebase/refund leaves are new
+builds. V19 (protocol 20, testnet only, frozen) is not pinned: no campaign targets it.
 
 V17 (2026-11-13): a V17 pool is the same shape, on the same action layer, with eight leaves
 (V16's six plus `rebase` and `refund`, the rCAT leaves) and its own LP TAIL; its swap leaf takes
@@ -36,7 +41,7 @@ ever compared with each other, inside one pool (SPEC section 6.3), so one pool's
 fixed numeraire gives the same shares XCH would at a constant rate, without
 reading a second pool's price.
 
-Protocol scope: V16 (protocol 17), V17 (protocol 18) and V18 (protocol 19; pinned from Forge contracts/v18/compiled at `FORGE_V18_COMMIT`). The leaf, action layer and LP
+Protocol scope: V16 (protocol 17), V17 (protocol 18), V18 (protocol 19; pinned from Forge contracts/v18/compiled at `FORGE_V18_COMMIT`) and V20 (protocol 21; contracts/v20/compiled at `FORGE_V20_COMMIT`). The leaf, action layer and LP
 TAIL hashes below are pinned from awizardxch/forge-puzzles at
 `FORGE_PUZZLES_COMMIT` (`contracts/v16/compiled/*.rue.hash`); the parse is a
 minimal reimplementation of `forge_v16_resync.replay_spend`'s selector walk, so
@@ -122,6 +127,26 @@ V18_LEAF_MOD_HASHES = {
 }
 
 
+# awizardxch/Forge (private), projects/chia-cfmm/contracts/v20/compiled/<name>.rue.hash at this commit.
+# V20 (protocol 21) = V19 + an add's effective term must be positive. Its LP TAIL is a new build and
+# add/remove/rebase/refund recompile with it; swap, observe, collect and dao_fee are V17's own
+# hashes, and the action layer, finalizer, exact_swap_output and LP mint/melt inner puzzles are
+# byte-equal to V18's, so its swaps read as V18's and its LP crawls as V16's.
+FORGE_V20_COMMIT = "f7187e03bdd9c4d269d75813aae997970124483a"
+PROTOCOL_V20 = 21
+V20_LP_TAIL_MOD_HASH = bytes.fromhex("7cf3835faf79712ef85b182dd324e9b1c92054e7ef029284f0a4e5281bbb8d5d")
+V20_LEAF_MOD_HASHES = {
+    "forge_action_swap": bytes.fromhex("31f7e3d18635f2757fda518a0f5b1e542d0e39edd77faa8e543df6a8e11d1181"),
+    "forge_action_add": bytes.fromhex("6c2517a6cf437d6454a660d60ff07a962bc8832a94ef0f1d10f3d4d92d36860e"),
+    "forge_action_remove": bytes.fromhex("a53479b329926bf8c58630f4dda0dbe774690c396eccabecc32ab896d17a8395"),
+    "forge_action_observe": bytes.fromhex("1a0813f06f4d34a947bf2b816fea73c8ebdc9f41afab8364589ea52c74fb095f"),
+    "forge_action_collect": bytes.fromhex("19be84b32d07cd79e742fb41e3674c9efd4bb42620dfe5ff44994a8f080793a4"),
+    "forge_action_dao_fee": bytes.fromhex("12b0e026b8146dc681f15e61ea4e25a4ff74043b120d555bb63186b20b4ec7ef"),
+    "forge_action_rebase": bytes.fromhex("5f06405a4198f085400181edd57112eabcf405b88911d7ab57e3ca90ca4350d0"),
+    "forge_action_refund": bytes.fromhex("aa140bf3c84550b85078757be0ea631e062834bcab93fcba79e7c83542b61312"),
+}
+
+
 @dataclass(frozen=True)
 class Revision:
     name: str
@@ -141,6 +166,8 @@ REVISIONS: Dict[int, Revision] = {
                            f"Forge {FORGE_V17_COMMIT[:7]}"),
     PROTOCOL_V18: Revision("V18", PROTOCOL_V18, V18_LP_TAIL_MOD_HASH, V18_LEAF_MOD_HASHES,
                            f"Forge {FORGE_V18_COMMIT[:7]}"),
+    PROTOCOL_V20: Revision("V20", PROTOCOL_V20, V20_LP_TAIL_MOD_HASH, V20_LEAF_MOD_HASHES,
+                           f"Forge {FORGE_V20_COMMIT[:7]}"),
 }
 MIN_PROTOCOL, MAX_PROTOCOL = min(REVISIONS), max(REVISIONS)
 
@@ -167,7 +194,7 @@ class FeeReadError(Exception):
 
 
 class UnsupportedPool(FeeReadError):
-    """A pool this reader does not serve: anything but Forge V16 (protocol 17) or V17 (protocol 18)."""
+    """A pool this reader does not serve: anything but a revision in `REVISIONS`."""
 
 
 def _hex(value: str) -> bytes:
@@ -194,22 +221,22 @@ def v17_lp_asset_id(launcher_id: bytes, clvm: Optional[Clvm] = None) -> bytes:
 
 
 def check_protocol(launcher_id: bytes, lp_asset_id_: bytes, declared: Optional[int] = None) -> int:
-    """The pool's protocol, or `UnsupportedPool` for anything but V16 or V17. `declared` is what
+    """The pool's protocol, or `UnsupportedPool` for any revision not in `REVISIONS`. `declared` is what
     the Forge responder says (`poolVersion`); the LP asset id is checked against the chain's own
     derivation for that revision whatever it says (and, with nothing declared, against each)."""
     if declared is not None and declared < MIN_PROTOCOL:
         raise UnsupportedPool(f"pool {launcher_id.hex()[:12]} is protocol {declared}: only Forge V16 (protocol 17) "
                               "and newer pools are supported")
-    if declared is not None and declared > MAX_PROTOCOL:
+    if declared is not None and (declared > MAX_PROTOCOL or declared not in REVISIONS):
         raise UnsupportedPool(f"pool {launcher_id.hex()[:12]} is protocol {declared}: no fee reader is pinned for it yet "
-                              f"(this one reads protocols {MIN_PROTOCOL}-{MAX_PROTOCOL})")
+                              f"(this one reads protocols {', '.join(map(str, sorted(REVISIONS)))})")
     candidates = [declared] if declared is not None else sorted(REVISIONS)
     for protocol in candidates:
         if lp_asset_id(launcher_id, protocol) == lp_asset_id_:
             return protocol
     rev = REVISIONS[declared] if declared is not None else None
     what = f"the {rev.name} LP TAIL" if rev else "any supported revision's LP TAIL"
-    which = f"a Forge {rev.name} (protocol {rev.protocol})" if rev else "a Forge V16 or V17"
+    which = f"a Forge {rev.name} (protocol {rev.protocol})" if rev else "a supported Forge"
     raise UnsupportedPool(f"pool {launcher_id.hex()[:12]}: LP asset {lp_asset_id_.hex()[:12]} is not {what} "
                           f"for this launcher, so it is not {which} pool")
 
@@ -263,7 +290,7 @@ def parse_pool_spend(launcher_id: bytes, puzzle_reveal: bytes, solution: bytes, 
         raise FeeReadError(f"the coin is another singleton's, not pool {launcher_id.hex()[:12]}'s")
     layer = inner.uncurry()
     if layer is None or layer.program.tree_hash() != ACTION_LAYER_HASH:
-        raise UnsupportedPool(f"pool {launcher_id.hex()[:12]} is not on the V16/V17 action layer")
+        raise UnsupportedPool(f"pool {launcher_id.hex()[:12]} is not on the Forge V16+ action layer")
     _finalizer, _root, state = layer.args
     reserves = _ints(state.first())
 
@@ -313,7 +340,7 @@ class PoolFeeWalk:
     """One V16 pool's swaps, from its launcher to the last spend read."""
 
     launcher_id: bytes
-    protocol: Optional[int] = None  # V16 (17) or V17 (18); None reads whichever the leaves are
+    protocol: Optional[int] = None  # a REVISIONS key (17, 18, 19, 21); None reads whichever the leaves are
     tip: Optional[bytes] = None  # the last pool coin found; unspent when last read
     tip_created: int = 0
     swaps: List[Swap] = field(default_factory=list)
