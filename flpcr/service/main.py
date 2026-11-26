@@ -34,6 +34,9 @@ Environment (the host's service variables):
                          "post_fee": mojos per root the creator prepays the operator}. A key left out
                          keeps its RouterRules() default: LP_HOLD only, 0.1 XCH or more, a claim
                          window of 7 days or more, a start within 30 days.
+    FLPCR_POST_FEE       mojos per root post a create prepays the operator, over FLPCR_ROUTER_RULES'
+                         post_fee (default 0.002 XCH). Testnet sets a token amount so test
+                         campaigns stay cheap (owner, 2026-11-26); its operator pays the posts.
     FLPCR_LEASE_SECONDS  how long a create quote holds the singleton (default 120)
     FLPCR_CREATE_GATE    router: a creator must pass the Forge router's creation gate (the approved
                          wallets and NFT collections its Operator tab sets for pool deployment);
@@ -114,10 +117,10 @@ def live_source_factory(network: str, node: str, api: str, cache_dir: pathlib.Pa
     return source_for
 
 
-def rules_from_env(text: str) -> RouterRules:
-    if not text.strip():
-        return RouterRules()
-    raw = json.loads(text)
+def rules_from_env(text: str, post_fee: str = "") -> RouterRules:
+    raw = json.loads(text) if text.strip() else {}
+    if post_fee.strip():  # FLPCR_POST_FEE: the one rule an env line sets on its own
+        raw["post_fee"] = int(post_fee)
     per_asset = lambda m: {bytes.fromhex(k.removeprefix("0x")): int(v) for k, v in (m or {}).items()}  # noqa: E731
     given = {}  # only what the owner set; everything else keeps its default
     if "min_amount" in raw:
@@ -136,6 +139,8 @@ def rules_from_env(text: str) -> RouterRules:
         given["max_start_lead"] = int(raw["max_start_lead"])
     if "post_fee" in raw:
         given["post_fee"] = int(raw["post_fee"])
+        if given["post_fee"] < 0:
+            raise ValueError("post_fee cannot be negative")
     return RouterRules(**given)
 
 
@@ -187,7 +192,7 @@ def main() -> int:
             return 2
     fleet = Fleet(chain, network, bytes.fromhex(launcher) if launcher else None, source_for, operator=operator,
                   router_sk=router_sk, template=template,
-                  rules=rules_from_env(env.get("FLPCR_ROUTER_RULES", "")), pools=cached(lambda: forge_pool_infos(api)),
+                  rules=rules_from_env(env.get("FLPCR_ROUTER_RULES", ""), env.get("FLPCR_POST_FEE", "")), pools=cached(lambda: forge_pool_infos(api)),
                   cat_policies=cached(lambda: forge_cat_policies(api), 120), every=every, manifests_dir=manifests_dir,
                   registry=Registry.load(network, env.get("FLPCR_REGISTRY_DIR", "").strip() or None),
                   configured=more, discover=env.get("FLPCR_DISCOVER", "1").strip() != "0",

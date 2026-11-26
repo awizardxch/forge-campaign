@@ -97,18 +97,22 @@ class IntakeWorld:
             sig = Signature.aggregate([sig, self.creator.sk.sign(b"something else")])
         return bundle_json(spends, sig)
 
-    def cat_bundle(self, quote, leave=None):
-        """The creator's consent from an XCH coin, and a CAT coin of the reward leaving `leave`."""
+    def cat_bundle(self, quote, leave=None, pay=None):
+        """The creator's consent from an XCH coin (paying the operator `pay` mojos for the roots,
+        by default what the quote asks), and a CAT coin of the reward leaving `leave`."""
         w = self.w
         amount = quote["fields"]["amount"]
         leave = amount if leave is None else leave
+        pay = quote.get("operator_fee", 0) if pay is None else pay
         msg = bytes.fromhex(quote["conditions"]["message"]["message"])
         clvm = Clvm()
         fee = quote["network_fee"]
-        coin = w.sim.new_coin(self.creator.puzzle_hash, fee + 1)
-        clvm.spend_standard_coin(coin, self.creator.pk, clvm.delegated_spend(
-            [to_program(clvm, [66, 23, msg, bytes.fromhex(quote["singleton"]["coin_id"])]),
-             to_program(clvm, [51, self.creator.puzzle_hash, 1]), to_program(clvm, [52, fee])]))
+        coin = w.sim.new_coin(self.creator.puzzle_hash, fee + 1 + pay)
+        conds = [[66, 23, msg, bytes.fromhex(quote["singleton"]["coin_id"])],
+                 [51, self.creator.puzzle_hash, 1], [52, fee]]
+        if pay:
+            conds.append([51, bytes.fromhex(quote["conditions"]["operator_payment"]["puzzle_hash"]), pay])
+        clvm.spend_standard_coin(coin, self.creator.pk, clvm.delegated_spend([to_program(clvm, c) for c in conds]))
         info = CatInfo(ASSET, None, self.creator.puzzle_hash)
         held = amount + 500
         grand = clvm.atom(b"creator-cat").tree_hash()

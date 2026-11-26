@@ -80,7 +80,8 @@ class FleetWorld:
     """An XCH primary distributor with the host's router and operator, a booted fleet over it, and
     creators holding XCH and two CATs."""
 
-    def __init__(self, chain_cls=None, discover=True):
+    def __init__(self, chain_cls=None, discover=True, rules=None):
+        self.rules = rules or RouterRules.permissive()
         self.router_sk = SecretKey.from_seed(bytes([9]) * 32).derive_synthetic()
         self.router_ph = standard_puzzle_hash(self.router_sk.public_key())
         op_sk = SecretKey.from_seed(bytes([7]) * 32).derive_synthetic()
@@ -100,7 +101,7 @@ class FleetWorld:
 
     def new_fleet(self, discover=True):
         return Fleet(self.chain, "testnet11", self.w.launcher_id, lambda cs: self.src, operator=self.op,
-                     router_sk=self.router_sk, rules=RouterRules.permissive(), pools=lambda: self.pools, every=10,
+                     router_sk=self.router_sk, rules=self.rules, pools=lambda: self.pools, every=10,
                      discover=discover)
 
     @property
@@ -149,9 +150,11 @@ class FleetWorld:
         q = (fleet or self.fleet).launches.quote(body)
         return q, funding, seed
 
-    def launch_bundle(self, creator, q, funding, seed, leave=None, drop=None):
+    def launch_bundle(self, creator, q, funding, seed, leave=None, drop=None, pay=None):
         """The creator's spends for a launch quote. `drop` names a launch condition to leave out
-        (refusal tests): "hint", "announcement", "reserve"."""
+        (refusal tests): "hint", "announcement", "reserve". `pay`: mojos to the operator for the
+        roots (default: what the quote asks)."""
+        pay = q.get("operator_fee", 0) if pay is None else pay
         clvm = Clvm()
         launch = q["launch"]
         amount = q["fields"]["amount"]
@@ -167,7 +170,9 @@ class FleetWorld:
             conds.append([51, reserve_ph, 0])
         if drop != "announcement":
             conds.append([61, bytes.fromhex(launch["launcher_announcement"])])
-        conds += [[51, creator.puzzle_hash, funding.amount - 1 - deposit - fee], [52, fee]]
+        if pay:
+            conds.append([51, bytes.fromhex(q["conditions"]["operator_payment"]["puzzle_hash"]), pay])
+        conds += [[51, creator.puzzle_hash, funding.amount - 1 - deposit - fee - pay], [52, fee]]
         clvm.spend_standard_coin(funding, creator.pk, clvm.delegated_spend([to_program(clvm, c) for c in conds]))
         if is_cat:
             leave = amount if leave is None else leave
@@ -186,14 +191,16 @@ class FleetWorld:
 
     # --- an ordinary CAT create on a hosted distributor -------------------------------------
 
-    def cat_create_bundle(self, creator, q, asset, cat=None):
+    def cat_create_bundle(self, creator, q, asset, cat=None, pay=None):
         clvm = Clvm()
         amount, fee = q["fields"]["amount"], q["network_fee"]
+        pay = q.get("operator_fee", 0) if pay is None else pay
         msg = bytes.fromhex(q["conditions"]["message"]["message"])
-        coin = self.w.sim.new_coin(creator.puzzle_hash, fee + 1)
-        clvm.spend_standard_coin(coin, creator.pk, clvm.delegated_spend(
-            [to_program(clvm, [66, 23, msg, bytes.fromhex(q["singleton"]["coin_id"])]),
-             to_program(clvm, [51, creator.puzzle_hash, 1]), to_program(clvm, [52, fee])]))
+        coin = self.w.sim.new_coin(creator.puzzle_hash, fee + 1 + pay)
+        conds = [[66, 23, msg, bytes.fromhex(q["singleton"]["coin_id"])], [51, creator.puzzle_hash, 1], [52, fee]]
+        if pay:
+            conds.append([51, bytes.fromhex(q["conditions"]["operator_payment"]["puzzle_hash"]), pay])
+        clvm.spend_standard_coin(coin, creator.pk, clvm.delegated_spend([to_program(clvm, c) for c in conds]))
         cat = cat or self.give_cat(creator, asset, amount + 7)
         clvm.spend_cats([CatSpend(cat, clvm.standard_spend(creator.pk, clvm.delegated_spend(
             [to_program(clvm, [51, creator.puzzle_hash, 7, [creator.puzzle_hash]])])))])
