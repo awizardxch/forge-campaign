@@ -9,7 +9,9 @@ creates, and runs every operator loop with the one operator key and the one rout
 Which distributors it hosts:
 
 * the primary (FLPCR_LAUNCHER), a launcher pin; its Config and operator are the build pin's
-  template (`BuildPin.from_config`), which must name this host's router and operator keys;
+  template (`BuildPin.from_config`), which must name this host's router and operator keys. With
+  no primary (template mode: `primary=None`, `pin` given, `BuildPin.template`), the fleet starts
+  empty and the first creator's launch of a reward asset is its first distributor;
 * any other launcher configured by id (FLPCR_LAUNCHERS): hosted whatever it is, and takes
   creates only if it also passes the build pin;
 * every launcher hinted with `BuildPin.hint` on chain (discovery), hosted only if it passes
@@ -21,7 +23,8 @@ build-pinned distributor whose launcher confirmed first. Every hosted distributo
 claims and reclaims; a create quoted on any but the canonical one is answered 409 with the
 canonical launcher id.
 
-HTTP (flpcr.service.http): `/api/v1/...` is the primary, as before; `/d/<launcher>/api/v1/...`
+HTTP (flpcr.service.http): `/api/v1/...` is the primary, as before (template mode: XCH's
+canonical distributor, once one is launched); `/d/<launcher>/api/v1/...`
 one hosted distributor; `/a/<asset>/api/v1/...` an asset's canonical one; `/api/v1/fleet` the
 list; `/api/v1/launch/quote`, `/api/v1/launch/create` and `/api/v1/launch/terms/<asset>` the
 first-use launch.
@@ -69,7 +72,7 @@ class Hosted:
 class Fleet:
     chain: object
     network: str
-    primary: bytes
+    primary: Optional[bytes]  # None: template mode, with `template` the build pin
     source_for: Callable
     operator: Optional[OperatorKey] = None
     router_sk: Optional[SecretKey] = None
@@ -85,6 +88,8 @@ class Fleet:
     puzzles_factory: Callable = lambda: Puzzles(Clvm())
     service_factory: Optional[Callable] = None  # (launcher_id) -> CampaignService, for tests
     pins: Optional[str] = None  # the compiled build's fingerprint (default: pins_fingerprint())
+    template: Optional[BuildPin] = None  # the build pin when there is no primary
+    watcher_factory: Optional[Callable] = None  # (launcher_id) -> a Watcher for each hosted one
 
     def __post_init__(self) -> None:
         self.hosted: Dict[bytes, Hosted] = {}
@@ -105,7 +110,32 @@ class Fleet:
         return KeySigner.for_network([self.router_sk], self.network).sign(spends)
 
     def wait_for(self, coin_id: bytes, wait: float, poll: float) -> int:
-        return self.hosted[self.primary].service._wait(coin_id, wait, poll)
+        deadline = time.time() + wait
+        while True:
+            at = self.chain.confirmed_at(coin_id)
+            if at:
+                return at
+            if time.time() > deadline:
+                raise RuntimeError(f"not confirmed within {wait:.0f} s")
+            time.sleep(poll)
+
+    @property
+    def booted(self) -> bool:
+        """The build pin is read (and, with a primary, the primary is hosted)."""
+        return self.pin is not None and (self.primary is None or self.primary in self.hosted)
+
+    def home(self) -> Optional[Hosted]:
+        """What the bare `/api/v1/...` paths answer for: the primary, or (template mode) XCH's
+        canonical distributor; None before there is one."""
+        if self.primary is not None:
+            return self.hosted.get(self.primary)
+        return self.for_asset(bytes(32))
+
+    def terms(self, asset: bytes) -> dict:
+        """What this router signs for in `asset`, with or without a distributor for it yet."""
+        intake = CampaignIntake(None, self.pools, self.rules, router_sk=self.router_sk,
+                                lease_seconds=self.lease_seconds, cat_policies=self.cat_policies)
+        return intake.terms(asset)
 
     # --- hosting --------------------------------------------------------------------------
 
@@ -131,22 +161,39 @@ class Fleet:
         h.intake = CampaignIntake(service, self.pools, self.rules, router_sk=self.router_sk,
                                   lease_seconds=self.lease_seconds, cat_policies=self.cat_policies,
                                   gate=lambda lid=launcher_id: self.gate(lid), router_coins=self.router_coins)
+        if self.watcher_factory is not None:
+            h.watcher = self.watcher_factory(launcher_id)
         return h
+
+    def _check_keys(self, pin: BuildPin, what: str) -> None:
+        if self.router_sk is not None and pin.router_ph != self.router_ph:
+            raise ValueError(f"{what}'s router is not this host's router key")
+        if self.operator is not None and pin.operator_ph != self.operator.puzzle_hash:
+            raise ValueError(f"{what}'s operator is not this host's operator key")
 
     def boot(self) -> None:
         """The primary first (its Config is the build pin), then every configured launcher, then
-        discovery. A configured launcher that cannot be resynced is reported and skipped."""
-        svc = self._service(self.primary)
-        svc.boot()
-        got = svc.s.resynced
-        pin = BuildPin.from_config(self.network, got.config, got.distributor.chain_state.engine_ph, self.pins)
-        if self.router_sk is not None and pin.router_ph != self.router_ph:
-            raise ValueError("the primary distributor's router is not this host's router key")
-        if self.operator is not None and pin.operator_ph != self.operator.puzzle_hash:
-            raise ValueError("the primary distributor's operator is not this host's operator key")
-        with self.lock:
-            self.pin = pin
-            self.hosted[self.primary] = self._host(self.primary, svc)
+        discovery. A configured launcher that cannot be resynced is reported and skipped. With no
+        primary the build pin is `template`, which must name this host's two keys."""
+        if self.primary is None:
+            if self.template is None:
+                raise ValueError("no primary distributor and no template build pin")
+            if self.template.network != self.network:
+                raise ValueError("the template build pin is another network's")
+            if self.template.pins != self.pins:
+                raise ValueError("the template build pin names another compiled build")
+            self._check_keys(self.template, "the template build pin")
+            with self.lock:
+                self.pin = self.template
+        else:
+            svc = self._service(self.primary)
+            svc.boot()
+            got = svc.s.resynced
+            pin = BuildPin.from_config(self.network, got.config, got.distributor.chain_state.engine_ph, self.pins)
+            self._check_keys(pin, "the primary distributor")
+            with self.lock:
+                self.pin = pin
+                self.hosted[self.primary] = self._host(self.primary, svc)
         for lid in self.configured:
             if lid not in self.hosted:
                 try:
@@ -243,7 +290,12 @@ class Fleet:
                 "campaigns": len(st.resynced.distributor.chain_state.campaigns) if st else None,
                 "coin": st.resynced.distributor.coin.coin_id().hex() if st else None,
             })
-        return {"network": self.network, "primary": self.primary.hex(), "build": self.pin.to_json() if self.pin else None,
+        try:
+            peak = self.chain.peak()
+        except Exception:  # noqa: BLE001 -- a node hiccup: the list still answers
+            peak = None
+        return {"network": self.network, "primary": self.primary.hex() if self.primary else None, "peak": peak,
+                "template": self.primary is None, "build": self.pin.to_json() if self.pin else None,
                 "router_ready": self.router_sk is not None, "operator_ready": self.operator is not None,
                 "distributors": rows, "refused": {k.hex(): v for k, v in self.rejected.items()}}
 

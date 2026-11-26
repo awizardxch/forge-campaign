@@ -88,5 +88,6 @@ The engine on its own needs only the standard library (Python 3.10+). The chain 
     on the server only.
   - The 🪎 tab on forge.awizard.dev (Forge PR 355): pair rows, a page per pair at `/rewards/<lp name>`,
     Claim, Participate and Create. For now it is shown to admin and dev wallets only.
-- **Mainnet: not started.** It waits on the SAGE_CHECKS list, an external review, a multisig guardian, and
-  the owner's open decisions. No mainnet step runs without the owner.
+- **Mainnet: hosting built, not started.** The service runs in template mode (no host-paid launch:
+  the first creator's campaign launches the distributor), guarded by a multisig. It starts when the
+  owner makes its keys and switches it on. No mainnet step runs without the owner.
