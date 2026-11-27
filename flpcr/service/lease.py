@@ -74,9 +74,12 @@ class SingletonLease:
         # the coin it names is spent (`release_guardian`).
         self._guardian: Optional[Lease] = None
 
-    def hold_for_guardian(self, coin_id: bytes, seconds: float) -> Lease:
+    def hold_for_guardian(self, coin_id: bytes, seconds: float,
+                          why: str = "the guardian is signing a veto of this distributor's pending root") -> Lease:
+        """Hold the writers off `coin_id` for `seconds`. `why` is what a refused quote is told: a
+        🔐 lock (the guardian or the admin) is signing a message that names this coin."""
         with self._lock:
-            self._guardian = Lease("guardian", coin_id, self.clock() + max(0.0, seconds))
+            self._guardian = Lease(why, coin_id, self.clock() + max(0.0, seconds))
             return self._guardian
 
     def guardian(self) -> Optional[Lease]:
@@ -120,7 +123,7 @@ class SingletonLease:
     def take(self, holder: str, coin_id: bytes, seconds: float = LEASE_SECONDS) -> Lease:
         held = self.guardian()
         if held is not None:
-            raise LeaseBusy("the guardian is signing a veto of this distributor's pending root; retry in a few minutes",
+            raise LeaseBusy(f"{held.holder}; retry in a few minutes",
                             max(30, int(held.expires_at - self.clock()) + 1))
         with self._lock:
             if self._pinned is not None and self._pinned.holder != holder:
