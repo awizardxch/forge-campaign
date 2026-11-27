@@ -283,52 +283,157 @@ class CampaignService:
 
     # --- the guardian ---------------------------------------------------------------------
 
+    LOCK_ACTIONS = ("veto", "resolve", "rotate", "cancel-rotation", "reclaim")
+    # How long a hold lasts for an action with no deadline of its own (resolve, rotate, cancel,
+    # reclaim): long enough for a 2-of-4 lock's owners to sign, short enough that claims are not
+    # kept waiting for long if they never do.
+    LOCK_HOLD_SECONDS = 1800
+
     def guardian_veto(self, root_id: int, sender_ph: bytes, hold: bool = False) -> dict:
-        """The distributor's half of a guardian veto (owner, 2026-11-25): the keyless singleton
-        spend that runs `veto` on the pending root `root_id`, built at the chain's height now on the
-        singleton's current coin, and the one condition the guardian's coin must carry,
-        [66, 23, "v" + tree_hash(root_id), coin id]. Nothing is applied here: the spend lands only
-        beside the guardian's message (a 🔐 lock proposal), and `follow` picks it up after.
+        """The distributor's half of a guardian veto (owner, 2026-11-25); see `lock_action`."""
+        return self.lock_action("veto", sender_ph, hold=hold, root_id=root_id)
+
+    def lock_action(self, action: str, sender_ph: bytes, hold: bool = False, *, root_id: Optional[int] = None,
+                    upheld: Optional[int] = None, engine_ph: Optional[bytes] = None,
+                    campaign_id: Optional[bytes] = None) -> dict:
+        """The distributor's half of an action a 🔐 lock takes as its guardian or admin (owner,
+        2026-11-25 veto; 2026-11-26 "build the resolve, rotate and reclaim lock proposals"): the
+        keyless singleton spend that runs the leaf, built at the chain's height now on the
+        singleton's current coin, and the one condition the lock's coin must carry,
+        [66, 23, message, coin id]. Nothing is applied here: the spend lands only beside the lock's
+        message, and `follow` picks it up after.
+
+          veto             guardian  "v" + tree_hash(root_id)               the pending root, in its window
+          resolve          guardian  "s" + tree_hash([root_id, upheld])     the open dispute; the bond coin
+                           or admin                                         is spent beside it
+          rotate           guardian  "r" + engine_ph                        a new operator key, after the delay
+          cancel-rotation  admin     "x" + engine_ph                        the rotation still waiting
+          reclaim          admin     "k" + tree_hash(["flpcr-reclaim-v1",   a campaign past its claim
+                                             launcher, campaign_id])        window; paid to its creator
+
+        The leaf refuses any other sender; these checks only say why before anyone signs.
 
         `hold`: also hold the service's own writers (roots, claim batches, creates) off this coin
-        until the root's dispute window closes, so the signed condition does not go stale while the
-        lock's owners sign it."""
+        while the lock's owners sign (a veto: until the root's dispute window closes; the others:
+        LOCK_HOLD_SECONDS), so the signed condition does not go stale."""
         from ..clvm import sha256tree
         from .chain import bundle_json
 
+        if action not in self.LOCK_ACTIONS:
+            raise ValueError(f"the lock actions are {', '.join(self.LOCK_ACTIONS)}")
         with self.write_lock:
             self.follow()
             d = self.d
             st = d.chain_state
-            if sender_ph != d.cfg.guardian_ph:
-                raise ValueError("this address is not the distributor's guardian")
+            guardian, admin = d.cfg.guardian_ph, d.cfg.admin_ph
             h = self.chain.peak()
-            pending = st.pending
-            if pending is None or pending.root_id != root_id:
-                raise ValueError(f"root {root_id} is not this distributor's pending root")
-            if h >= pending.activates_at:
-                raise ValueError(f"root {root_id} left its dispute window at height {pending.activates_at:,}; "
-                                 "it is active and can no longer be vetoed")
-            if st.dispute is not None:
-                raise ValueError(f"root {root_id} is disputed: the guardian settles it with resolve, not veto")
             if self.lease.pinned():
                 raise ValueError("a campaign create is confirming on this coin; retry in a minute")
+            out: dict = {}
+            seconds = self.LOCK_HOLD_SECONDS
+            if action == "veto":
+                if sender_ph != guardian:
+                    raise ValueError("this address is not the distributor's guardian")
+                pending = st.pending
+                if pending is None or pending.root_id != root_id:
+                    raise ValueError(f"root {root_id} is not this distributor's pending root")
+                if h >= pending.activates_at:
+                    raise ValueError(f"root {root_id} left its dispute window at height {pending.activates_at:,}; "
+                                     "it is active and can no longer be vetoed")
+                if st.dispute is not None:
+                    raise ValueError(f"root {root_id} is disputed: the guardian settles it with resolve, not veto")
+                message = b"v" + sha256tree(root_id)
+                call = d.veto(h, root_id, sender_ph)
+                seconds = (pending.activates_at - h) * 18.75 + 60
+                why = "the guardian is signing a veto of this distributor's pending root"
+                out = {"root_id": root_id, "activates_at": pending.activates_at, "blocks_left": pending.activates_at - h}
+            elif action == "resolve":
+                if sender_ph not in (guardian, admin):
+                    raise ValueError("this address is neither the distributor's guardian nor its admin")
+                if upheld not in (0, 1) or isinstance(upheld, bool):
+                    raise ValueError("upheld is 1 (the disputer was right) or 0 (the root stands)")
+                if st.dispute is None:
+                    raise ValueError("no dispute is open on this distributor")
+                if st.dispute.root_id != root_id:
+                    raise ValueError(f"the open dispute is of root {st.dispute.root_id}, not root {root_id}")
+                message = b"s" + sha256tree([root_id, upheld])
+                call = d.resolve(h, upheld, sender_ph)
+                why = "a 🔐 lock is signing the resolution of this distributor's dispute"
+                out = {"root_id": root_id, "upheld": upheld, "disputer_ph": st.dispute.disputer_ph.hex(),
+                       "bond": d.cfg.dispute_bond,
+                       "bond_to": (st.dispute.disputer_ph if upheld else d.cfg.dev_fee_ph).hex()}
+            elif action in ("rotate", "cancel-rotation"):
+                if not isinstance(engine_ph, (bytes, bytearray)) or len(engine_ph) != 32:
+                    raise ValueError("engine_ph is a 32-byte puzzle hash")
+                engine_ph = bytes(engine_ph)
+                rotation = st.rotation if st.rotation is not None and h < st.rotation.effective_at else None
+                if action == "rotate":
+                    if sender_ph != guardian:
+                        raise ValueError("this address is not the distributor's guardian")
+                    if engine_ph == d.engine_at(h):
+                        raise ValueError("that key is already the distributor's operator")
+                    message = b"r" + engine_ph
+                    call = d.rotate(h, engine_ph, sender_ph)
+                    why = "the guardian is signing a rotation of this distributor's operator"
+                    out = {"engine_ph": engine_ph.hex(), "current_engine_ph": d.engine_at(h).hex(),
+                           "rotate_delay": d.cfg.rotate_delay,
+                           "replaces": rotation.engine_ph.hex() if rotation else None}
+                else:
+                    if sender_ph != admin:
+                        raise ValueError("this address is not the distributor's admin")
+                    if rotation is None:
+                        raise ValueError("no rotation is waiting on this distributor")
+                    if rotation.engine_ph != engine_ph:
+                        raise ValueError(f"the waiting rotation is to {rotation.engine_ph.hex()}, not {engine_ph.hex()}")
+                    message = b"x" + engine_ph
+                    call = d.cancel_rotation(h, engine_ph, sender_ph)
+                    why = "the admin is signing the cancel of this distributor's operator rotation"
+                    out = {"engine_ph": engine_ph.hex(), "effective_at": rotation.effective_at,
+                           "blocks_left": rotation.effective_at - h}
+            else:  # reclaim
+                if sender_ph != admin:
+                    raise ValueError("this address is not the distributor's admin")
+                if not isinstance(campaign_id, (bytes, bytearray)) or len(campaign_id) != 32:
+                    raise ValueError("campaign_id is 32 bytes")
+                campaign_id = bytes(campaign_id)
+                camp = st.campaign(campaign_id)
+                if camp is None:
+                    raise ValueError("no such campaign on this distributor (reclaimed already?)")
+                opens = camp.end + camp.claim_window
+                if h < opens:
+                    raise ValueError(f"the campaign's claim window is open until height {opens:,}")
+                if st.dispute is not None:
+                    raise ValueError("a dispute is open: a reclaim waits until it is resolved")
+                # As the leaf's prologue sees it: a pending root past its activation is the active one.
+                active, pending = st.active, st.pending
+                if pending is not None and h >= pending.activates_at:
+                    active, pending = pending, None
+                if pending is not None:
+                    before = dict(active.totals).get(campaign_id, 0) if active is not None else 0
+                    if dict(pending.totals).get(campaign_id, 0) > before:
+                        raise ValueError("the pending root owes this campaign's holders more; "
+                                         f"reclaim once it activates at height {pending.activates_at:,}")
+                message = b"k" + sha256tree(["flpcr-reclaim-v1", d.launcher_id, campaign_id])
+                from ..chain.auth import ByAdmin
+                call = d.reclaim(h, campaign_id, ByAdmin())
+                why = "the admin is signing a reclaim on this distributor"
+                out = {"campaign_id": campaign_id.hex(), "creator": camp.creator.hex(),
+                       "amount": camp.budget - camp.claimed}
             coin_id = d.coin.coin_id()
             mark = d._mark()
             try:
-                prepared = d.prepare([d.veto(h, root_id, sender_ph)])
+                prepared = d.prepare([call])
                 spends = list(prepared.spends)
                 cost = d.spend_cost(spends)
             finally:
                 d._rewind(mark)
-            message = b"v" + sha256tree(root_id)
             if hold:
-                self.lease.hold_for_guardian(coin_id, (pending.activates_at - h) * 18.75 + 60)
+                self.lease.hold_for_guardian(coin_id, seconds, why)
             from chia_wallet_sdk import Signature
             return {
-                "launcher_id": d.launcher_id.hex(), "root_id": root_id, "coin_id": coin_id.hex(), "height": h,
-                "activates_at": pending.activates_at, "blocks_left": pending.activates_at - h,
-                "guardian_ph": sender_ph.hex(), "message": message.hex(),
+                "action": action, "launcher_id": d.launcher_id.hex(), "coin_id": coin_id.hex(), "height": h,
+                **out,
+                "sender_ph": sender_ph.hex(), "guardian_ph": sender_ph.hex(), "message": message.hex(),
                 "condition": [66, 23, "0x" + message.hex(), "0x" + coin_id.hex()],
                 "spends": bundle_json(spends, Signature.infinity())["coin_spends"], "cost": cost,
                 "held": hold,

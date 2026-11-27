@@ -246,17 +246,39 @@ def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit:
                     if not isinstance(raw, list):
                         raise ValueError("addresses is a list")
                     return self.send_json(200, {"success": True, **service.claimable_many([puzzle_hash_of(str(x)) for x in raw])})
-                # The guardian's veto (owner, 2026-11-25). The Forge router calls these over the compose
-                # network when a 🔐 lock proposes and executes a veto; Caddy refuses */api/v1/guardian/*
-                # from outside, since a hold makes the service's writers wait.
-                if path == "/api/v1/guardian/veto":
+                # A 🔐 lock's actions as the distributor's guardian or admin (owner, 2026-11-25 veto;
+                # 2026-11-26 resolve, rotate, cancel-rotation, reclaim). The Forge router calls these
+                # over the compose network when a lock proposes and executes one; Caddy refuses
+                # */api/v1/guardian/* from outside, since a hold makes the service's writers wait.
+                action = path.removeprefix("/api/v1/guardian/")
+                if path.startswith("/api/v1/guardian/") and action in service.LOCK_ACTIONS:
                     if service.s is None:
                         return self.send_json(503, {"success": False, "error": "booting: resyncing from chain"})
-                    root_id = body.get("root_id")
-                    if not isinstance(root_id, int) or isinstance(root_id, bool) or root_id < 0:
-                        raise ValueError("root_id is a whole number")
-                    sender = puzzle_hash_of(str(body.get("guardian") or ""))
-                    return self.send_json(200, {"success": True, **service.guardian_veto(root_id, sender, bool(body.get("hold")))})
+
+                    def whole(name, allowed=None):
+                        v = body.get(name)
+                        if not isinstance(v, int) or isinstance(v, bool) or v < 0 or (allowed and v not in allowed):
+                            raise ValueError(f"{name} is a whole number" + (f" in {sorted(allowed)}" if allowed else ""))
+                        return v
+
+                    def h32(name):
+                        raw = str(body.get(name) or "").strip().lower().removeprefix("0x")
+                        if len(raw) != 64:
+                            raise ValueError(f"{name} is 32 bytes of hex")
+                        return bytes.fromhex(raw)
+
+                    sender = puzzle_hash_of(str(body.get("sender") or body.get("guardian") or ""))
+                    args = {}
+                    if action == "veto":
+                        args = {"root_id": whole("root_id")}
+                    elif action == "resolve":
+                        args = {"root_id": whole("root_id"), "upheld": whole("upheld", {0, 1})}
+                    elif action in ("rotate", "cancel-rotation"):
+                        args = {"engine_ph": puzzle_hash_of(str(body.get("engine_ph") or ""))}
+                    else:
+                        args = {"campaign_id": h32("campaign_id")}
+                    return self.send_json(200, {"success": True,
+                                                **service.lock_action(action, sender, bool(body.get("hold")), **args)})
                 if path == "/api/v1/guardian/release":
                     service.release_guardian()
                     return self.send_json(200, {"success": True})
