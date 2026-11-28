@@ -202,6 +202,8 @@ def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit:
                 if path == "/api/v1/watch" and watcher is not None:
                     last = watcher.last
                     return self.send_json(200 if last else 503, {"success": bool(last), **(last.alert() if last else {"error": "no check yet"})})
+                if path == "/api/v1/claims/terms" and sequencer is not None:
+                    return self.send_json(200, {"success": True, **sequencer.terms()})
                 if path.startswith("/api/v1/claims/") and sequencer is not None:
                     found = sequencer.status_of(path.rsplit("/", 1)[1])
                     return self.send_json(200 if found else 404, {"success": bool(found), **(found or {"error": "unknown request"})})

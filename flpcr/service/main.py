@@ -87,7 +87,7 @@ from .chain import NodeChain
 from .core import OperatorKey
 from .fleet import Fleet
 from .http import serve
-from .intake import cached, forge_cat_policies, forge_pool_infos, router_create_gate
+from .intake import forge_mempool_fill, cached, forge_cat_policies, forge_pool_infos, router_create_gate
 from ..registry import Registry
 from ..router import RouterRules
 from .watcher import AlertSink, Watcher, manifest_lookup
@@ -194,6 +194,7 @@ def main() -> int:
                   router_sk=router_sk, template=template,
                   rules=rules_from_env(env.get("FLPCR_ROUTER_RULES", ""), env.get("FLPCR_POST_FEE", "")), pools=cached(lambda: forge_pool_infos(api)),
                   cat_policies=cached(lambda: forge_cat_policies(api), 120), every=every, manifests_dir=manifests_dir,
+                  mempool_fill=cached(lambda: forge_mempool_fill(api), 20),
                   registry=Registry.load(network, env.get("FLPCR_REGISTRY_DIR", "").strip() or None),
                   configured=more, discover=env.get("FLPCR_DISCOVER", "1").strip() != "0",
                   create_gate=router_create_gate(api, network) if env.get("FLPCR_CREATE_GATE", "").strip() == "router" else None,
