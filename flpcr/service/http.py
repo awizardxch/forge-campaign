@@ -227,7 +227,7 @@ def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit:
             full = self.path.split("?", 1)[0].rstrip("/")
             try:
                 forwarded = (self.headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
-                limit = read_limit if full.endswith("/api/v1/claimable") else post_limit
+                limit = read_limit if full.endswith(("/api/v1/claimable", "/api/v1/roots/request")) else post_limit
                 if not limit.allow(forwarded or self.client_address[0]):
                     return self.send_json(429, {"success": False, "error": "too many requests; retry in a minute",
                                                 "retry_after": 60})
@@ -245,8 +245,14 @@ def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit:
                 if found is None:
                     return self.send_json(404, {"success": False, "error": "this service hosts no such distributor"})
                 service, sequencer, intake, watcher, path = found
+                if path == "/api/v1/roots/request":
+                    if service.s is None:
+                        return self.send_json(503, {"success": False, "error": "booting: resyncing from chain"})
+                    return self.send_json(200, {"success": True, **service.request_root()})
                 if path == "/api/v1/claims" and sequencer is not None:
                     queued = sequencer.submit(body)
+                    if getattr(service, "on_demand", False):
+                        service.request_root()  # a claim also asks for the rewards accrued since
                     if getattr(sequencer, "batch_on_submit", False):
                         sequencer.kick()  # the claimant paid the fee: push now, not on the next pass
                     return self.send_json(202, {"success": True, **queued})

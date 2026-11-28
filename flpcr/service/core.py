@@ -180,13 +180,21 @@ class ServiceState:
 class CampaignService:
     def __init__(self, chain, launcher_id: bytes, network: str, source_for: Callable[[Sequence[Campaign]], object],
                  operator: Optional[OperatorKey] = None, every: int = 180, puzzles_factory=None,
-                 manifests_dir: Optional[pathlib.Path] = None, registry=None):
+                 manifests_dir: Optional[pathlib.Path] = None, registry=None, on_demand: bool = False):
         self.chain = chain
         self.launcher_id = launcher_id
         self.network = network
         self.source_for = source_for
         self.operator = operator
         self.every = every
+        # Roots on demand (owner, 2026-11-28: "build roots on demand as a user who clicks claim is
+        # actually claiming old confirmed rewards after the dispute window"; "we still want
+        # nothing deposited just like merkl does it"). A root goes up when someone asks for one
+        # (request_root: a holder's Claim), at most one per `every` blocks, and when a campaign
+        # ends (its final root), not on a clock. One root may span any stretch (post_root asks
+        # only that it start where the last ended and end by now), so nothing is lost by waiting.
+        self.on_demand = on_demand
+        self.root_requested = False
         self.puzzles_factory = puzzles_factory or (lambda: Puzzles(Clvm()))
         # Two locks (2026-11-10: reads stalled for minutes while a batch waited to confirm):
         # `write_lock` lets one builder at a time (operator, sequencer, create intake, follow,
@@ -510,6 +518,7 @@ class CampaignService:
                 "rotation": st.rotation and {"engine_ph": st.rotation.engine_ph.hex(), "effective_at": st.rotation.effective_at},
                 "proofs_through_root": max(self.s.roots, default=0), "proof_gap": self.s.mismatch,
                 "operator": self.operator.puzzle_hash.hex() if self.operator else None,
+                "roots": "on-demand" if self.on_demand else "scheduled", "root_requested": self.root_requested,
             }
 
     def distributors(self) -> dict:
@@ -658,9 +667,37 @@ class CampaignService:
         end = min(h, max(c.end for c in live))
         if end <= last_end or h <= min(c.start for c in live):
             return None
+        if self.on_demand:
+            # A campaign that ended since the last root gets its final root; a request waits until
+            # the stretch is `every` blocks long, so asking again and again posts no more often.
+            if any(last_end < c.end <= h for c in live):
+                return end
+            if self.root_requested and end - last_end >= self.every:
+                return end
+            return None
         if end - last_end >= self.every or end >= max(c.end for c in live):
             return end
         return None
+
+    def request_root(self) -> dict:
+        """A holder asks for the rewards since the last root to be posted (on-demand roots). What
+        is confirmed already is claimable now; what this root posts is claimable once its dispute
+        window closes."""
+        h = self.chain.peak()
+        with self.lock:
+            st = self.d.chain_state
+            last_end = self.s.engine.height
+            live = [c for c in st.campaigns if c.id in self.s.campaigns]
+        if not self.on_demand:
+            return {"on_demand": False, "requested": False, "why": "this service posts roots on a schedule"}
+        if not live or all(h <= c.start for c in live):
+            return {"on_demand": True, "requested": False, "why": "no campaign has accrued anything to post yet"}
+        self.root_requested = True
+        start = last_end if last_end is not None else min(c.start for c in live)
+        posts_at = max(h, start + self.every)
+        return {"on_demand": True, "requested": True, "posts_at": posts_at,
+                "claimable_from": posts_at + self.d.cfg.dispute_blocks,
+                "dispute_blocks": self.d.cfg.dispute_blocks, "every": self.every}
 
     def operator_step(self, wait: float = 1800, poll: float = 15) -> Optional[dict]:
         """Post a root if one is due. Returns what was posted, or None."""
@@ -696,6 +733,7 @@ class CampaignService:
             successor = d.successor_coin(prepared)
             self.chain.push(spends, self.signer.sign(own))
             self._wait(successor.coin_id(), wait, poll)  # `write_lock` only: reads go on meanwhile
+            self.root_requested = False  # this root answers every request made before it
             entry = {"step": "post_root", "root_id": root.root_id, "start": root.start, "end": root.end,
                      "time": int(time.time()), "fee": fee, "manifest_hash": mh.hex()}
             with self.lock:

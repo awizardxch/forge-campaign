@@ -45,6 +45,18 @@ class NotPinned(ValueError):
     """The distributor on chain is not this build with this host's keys."""
 
 
+# Mainnet follows Merkl's method (owner, 2026-11-28: "we know their system works well for evm and
+# users so we want to model after that working system"). Verified 2026-11-28 in docs.merkl.xyz
+# (Technical Overview) and in the live Distributor 0x3Ef3D8bA38EBe18DB133cEc108f4D14CE00Dd9Ae on
+# Ethereum, Base and Arbitrum: disputePeriod() = 1 (hour, rounded up to the next whole hour, so
+# 1-2 h), a 100 EURA bond, and roots about every 8 h (Ethereum's at 02:00, 10:00, 18:00 UTC).
+# In Chia blocks (4,608 a day): a 192-block dispute window and a root every 1,536 blocks.
+# The bond (owner, 2026-11-28: "$100 usd seems more resonable if someone is certain they would
+# get it back"): 110 XCH, about $100 at $0.91 (2026-11-28). It is in XCH and fixed at launch;
+# a disputer who is right gets it back, one who is wrong loses it to the dev fee address.
+MAINNET_TEMPLATE = {"dispute_blocks": 192, "dispute_bond": 110_000_000_000_000}
+
+
 @dataclass(frozen=True)
 class BuildPin:
     network: str

@@ -42,7 +42,11 @@ Environment (the host's service variables):
                          wallets and NFT collections its Operator tab sets for pool deployment);
                          unset or off: anyone may create (owner, 2026-11-25: router while mainnet
                          is tested)
-    FLPCR_EVERY          blocks between roots while campaigns run (default 180, ~1 h)
+    FLPCR_EVERY          blocks between roots while campaigns run (default 180, ~1 h); with
+                         on-demand roots, the shortest stretch a requested root covers
+    FLPCR_ROOTS          "scheduled" (default, Merkl's method): one every FLPCR_EVERY blocks, and
+                         each campaign's final root; "on-demand": a root when a holder asks
+                         (Claim) and when a campaign ends
     FLPCR_LOOP_SECONDS   seconds between operator checks (default 60)
     FLPCR_CACHE_DIR      where the LP crawl cache and the published root manifests live (a
                          mounted volume; default ./data). Manifests: <dir>/manifests/<hash>.json,
@@ -153,10 +157,12 @@ def template_from_env(network: str, env, operator, router_sk) -> BuildPin:
     if not guardian:
         raise ValueError("needs FLPCR_GUARDIAN_ADDRESS (a multisig)")
     roles = addresses(network, env)
+    from ..build_pin import MAINNET_TEMPLATE  # Merkl's 1-hour dispute window on mainnet
     return BuildPin.template(network, operator_ph=operator.puzzle_hash,
                              router_ph=standard_puzzle_hash(router_sk.public_key()),
                              guardian_ph=decode(guardian, network), admin_ph=roles.admin_ph,
-                             dev_fee_ph=roles.dev_fee_ph, pins=pins_fingerprint())
+                             dev_fee_ph=roles.dev_fee_ph, pins=pins_fingerprint(),
+                             **(MAINNET_TEMPLATE if network == "mainnet" else {}))
 
 
 def main() -> int:
@@ -195,6 +201,7 @@ def main() -> int:
                   rules=rules_from_env(env.get("FLPCR_ROUTER_RULES", ""), env.get("FLPCR_POST_FEE", "")), pools=cached(lambda: forge_pool_infos(api)),
                   cat_policies=cached(lambda: forge_cat_policies(api), 120), every=every, manifests_dir=manifests_dir,
                   mempool_fill=cached(lambda: forge_mempool_fill(api), 20),
+                  on_demand=env.get("FLPCR_ROOTS", "scheduled").strip() == "on-demand",
                   registry=Registry.load(network, env.get("FLPCR_REGISTRY_DIR", "").strip() or None),
                   configured=more, discover=env.get("FLPCR_DISCOVER", "1").strip() != "0",
                   create_gate=router_create_gate(api, network) if env.get("FLPCR_CREATE_GATE", "").strip() == "router" else None,

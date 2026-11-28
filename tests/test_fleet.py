@@ -727,6 +727,11 @@ class TestTemplateMode(unittest.TestCase):
                          ("mainnet", self.GUARDIAN, self.DEV, self.DEV, fx.router_ph, fx.op.puzzle_hash))
         pin = template_from_env("mainnet", {**env, "FLPCR_ADMIN_ADDRESS": xch(self.ADMIN)}, fx.op, fx.router_sk)
         self.assertEqual(pin.admin_ph, self.ADMIN)
+        # Merkl's method on mainnet (owner, 2026-11-28): a 1-hour dispute window, a bond of about $100.
+        self.assertEqual((pin.dispute_blocks, pin.dispute_bond), (192, 110_000_000_000_000))
+        self.assertGreater(pin.rotate_delay, pin.dispute_blocks)
+        test = template_from_env("testnet11", {"FLPCR_GUARDIAN_ADDRESS": Address(self.GUARDIAN, "txch").encode()}, fx.op, fx.router_sk)
+        self.assertEqual(test.dispute_blocks, 38, "testnet keeps its 12-minute window")
         with self.assertRaisesRegex(ValueError, "FLPCR_GUARDIAN_ADDRESS"):
             template_from_env("mainnet", {k: v for k, v in env.items() if k != "FLPCR_GUARDIAN_ADDRESS"}, fx.op, fx.router_sk)
         with self.assertRaisesRegex(ValueError, "needs FLPCR_OPERATOR_SK and FLPCR_ROUTER_SK"):
