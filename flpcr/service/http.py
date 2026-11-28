@@ -102,8 +102,13 @@ def _hex32(text: str) -> Optional[bytes]:
 
 
 def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit: Optional[PostLimit] = None,
-                 fleet=None):
+                 fleet=None, read_limit: Optional[PostLimit] = None):
     post_limit = post_limit or PostLimit()
+    # A wallet's claimable read (POST /api/v1/claimable) is dictionary lookups (CS-03), and the 🪎
+    # tab sends one per few hundred addresses to every distributor the host serves: it has its own,
+    # larger allowance, so a big wallet does not spend the budget that guards quotes and bundles
+    # (owner, 2026-11-27: "too many requests" on the rewards page).
+    read_limit = read_limit or PostLimit(per_minute=240)
     fixed = (service, sequencer, intake, watcher)
 
     def resolve(path: str):
@@ -220,7 +225,8 @@ def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit:
             full = self.path.split("?", 1)[0].rstrip("/")
             try:
                 forwarded = (self.headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
-                if not post_limit.allow(forwarded or self.client_address[0]):
+                limit = read_limit if full.endswith("/api/v1/claimable") else post_limit
+                if not limit.allow(forwarded or self.client_address[0]):
                     return self.send_json(429, {"success": False, "error": "too many requests; retry in a minute",
                                                 "retry_after": 60})
                 length = int(self.headers.get("Content-Length") or 0)
@@ -303,5 +309,6 @@ def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit:
 
 
 def serve(service, port: int, sequencer=None, intake=None, watcher=None,
-          post_limit: Optional[PostLimit] = None, fleet=None) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer(("0.0.0.0", port), make_handler(service, sequencer, intake, watcher, post_limit, fleet))
+          post_limit: Optional[PostLimit] = None, fleet=None, read_limit: Optional[PostLimit] = None) -> ThreadingHTTPServer:
+    return ThreadingHTTPServer(("0.0.0.0", port),
+                               make_handler(service, sequencer, intake, watcher, post_limit, fleet, read_limit))

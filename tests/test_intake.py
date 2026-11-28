@@ -401,6 +401,18 @@ class TestHttp(unittest.TestCase):
             self.assertEqual(self.call(port, "GET", f"/api/v1/campaigns/{q['campaign']}")[0], 200)
         finally:
             server.shutdown()
+        # A wallet's claimable reads have their own allowance: they neither spend the POST budget
+        # nor are refused because it is spent (2026-11-27), and they are limited on their own.
+        server = serve(x.svc, 0, None, x.intake, post_limit=PostLimit(per_minute=1), read_limit=PostLimit(per_minute=2))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        port = server.server_address[1]
+        try:
+            self.assertEqual(self.call(port, "POST", "/api/v1/campaigns/quote", x.request(nonce=20))[0], 200)
+            self.assertEqual(self.call(port, "POST", "/api/v1/campaigns/quote", x.request(nonce=21))[0], 429)
+            reads = [self.call(port, "POST", "/api/v1/claimable", {"addresses": []})[0] for _ in range(3)]
+            self.assertEqual(reads, [200, 200, 429])
+        finally:
+            server.shutdown()
         # The page is the service's: it is served with no intake (no router key on the host).
         server = serve(x.svc, 0)
         threading.Thread(target=server.serve_forever, daemon=True).start()
