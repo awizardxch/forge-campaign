@@ -92,6 +92,7 @@ class Fleet:
     create_gate: Optional[Callable] = None  # creator ph -> (allowed, why not); None: anyone (intake.router_create_gate)
     watcher_factory: Optional[Callable] = None  # (launcher_id) -> a Watcher for each hosted one
     mempool_fill: Optional[Callable] = None  # () -> the mempool's fill 0..1 (intake.forge_mempool_fill), or None
+    on_demand: bool = False  # roots when a holder asks and when a campaign ends, not on a clock
 
     def __post_init__(self) -> None:
         self.hosted: Dict[bytes, Hosted] = {}
@@ -148,7 +149,7 @@ class Fleet:
             return self.service_factory(launcher_id)
         return CampaignService(self.chain, launcher_id, self.network, self.source_for, operator=self.operator,
                                every=self.every, manifests_dir=self.manifests_dir, registry=self.registry,
-                               puzzles_factory=self.puzzles_factory)
+                               puzzles_factory=self.puzzles_factory, on_demand=self.on_demand)
 
     def _host(self, launcher_id: bytes, service: CampaignService) -> Hosted:
         d = service.d

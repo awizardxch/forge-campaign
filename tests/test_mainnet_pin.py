@@ -32,6 +32,9 @@ class TestMainnetPin(unittest.TestCase):
                 "delegate_fee": DEFAULT_DELEGATE_FEE, "min_campaign_length": d.min_campaign_length,
                 "max_campaign_length": d.max_campaign_length, "max_campaigns": d.max_campaigns,
                 "dispute_bond": DEFAULT_DISPUTE_BOND}
+        # What mainnet's template sets over the defaults (Merkl's window, a bond of about $100).
+        from flpcr.build_pin import MAINNET_TEMPLATE
+        want.update(MAINNET_TEMPLATE)
         self.assertEqual(self.config(), want)
         self.assertEqual(d.rotate_delay, BLOCKS_PER_DAY)
 
