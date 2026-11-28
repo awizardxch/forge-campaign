@@ -44,6 +44,8 @@ Environment (the host's service variables):
                          is tested)
     FLPCR_EVERY          blocks between roots while campaigns run (default 180, ~1 h); with
                          on-demand roots, the shortest stretch a requested root covers
+    FLPCR_ROOT_MARGIN    blocks a root ends behind the tip (default 32, ~10 min): its freshest
+                         blocks wait for the next root, past an indexer's lag or a reorg
     FLPCR_ROOTS          "scheduled" (default, Merkl's method): one every FLPCR_EVERY blocks, and
                          each campaign's final root; "on-demand": a root when a holder asks
                          (Claim) and when a campaign ends
@@ -202,6 +204,7 @@ def main() -> int:
                   cat_policies=cached(lambda: forge_cat_policies(api), 120), every=every, manifests_dir=manifests_dir,
                   mempool_fill=cached(lambda: forge_mempool_fill(api), 20),
                   on_demand=env.get("FLPCR_ROOTS", "scheduled").strip() == "on-demand",
+                  root_margin=int(env.get("FLPCR_ROOT_MARGIN", "32")),
                   registry=Registry.load(network, env.get("FLPCR_REGISTRY_DIR", "").strip() or None),
                   configured=more, discover=env.get("FLPCR_DISCOVER", "1").strip() != "0",
                   create_gate=router_create_gate(api, network) if env.get("FLPCR_CREATE_GATE", "").strip() == "router" else None,
