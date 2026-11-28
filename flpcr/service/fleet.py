@@ -152,7 +152,7 @@ class Fleet:
     def _host(self, launcher_id: bytes, service: CampaignService) -> Hosted:
         d = service.d
         state = self.chain.reader.coin_state(launcher_id)
-        h = Hosted(launcher_id, service, None, ClaimSequencer(service), asset=d.cfg.reward_asset,
+        h = Hosted(launcher_id, service, None, ClaimSequencer(service, batch_on_submit=True), asset=d.cfg.reward_asset,
                    launched_at=state.created_height if state is not None else 0)
         try:
             if self.pin is None:

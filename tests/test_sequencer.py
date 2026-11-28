@@ -2,8 +2,12 @@
 a coin of their own, a lock (any puzzle) claims by a mode-16 message in its own spend, and
 every bad request is refused at intake, never inside a batch."""
 
+import json
+import threading
+import time
 import types
 import unittest
+import urllib.request
 
 try:
     from chia_wallet_sdk import Clvm, SecretKey, Signature
@@ -247,6 +251,116 @@ class TestSequencer(unittest.TestCase):
         self.seq.run_batch(wait=5, poll=0)
         with self.assertRaisesRegex(ValueError, "nothing to claim"):
             self.seq.submit(self.key_request([self.holders[0]]))
+
+    # --- a claim pushes on request (owner, 2026-11-27) ----------------------------------------
+
+    def until(self, test, seconds=20):
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if test():
+                return True
+            time.sleep(0.05)
+        return False
+
+    def test_a_kick_pays_a_request_without_the_loop(self):
+        """The claimant paid the fee: kick() pays the request on its own thread, no loop pass."""
+        x = self.holders[0]
+        owed, before = self.leaf(x.puzzle_hash)["claimable"], self.balance(x.puzzle_hash)
+        req = self.seq.submit(self.key_request([x]))
+        self.assertTrue(self.seq.kick(wait=5, poll=0))
+        self.assertTrue(self.until(lambda: self.seq.status_of(req["request"])["status"] == "confirmed"),
+                        self.seq.status_of(req["request"]))
+        self.assertTrue(self.until(lambda: not self.seq._kicking))
+        self.assertEqual(self.balance(x.puzzle_hash) - before, owed)
+
+    def test_a_kick_while_one_runs_gets_its_own_batch(self):
+        """A request queued while a kick's batch waits for its block is paid by one more batch
+        after it, with no loop pass and no second thread."""
+        a, b = self.holders[0], self.holders[1]
+        second_req = self.key_request([b])  # built now: its leaf is read before the first lands
+        first = self.seq.submit(self.key_request([a]))
+        seen = {}
+        real_wait = self.svc._wait
+
+        def wait_then_submit(coin_id, wait, poll):  # the first batch has read the queue: queue another
+            if "second" not in seen:
+                seen["second"] = self.seq.submit(second_req)
+                seen["kicked"] = self.seq.kick(wait=5, poll=0)  # one at a time: asks for one more
+            return real_wait(coin_id, wait, poll)
+
+        self.svc._wait = wait_then_submit
+        try:
+            self.assertTrue(self.seq.kick(wait=5, poll=0))
+            self.assertTrue(self.until(lambda: not self.seq._kicking))
+        finally:
+            self.svc._wait = real_wait
+        self.assertFalse(seen["kicked"])
+        self.assertEqual(self.seq.status_of(first["request"])["status"], "confirmed")
+        self.assertEqual(self.seq.status_of(seen["second"]["request"])["status"], "confirmed",
+                         self.seq.status_of(seen["second"]["request"]))
+
+    def test_a_batch_waiting_on_the_lock_never_refuses_what_another_paid(self):
+        """Two batches at once (the loop's and a kick's): the one that waited on the write lock
+        must not read the other's paid requests, whose fee coins are spent now, as refused."""
+        req = self.seq.submit(self.key_request([self.holders[0]]))
+        out = {}
+        with self.svc.write_lock:  # the waiting batch reads the queue, then blocks here
+            t = threading.Thread(target=lambda: out.setdefault("late", self.seq.run_batch(wait=5, poll=0)))
+            t.start()
+            time.sleep(0.3)
+            out["first"] = self.seq.run_batch(wait=5, poll=0)  # the lock is reentrant: this one pays
+        t.join(20)
+        self.assertTrue(out["first"]["pushed"], out)
+        self.assertIsNone(out["late"], out)
+        self.assertEqual(self.seq.status_of(req["request"])["status"], "confirmed")
+
+    def test_a_syncing_node_leaves_the_request_queued(self):
+        """NO_TRANSACTIONS_WHILE_SYNCING is the node's state: the request is neither suspect nor
+        refused, however often it happens, and is paid once the node takes transactions."""
+        from flpcr.service.chain import NodeBusy, push_refusal
+
+        self.assertIsInstance(push_refusal("Failed to include transaction 56f8, error NO_TRANSACTIONS_WHILE_SYNCING"), NodeBusy)
+        self.assertNotIsInstance(push_refusal("Failed to include transaction 56f8, error DOUBLE_SPEND"), NodeBusy)
+        req = self.seq.submit(self.key_request([self.holders[0]]))
+        real_push, refusals = self.svc.chain.push, []
+
+        def syncing(spends, signature):
+            if len(refusals) < 4:
+                refusals.append(1)
+                raise push_refusal("Failed to include transaction 56f8, error NO_TRANSACTIONS_WHILE_SYNCING")
+            return real_push(spends, signature)
+
+        self.svc.chain.push = syncing
+        try:
+            for _ in range(4):
+                out = self.seq.run_batch(wait=5, poll=0)
+                self.assertEqual((out["pushed"], out.get("retry")), (False, True), out)
+                st = self.seq.status_of(req["request"])
+                self.assertEqual(st["status"], "queued", st)
+                self.assertFalse(self.seq.queue[req["request"]].suspect)
+            self.assertTrue(self.seq.run_batch(wait=5, poll=0)["pushed"])
+        finally:
+            self.svc.chain.push = real_push
+        self.assertEqual(self.seq.status_of(req["request"])["status"], "confirmed")
+
+    def test_the_claims_route_pushes_at_once(self):
+        """POST /api/v1/claims on a sequencer that batches on submit: confirmed with no run_batch call."""
+        from flpcr.service.http import PostLimit, serve
+
+        seq = ClaimSequencer(self.svc, batch_on_submit=True)
+        server = serve(self.svc, 0, seq, post_limit=PostLimit(1000))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            port = server.server_address[1]
+            body = json.dumps(self.key_request([self.holders[2]])).encode()
+            r = urllib.request.urlopen(urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/v1/claims", data=body, headers={"Content-Type": "application/json"}))
+            req = json.loads(r.read())
+            self.assertEqual(r.status, 202)
+            self.assertTrue(self.until(lambda: seq.status_of(req["request"])["status"] == "confirmed"),
+                            seq.status_of(req["request"]))
+        finally:
+            server.shutdown()
 
 
 if __name__ == "__main__":
