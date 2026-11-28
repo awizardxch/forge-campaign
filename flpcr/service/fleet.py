@@ -91,6 +91,7 @@ class Fleet:
     template: Optional[BuildPin] = None  # the build pin when there is no primary
     create_gate: Optional[Callable] = None  # creator ph -> (allowed, why not); None: anyone (intake.router_create_gate)
     watcher_factory: Optional[Callable] = None  # (launcher_id) -> a Watcher for each hosted one
+    mempool_fill: Optional[Callable] = None  # () -> the mempool's fill 0..1 (intake.forge_mempool_fill), or None
 
     def __post_init__(self) -> None:
         self.hosted: Dict[bytes, Hosted] = {}
@@ -152,7 +153,7 @@ class Fleet:
     def _host(self, launcher_id: bytes, service: CampaignService) -> Hosted:
         d = service.d
         state = self.chain.reader.coin_state(launcher_id)
-        h = Hosted(launcher_id, service, None, ClaimSequencer(service, batch_on_submit=True), asset=d.cfg.reward_asset,
+        h = Hosted(launcher_id, service, None, ClaimSequencer(service, batch_on_submit=True, mempool_fill=self.mempool_fill), asset=d.cfg.reward_asset,
                    launched_at=state.created_height if state is not None else 0)
         try:
             if self.pin is None:

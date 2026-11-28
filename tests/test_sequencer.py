@@ -343,6 +343,50 @@ class TestSequencer(unittest.TestCase):
             self.svc.chain.push = real_push
         self.assertEqual(self.seq.status_of(req["request"])["status"], "confirmed")
 
+    def test_a_quiet_mempool_takes_a_small_fee(self):
+        """While the mempool is quiet the node takes a fee under 5 mojos per cost: a claim paying
+        the least the service asks (1 mojo per cost) is pushed and paid."""
+        seq = ClaimSequencer(self.svc, mempool_fill=lambda: 0.2)
+        req = seq.submit(self.key_request([self.holders[0]], fee=FEE_PER_CLAIM))
+        self.assertTrue(seq.run_batch(wait=5, poll=0)["pushed"])
+        self.assertEqual(seq.status_of(req["request"])["status"], "confirmed")
+        self.assertFalse(seq.terms()["busy"])
+        with self.assertRaisesRegex(ValueError, "need"):  # nothing under the least it asks
+            seq.submit(self.key_request([self.holders[1]], fee=FEE_PER_CLAIM - 1))
+
+    def test_a_fee_under_the_network_floor_is_refused_before_it_is_pushed(self):
+        """While the mempool is busy, a bundle paying a nonzero fee under 5 mojos per cost would be
+        refused or parked, and the singleton would wait on it: the sequencer refuses the request
+        that pays under its share, and pushes the rest."""
+        from flpcr.service.sequencer import CLAIM_COST, MIN_FEE_PER_COST
+        seq = ClaimSequencer(self.svc, fee_per_claim=1, mempool_fill=lambda: 0.9)  # busy
+        cheap = seq.submit(self.key_request([self.holders[0]], fee=100_000_000))
+        fair = seq.submit(self.key_request([self.holders[1]], fee=MIN_FEE_PER_COST * CLAIM_COST))
+        pushed, costs = [], []
+        real = self.svc.chain.push
+
+        def watch(spends, sig):
+            costs.append(self.svc.d.spend_cost(list(spends)))
+            pushed.append(len(spends))
+            return real(spends, sig)
+
+        self.svc.chain.push = watch
+        try:
+            out = seq.run_batch(wait=5, poll=0)
+            self.assertEqual((out["pushed"], out.get("retry")), (False, True), out)
+            self.assertEqual(pushed, [], "nothing is pushed while a request pays under the floor")
+            st = seq.status_of(cheap["request"])
+            self.assertEqual(st["status"], "refused")
+            self.assertIn("under the network's floor", st["detail"])
+            self.assertEqual(seq.status_of(fair["request"])["status"], "queued")
+            self.assertTrue(seq.run_batch(wait=5, poll=0)["pushed"])
+        finally:
+            self.svc.chain.push = real
+        self.assertEqual(seq.status_of(fair["request"])["status"], "confirmed")
+        self.assertLessEqual(costs[0], CLAIM_COST, "a claim costs no more than the page sizes its fee for")
+        self.assertTrue(seq.terms()["busy"])
+        self.assertEqual(self.seq.terms()["min_fee_per_claim"], FEE_PER_CLAIM)
+
     def test_the_claims_route_pushes_at_once(self):
         """POST /api/v1/claims on a sequencer that batches on submit: confirmed with no run_batch call."""
         from flpcr.service.http import PostLimit, serve

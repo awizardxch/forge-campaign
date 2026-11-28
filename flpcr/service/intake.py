@@ -133,6 +133,14 @@ def forge_cat_policies(api: str) -> Dict[bytes, CatPolicy]:
     return out
 
 
+def forge_mempool_fill(api: str) -> Optional[float]:
+    """The mempool's fill, 0..1, from a Forge responder's /api/mempool (None: no reading)."""
+    req = urllib.request.Request(f"{api.rstrip('/')}/api/mempool", headers={"User-Agent": "flpcr-intake/1.0"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        fill = json.loads(r.read()).get("fill")
+    return float(fill) if isinstance(fill, (int, float)) else None
+
+
 def cached(fetch: Callable[[], Dict], seconds: float = 300) -> Callable[[], Dict]:
     memo = {"at": 0.0, "value": None}
 

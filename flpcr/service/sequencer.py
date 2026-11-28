@@ -46,7 +46,7 @@ import threading
 import traceback
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from chia_wallet_sdk import Clvm, Coin, CoinSpend, PublicKey, Signature, standard_puzzle_hash
 
@@ -57,7 +57,18 @@ from ..chain.values import to_bytes, to_int, to_list
 from .chain import NodeBusy, PushRefused
 from .http import puzzle_hash_of
 
-FEE_PER_CLAIM = 600_000_000  # 15 x the ~40M cost of a first claim: clear of the 5 mojo/cost floor
+# What a claim costs the chain, with its fee spend (measured 2026-11-28 on the simulator, the SDK's
+# consensus cost: 137.6M for a key claim alone, 137.6M more for each one beside it; bytes at 12,000
+# each are most of it), with a margin. The claimant picks the fee rate like a swap's (owner,
+# 2026-11-28: "show the transaction fee options on the claim. same as we do on a swap"): the
+# node's estimate while the mempool is quiet, the 5 and 10 mojo floor rates once it is busy.
+# The node refuses a nonzero fee under 5 mojos per cost only when its mempool is full, and a
+# claim parked there would hold the singleton for everyone: so while the mempool is busy
+# (BUSY_FILL, as the router's api/_feeFloor.js) the sequencer refuses a request under that floor.
+CLAIM_COST = 160_000_000
+MIN_FEE_PER_COST = 5  # the floor the node keeps for a full mempool
+BUSY_FILL = 0.7
+FEE_PER_CLAIM = CLAIM_COST  # the least a claim may pay: 1 mojo per cost (no free claims), 0.00016 XCH
 MAX_REQUEST_CLAIMS = 32
 SOLO_TRIES = 2  # a suspect refused alone this many times is refused for good
 
@@ -93,8 +104,12 @@ def _bundle(clvm: Clvm, body: Optional[dict]):
 
 
 class ClaimSequencer:
-    def __init__(self, service, fee_per_claim: int = FEE_PER_CLAIM, batch_on_submit: bool = False):
+    def __init__(self, service, fee_per_claim: int = FEE_PER_CLAIM, batch_on_submit: bool = False,
+                 mempool_fill: Optional[Callable[[], Optional[float]]] = None):
         self.service = service
+        # The mempool's fill, 0..1 (the Forge router's /api/mempool), or None when unknown: unknown
+        # is read as quiet, as the router does, and the node itself is the last word.
+        self.mempool_fill = mempool_fill
         self.fee_per_claim = fee_per_claim
         self.queue: Dict[str, Pending] = {}
         self.lock = threading.Lock()
@@ -133,6 +148,20 @@ class ClaimSequencer:
         return True
 
     # --- intake ---------------------------------------------------------------------------
+
+    def _busy(self) -> bool:
+        try:
+            fill = self.mempool_fill() if self.mempool_fill is not None else None
+        except Exception:  # noqa: BLE001 - no reading is a quiet reading, as the router's
+            fill = None
+        return fill is not None and fill >= BUSY_FILL
+
+    def terms(self) -> dict:
+        """What the page sizes a claim's fee from: the cost of one claim, the least a claim may pay,
+        and the floor rate the sequencer holds a request to while the mempool is busy."""
+        return {"cost_per_claim": CLAIM_COST, "min_fee_per_claim": self.fee_per_claim,
+                "busy_fee_per_cost": MIN_FEE_PER_COST, "busy_fill": BUSY_FILL, "busy": self._busy(),
+                "max_request_claims": MAX_REQUEST_CLAIMS}
 
     def submit(self, body: dict) -> dict:
         clvm = Clvm()
@@ -289,6 +318,19 @@ class ClaimSequencer:
             if not take:
                 return None
             spends = list(batch.spends) + [s for p in take for s in p.spends]
+            # The node refuses a bundle whose nonzero fee is under the floor for its whole cost,
+            # and the singleton waits on it meanwhile: a request that pays less than its share
+            # (rounded up, so that if every one pays its share the bundle does) is refused here.
+            cost = d.spend_cost(spends)
+            if self._busy() and sum(p.fee for p in take) < MIN_FEE_PER_COST * cost:
+                count = sum(len(p.claims) for p in take)
+                for p in take:
+                    share = -(-cost * len(p.claims) // count)
+                    if p.fee < MIN_FEE_PER_COST * share:
+                        p.status, p.detail = "refused", (
+                            f"its fee of {p.fee:,} mojos is under the network's floor of {MIN_FEE_PER_COST} mojos "
+                            f"per cost for its {share:,} cost while the mempool is busy; claim again with a higher fee")
+                return {"pushed": False, "error": "a request's fee is under the busy mempool's floor", "retry": True}
             signature = Signature.aggregate([p.signature for p in take])
             last = batch.generations[-1]
             successor = d.successor_coin(last)
