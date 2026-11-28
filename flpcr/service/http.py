@@ -244,7 +244,10 @@ def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit:
                     return self.send_json(404, {"success": False, "error": "this service hosts no such distributor"})
                 service, sequencer, intake, watcher, path = found
                 if path == "/api/v1/claims" and sequencer is not None:
-                    return self.send_json(202, {"success": True, **sequencer.submit(body)})
+                    queued = sequencer.submit(body)
+                    if getattr(sequencer, "batch_on_submit", False):
+                        sequencer.kick()  # the claimant paid the fee: push now, not on the next pass
+                    return self.send_json(202, {"success": True, **queued})
                 if path == "/api/v1/claimable":
                     if service.s is None:
                         return self.send_json(503, {"success": False, "error": "booting: resyncing from chain"})

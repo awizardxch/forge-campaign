@@ -40,6 +40,21 @@ class PushRefused(RuntimeError):
     pass
 
 
+class NodeBusy(PushRefused):
+    """The node refused the bundle for its own state, not the bundle's: it is syncing, or its
+    mempool is not up yet (owner, 2026-11-27: a claim was refused "NO_TRANSACTIONS_WHILE_SYNCING").
+    Nothing about the spends is wrong, so nothing is marked suspect or refused: push again later."""
+
+
+# What a full node answers when it takes no transactions at all for now.
+NODE_BUSY_ERRORS = ("NO_TRANSACTIONS_WHILE_SYNCING", "MEMPOOL_NOT_INITIALIZED")
+
+
+def push_refusal(error: str) -> PushRefused:
+    """The exception for a node's refusal: NodeBusy for the node's own state, else PushRefused."""
+    return NodeBusy(error) if any(code in error for code in NODE_BUSY_ERRORS) else PushRefused(error)
+
+
 class NodeChain:
     def __init__(self, url: str):
         self.url = url.rstrip("/")
@@ -72,7 +87,7 @@ class NodeChain:
     def push(self, spends: Sequence[CoinSpend], signature: Signature) -> dict:
         verdict = self.rpc("push_tx", {"spend_bundle": bundle_json(spends, signature)})
         if not verdict.get("success"):
-            raise PushRefused(str(verdict.get("error") or verdict))
+            raise push_refusal(str(verdict.get("error") or verdict))
         return verdict
 
     def confirmed_at(self, coin_id: bytes) -> Optional[int]:

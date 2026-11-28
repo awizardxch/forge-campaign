@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import secrets
 import threading
+import traceback
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -53,7 +54,7 @@ from ..chain.auth import BySignature, ByMessage
 from ..chain.driver import ClaimRequest
 from ..chain.signer import ADDITIONAL_DATA, AGG_SIG_ME, AGG_SIG_UNSAFE, MAX_COST
 from ..chain.values import to_bytes, to_int, to_list
-from .chain import PushRefused
+from .chain import NodeBusy, PushRefused
 from .http import puzzle_hash_of
 
 FEE_PER_CLAIM = 600_000_000  # 15 x the ~40M cost of a first claim: clear of the 5 mojo/cost floor
@@ -92,11 +93,44 @@ def _bundle(clvm: Clvm, body: Optional[dict]):
 
 
 class ClaimSequencer:
-    def __init__(self, service, fee_per_claim: int = FEE_PER_CLAIM):
+    def __init__(self, service, fee_per_claim: int = FEE_PER_CLAIM, batch_on_submit: bool = False):
         self.service = service
         self.fee_per_claim = fee_per_claim
         self.queue: Dict[str, Pending] = {}
         self.lock = threading.Lock()
+        # The claimant pays the batch's fee, so a request need not wait for the service's loop
+        # (owner, 2026-11-27: "the next batch should be triggered because of use"): the HTTP
+        # route kicks a batch the moment a request is queued.
+        self.batch_on_submit = batch_on_submit
+        self._kicking = False
+        self._again = False
+
+    def kick(self, wait: float = 1800, poll: float = 15) -> bool:
+        """Run a batch now, on a thread of its own. One kick runs at a time per distributor; a
+        request queued while it runs gets one more batch after it. Returns whether a thread was
+        started. The loop's own batches still run: both take the service's write lock."""
+        with self.lock:
+            if self._kicking:
+                self._again = True
+                return False
+            self._kicking = True
+
+        def run():
+            while True:
+                try:
+                    out = self.run_batch(wait=wait, poll=poll)
+                    if out:
+                        print(f"{self.service.launcher_id.hex()[:12]}…: claims on request {out}", flush=True)
+                except Exception:  # noqa: BLE001
+                    traceback.print_exc()
+                with self.lock:
+                    if not self._again:
+                        self._kicking = False
+                        return
+                    self._again = False
+
+        threading.Thread(target=run, daemon=True, name="flpcr-claim-kick").start()
+        return True
 
     # --- intake ---------------------------------------------------------------------------
 
@@ -221,6 +255,13 @@ class ClaimSequencer:
         if not queued:
             return None
         with svc.write_lock:  # one builder at a time; reads take only `svc.lock`, never this
+            # Taken again under the lock: another batch (the loop's, or a kick's) may have paid
+            # some of these while this one waited, and their fee coins are spent now. Checked
+            # below against the chain, a paid request would read as refused.
+            with self.lock:
+                queued = [p for p in self.queue.values() if p.status == "queued"]
+            if not queued:
+                return None
             if svc.lease.busy():  # a quoted create holds the singleton; the queue waits
                 return None
             svc.follow()  # another builder may have moved the singleton: build on the chain's state
@@ -253,6 +294,10 @@ class ClaimSequencer:
             successor = d.successor_coin(last)
             try:
                 svc.chain.push(spends, signature)
+            except NodeBusy as e:  # the node's state, not the requests': they stay queued as they are
+                for p in take:
+                    p.detail = f"the node is not taking transactions yet; it is pushed again shortly ({e})"
+                return {"pushed": False, "error": str(e), "retry": True}
             except PushRefused as e:
                 if len(take) == 1 and take[0].suspect:
                     p = take[0]
