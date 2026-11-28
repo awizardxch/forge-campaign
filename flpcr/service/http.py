@@ -248,6 +248,12 @@ def make_handler(service, sequencer=None, intake=None, watcher=None, post_limit:
                     if getattr(sequencer, "batch_on_submit", False):
                         sequencer.kick()  # the claimant paid the fee: push now, not on the next pass
                     return self.send_json(202, {"success": True, **queued})
+                # The creator's reclaim (owner, 2026-11-27): a quote, then the creator's signed spend.
+                if path in ("/api/v1/reclaim/quote", "/api/v1/reclaim"):
+                    if service.s is None:
+                        return self.send_json(503, {"success": False, "error": "booting: resyncing from chain"})
+                    desk = service.reclaims
+                    return self.send_json(200, {"success": True, **(desk.quote(body) if path.endswith("/quote") else desk.submit(body))})
                 if path == "/api/v1/claimable":
                     if service.s is None:
                         return self.send_json(503, {"success": False, "error": "booting: resyncing from chain"})

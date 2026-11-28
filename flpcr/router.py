@@ -130,9 +130,12 @@ class RouterRules:
     # The kinds the router signs for. LP_HOLD only until the live sources score the others
     # (CAT_HOLD credits nobody today; NFT_HOLD reads metadata from URLs its minter chose).
     kinds: FrozenSet[Kind] = frozenset({Kind.LP_HOLD})
-    # The shortest claim window the router signs for: holders need days, not the puzzle's
-    # floor of four root cycles, to claim before the creator may reclaim.
-    min_claim_window: int = 7 * BLOCKS_PER_DAY
+    # The claim window the router signs for (owner, 2026-11-27: "unclaimed rewards after a
+    # campaign ends should have about 48hrs then the deployer can claim it back ... leave no
+    # longer than 30 days"). A campaign holds one of its distributor's slots until it is
+    # reclaimed, so a short window also frees slots.
+    min_claim_window: int = 2 * BLOCKS_PER_DAY
+    max_claim_window: int = 30 * BLOCKS_PER_DAY
     # The furthest ahead a campaign may start: an idle row holds one of the table's slots.
     max_start_lead: int = 30 * BLOCKS_PER_DAY
     # NFT_HOLD targets the operator will sign for (minting DID launcher ids);
@@ -156,7 +159,7 @@ class RouterRules:
     def permissive(cls, **kw) -> "RouterRules":
         """No amount floor, every kind, the puzzle's own claim window and start bounds: for
         tests and probes. Never a service's rules."""
-        base = dict(min_amount={}, kinds=frozenset(Kind), min_claim_window=0, max_start_lead=10**12,
+        base = dict(min_amount={}, kinds=frozenset(Kind), min_claim_window=0, max_claim_window=10**12, max_start_lead=10**12,
                     cat_policy_required=False, post_fee=0)
         base.update(kw)
         return cls(**base)
@@ -185,6 +188,8 @@ def check_campaign(campaign: Campaign, registry: ForgeRegistry, rules: RouterRul
         raise NotRoutable(f"this router does not sign for {campaign.kind.name} campaigns")
     if campaign.claim_window < rules.min_claim_window:
         raise NotRoutable(f"claim window is under the {rules.min_claim_window} blocks this router signs for")
+    if campaign.claim_window > rules.max_claim_window:
+        raise NotRoutable(f"claim window is over the {rules.max_claim_window} blocks this router signs for")
     if height is not None and campaign.start > height + rules.max_start_lead:
         raise NotRoutable(f"start is more than {rules.max_start_lead} blocks ahead")
     if campaign.amount < rules.min_amount.get(asset, 0):

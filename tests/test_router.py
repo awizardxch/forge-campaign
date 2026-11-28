@@ -50,6 +50,21 @@ class TestRouter(unittest.TestCase):
             check_campaign(campaign(XCH, Kind.LP_HOLD, POOL), REGISTRY, rules, live_for_creator=2)
         check_campaign(campaign(WUSDC, Kind.LP_HOLD, POOL), REGISTRY, rules)  # no floor set for WUSDC
 
+    def test_claim_window_between_48_hours_and_30_days(self):
+        """Owner, 2026-11-27: holders get about 48 hours after a campaign ends, then the creator may
+        reclaim; no campaign holds its slot longer than 30 days past its end."""
+        import dataclasses
+        rules = RouterRules.permissive(min_claim_window=RouterRules().min_claim_window,
+                                       max_claim_window=RouterRules().max_claim_window)
+        self.assertEqual((RouterRules().min_claim_window, RouterRules().max_claim_window),
+                         (2 * BLOCKS_PER_DAY, 30 * BLOCKS_PER_DAY))
+        base = campaign(XCH, Kind.LP_HOLD, POOL)
+        for ok in (2 * BLOCKS_PER_DAY, 30 * BLOCKS_PER_DAY):
+            check_campaign(dataclasses.replace(base, claim_window=ok), REGISTRY, rules)
+        for bad, why in ((2 * BLOCKS_PER_DAY - 1, "under"), (30 * BLOCKS_PER_DAY + 1, "over")):
+            with self.assertRaisesRegex(NotRoutable, f"claim window is {why}"):
+                check_campaign(dataclasses.replace(base, claim_window=bad), REGISTRY, rules)
+
 
 class TestFeeWindowFloor(unittest.TestCase):
     """The owner's rule: a short-held position averages to about zero. The

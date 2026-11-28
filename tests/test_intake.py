@@ -295,11 +295,15 @@ class TestDefaultRouterRules(unittest.TestCase):
         self.assertEqual(q["fields"]["claim_window"], 7 * 4608)
         body = x.request(amount=10**11)
         del body["claim_window"]  # what the site sends: the window is left to the service
-        self.assertEqual(x.intake.quote(body)["fields"]["claim_window"], 7 * 4608)
+        # 48 hours, then the creator may reclaim (owner, 2026-11-27); at most 30 days.
+        self.assertEqual(x.intake.quote(body)["fields"]["claim_window"], 2 * 4608)
+        self.assertEqual(x.intake.quote(x.request(**{**self.ok, "claim_window": 30 * 4608}))["fields"]["claim_window"], 30 * 4608)
 
     def test_what_the_defaults_refuse(self):
         self.refused("below the minimum", amount=10**11 - 1)
         self.refused("claim window is under", claim_window=160)
+        self.refused("claim window is under", claim_window=2 * 4608 - 1)
+        self.refused("claim_window must be", claim_window=30 * 4608 + 1)
         self.refused("does not sign for CAT_HOLD", kind="CAT_HOLD", target=ASSET.hex())
         self.refused("does not sign for NFT_HOLD", kind="NFT_HOLD", target=(b"\xdd" * 32).hex())
         self.refused("blocks ahead", start=self.x.w.h + 31 * 4608)
