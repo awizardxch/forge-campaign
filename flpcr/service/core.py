@@ -198,9 +198,40 @@ class CampaignService:
         self.s: Optional[ServiceState] = None
         self.signer = KeySigner.for_network([operator.secret] if operator else [], network)
         self.lease = SingletonLease()  # held by a create the intake has quoted (flpcr.service.lease)
+        self._reclaims = None  # the creator's reclaim desk (flpcr.service.reclaim), made on first use
         self.manifests_dir = pathlib.Path(manifests_dir) if manifests_dir else None  # <hash>.json per posted root
         self.registry = registry  # flpcr.registry.Registry for this network, or None
         self._holder_index: Dict[int, tuple] = {}  # id(root) -> (root, holder -> its leaves)
+
+    @property
+    def reclaims(self):
+        """The creator's reclaim lane (owner, 2026-11-27): quote, sign, push."""
+        if self._reclaims is None:
+            from .reclaim import ReclaimDesk
+            self._reclaims = ReclaimDesk(self)
+        return self._reclaims
+
+    @staticmethod
+    def reclaim_ready(st, h: int, campaign_id: bytes):
+        """The campaign, if the reclaim leaf would take it at height `h`; else ValueError naming why."""
+        camp = st.campaign(campaign_id)
+        if camp is None:
+            raise ValueError("no such campaign on this distributor (reclaimed already?)")
+        opens = camp.end + camp.claim_window
+        if h < opens:
+            raise ValueError(f"the campaign's claim window is open until height {opens:,}")
+        if st.dispute is not None:
+            raise ValueError("a dispute is open: a reclaim waits until it is resolved")
+        # As the leaf's prologue sees it: a pending root past its activation is the active one.
+        active, pending = st.active, st.pending
+        if pending is not None and h >= pending.activates_at:
+            active, pending = pending, None
+        if pending is not None:
+            before = dict(active.totals).get(campaign_id, 0) if active is not None else 0
+            if dict(pending.totals).get(campaign_id, 0) > before:
+                raise ValueError("the pending root owes this campaign's holders more; "
+                                 f"reclaim once it activates at height {pending.activates_at:,}")
+        return camp
 
     # --- boot -------------------------------------------------------------------------
 
@@ -396,23 +427,7 @@ class CampaignService:
                 if not isinstance(campaign_id, (bytes, bytearray)) or len(campaign_id) != 32:
                     raise ValueError("campaign_id is 32 bytes")
                 campaign_id = bytes(campaign_id)
-                camp = st.campaign(campaign_id)
-                if camp is None:
-                    raise ValueError("no such campaign on this distributor (reclaimed already?)")
-                opens = camp.end + camp.claim_window
-                if h < opens:
-                    raise ValueError(f"the campaign's claim window is open until height {opens:,}")
-                if st.dispute is not None:
-                    raise ValueError("a dispute is open: a reclaim waits until it is resolved")
-                # As the leaf's prologue sees it: a pending root past its activation is the active one.
-                active, pending = st.active, st.pending
-                if pending is not None and h >= pending.activates_at:
-                    active, pending = pending, None
-                if pending is not None:
-                    before = dict(active.totals).get(campaign_id, 0) if active is not None else 0
-                    if dict(pending.totals).get(campaign_id, 0) > before:
-                        raise ValueError("the pending root owes this campaign's holders more; "
-                                         f"reclaim once it activates at height {pending.activates_at:,}")
+                camp = self.reclaim_ready(st, h, campaign_id)
                 message = b"k" + sha256tree(["flpcr-reclaim-v1", d.launcher_id, campaign_id])
                 from ..chain.auth import ByAdmin
                 call = d.reclaim(h, campaign_id, ByAdmin())

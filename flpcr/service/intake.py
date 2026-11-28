@@ -27,7 +27,8 @@ Quote request (JSON):
      "kind": "LP_HOLD" | "NFT_HOLD" | "CAT_HOLD",
      "target": pool launcher id | DID ("did:chia:1..." or hex) | "col1..." | CAT asset id,
      "collection": {"did": "did:chia:1..." | hex, "id": metadata collection id}, (NFT_HOLD by col1)
-     "claim_window": blocks (optional; default 7 days; the router's floor is RouterRules.min_claim_window),
+     "claim_window": blocks (optional; default the router's RouterRules.min_claim_window, 48 h;
+                     at most RouterRules.max_claim_window, 30 days),
      "excluded": [address, ...] (at most 16),
      "reward_asset": hex (optional; must be the distributor's),
      "nonce": int (optional)}
@@ -276,9 +277,10 @@ class CampaignIntake:
         if not cfg.min_campaign_length <= length <= cfg.max_campaign_length:
             raise ValueError(f"length must be {cfg.min_campaign_length} to {cfg.max_campaign_length} blocks")
         window = _int(body, "claim_window")
-        window = max(cfg.min_claim_window, self.rules.min_claim_window, 7 * BLOCKS_PER_DAY) if window is None else window
-        if not cfg.min_claim_window <= window <= cfg.max_campaign_length:
-            raise ValueError(f"claim_window must be {cfg.min_claim_window} to {cfg.max_campaign_length} blocks")
+        window = max(cfg.min_claim_window, self.rules.min_claim_window) if window is None else window
+        top = min(cfg.max_campaign_length, self.rules.max_claim_window)
+        if not cfg.min_claim_window <= window <= top:
+            raise ValueError(f"claim_window must be {cfg.min_claim_window} to {top} blocks")
         excluded = body.get("excluded") or []
         if not isinstance(excluded, list) or len(excluded) > MAX_EXCLUDED:
             raise ValueError(f"excluded is a list of at most {MAX_EXCLUDED} addresses")
@@ -358,7 +360,8 @@ class CampaignIntake:
         if asset is None:
             asset = self.service.d.cfg.reward_asset
         out = {"reward_asset": asset.hex(), "kinds": sorted(k.name for k in self.rules.kinds),
-               "min_claim_window": self.rules.min_claim_window, "max_start_lead": self.rules.max_start_lead,
+               "min_claim_window": self.rules.min_claim_window, "max_claim_window": self.rules.max_claim_window,
+               "max_start_lead": self.rules.max_start_lead,
                "max_live_per_creator": self.rules.max_live_per_creator,
                "router_ready": self.router_sk is not None, "post_fee": self.rules.post_fee,
                "every": int(getattr(self.service, "every", None) or self.every_default),
