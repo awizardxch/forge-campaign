@@ -10,7 +10,9 @@ it is THIS build with THIS host's keys:
 * it runs the pinned reserve finalizer (audit B2 CP-06), not upstream's;
 * every Config field but the launcher id and the reward asset is the template's: the router,
   guardian, admin and dev fee address, the fee, the clocks, the bounds and the bond;
-* its operator (the state's engine, and any pending rotation) is the host's operator;
+* its operator (the state's engine, and any pending rotation) is one of the host's operator keys:
+  the one new distributors launch under (`operator_ph`) or one it rotated from (`operators`,
+  flpcr.service.keys), and it was born with one of them;
 * its reward asset is the one asked for.
 
 `BuildPin` is that template. The service takes it from its primary distributor (FLPCR_LAUNCHER,
@@ -30,7 +32,7 @@ on a late one is paid out like any other.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 from .distributor import Config
@@ -74,6 +76,9 @@ class BuildPin:
     max_campaigns: int
     dispute_bond: int
     pins: str  # pins_fingerprint() of the compiled build
+    # Every other operator this host holds (flpcr.service.keys, oldest first): a distributor
+    # launched under, or rotated to, any of them is this host's. `operator_ph` launches new ones.
+    operators: Tuple[bytes, ...] = ()
 
     @classmethod
     def from_config(cls, network: str, cfg: Config, operator_ph: bytes, pins: str) -> "BuildPin":
@@ -81,7 +86,7 @@ class BuildPin:
 
     @classmethod
     def template(cls, network: str, *, operator_ph: bytes, router_ph: bytes, guardian_ph: bytes, admin_ph: bytes,
-                 dev_fee_ph: bytes, pins: str, **overrides) -> "BuildPin":
+                 dev_fee_ph: bytes, pins: str, operators: Sequence[bytes] = (), **overrides) -> "BuildPin":
         """The pin of a host that has no distributor yet: these roles, and every other Config field
         at its production default (distributor.Config) unless overridden. A distributor launched
         under it (flpcr.service.launch) is checked against it like any other."""
@@ -90,7 +95,19 @@ class BuildPin:
             raise ValueError(f"not template fields: {sorted(unknown)}")
         cfg = Config(bytes(32), bytes(32), dev_fee_ph=dev_fee_ph, admin_ph=admin_ph, guardian_ph=guardian_ph,
                      router_ph=router_ph, **overrides)  # Config validates the clocks and bounds
-        return cls.from_config(network, cfg, operator_ph, pins)
+        pin = cls.from_config(network, cfg, operator_ph, pins)
+        others = tuple(dict.fromkeys(bytes(x) for x in operators if bytes(x) != operator_ph))
+        return replace(pin, operators=others) if others else pin
+
+    @property
+    def accepted_operators(self) -> List[bytes]:
+        """Every operator a distributor of this host may answer to: the launching one first."""
+        return [self.operator_ph, *[x for x in self.operators if x != self.operator_ph]]
+
+    @property
+    def hints(self) -> List[bytes]:
+        """The hint of every operator this host launched under (`hint` first)."""
+        return [hashlib.sha256(HINT_TAG + self.router_ph + op).digest() for op in self.accepted_operators]
 
     def config_for(self, launcher_id: bytes, reward_asset: bytes) -> Config:
         """The Config a distributor of this build pays `reward_asset` with, launched as `launcher_id`."""
@@ -105,6 +122,7 @@ class BuildPin:
 
     def to_json(self) -> dict:
         out = {k: (v.hex() if isinstance(v, bytes) else v) for k, v in asdict(self).items()}
+        out["operators"] = [x.hex() for x in self.operators]
         out["hint"] = self.hint.hex()
         return out
 
@@ -124,9 +142,10 @@ class BuildPin:
         if cfg.router_ph != self.router_ph:
             raise NotPinned(f"wrong router: {cfg.router_ph.hex()[:12]}…, this host's is {self.router_ph.hex()[:12]}…")
         st = d.chain_state
-        if st.engine_ph != self.operator_ph:
+        held = self.accepted_operators
+        if st.engine_ph not in held:
             raise NotPinned(f"wrong operator: {st.engine_ph.hex()[:12]}…, this host's is {self.operator_ph.hex()[:12]}…")
-        if st.rotation is not None and st.rotation.engine_ph != self.operator_ph:
+        if st.rotation is not None and st.rotation.engine_ph not in held:
             raise NotPinned("wrong operator: a rotation to another operator is pending")
         for name in TEMPLATE_FIELDS:
             if name != "router_ph" and getattr(cfg, name) != getattr(self, name):
@@ -148,7 +167,7 @@ class BuildPin:
             raise NotPinned("not born empty: the distributor's first State is unknown")
         # Byte-exact, as the site checks it (build.ts genesisStateHash): the State a launch of this
         # host or the site builds (driver.Distributor: ChainState.genesis(...).to_value()).
-        if bytes(born) != bytes(sha256tree(ChainState.genesis(self.operator_ph).to_value())):
+        if all(bytes(born) != bytes(sha256tree(ChainState.genesis(op).to_value())) for op in held):
             raise NotPinned("not born empty: it was launched with a State other than the empty genesis")
 
 

@@ -74,8 +74,9 @@ class Fleet:
     network: str
     primary: Optional[bytes]  # None: template mode, with `template` the build pin
     source_for: Callable
-    operator: Optional[OperatorKey] = None
+    operator: Optional[OperatorKey] = None  # the newest: new distributors launch under it
     router_sk: Optional[SecretKey] = None
+    operators: List[OperatorKey] = field(default_factory=list)  # every operator key held (flpcr.service.keys)
     rules: RouterRules = field(default_factory=RouterRules)
     pools: Callable = lambda: {}
     cat_policies: Optional[Callable] = None
@@ -149,7 +150,7 @@ class Fleet:
         if self.service_factory is not None:
             return self.service_factory(launcher_id)
         return CampaignService(self.chain, launcher_id, self.network, self.source_for, operator=self.operator,
-                               every=self.every, manifests_dir=self.manifests_dir, registry=self.registry,
+                               operators=self.operators, every=self.every, manifests_dir=self.manifests_dir, registry=self.registry,
                                puzzles_factory=self.puzzles_factory, on_demand=self.on_demand,
                                root_margin=self.root_margin)
 
@@ -176,7 +177,8 @@ class Fleet:
     def _check_keys(self, pin: BuildPin, what: str) -> None:
         if self.router_sk is not None and pin.router_ph != self.router_ph:
             raise ValueError(f"{what}'s router is not this host's router key")
-        if self.operator is not None and pin.operator_ph != self.operator.puzzle_hash:
+        held = {k.puzzle_hash for k in [self.operator, *self.operators] if k is not None}
+        if held and pin.operator_ph not in held:
             raise ValueError(f"{what}'s operator is not this host's operator key")
 
     def boot(self) -> None:
@@ -234,7 +236,8 @@ class Fleet:
         added = []
         tried = 0
         launcher_hash = Constants.singleton_launcher_hash()
-        for coin in self.chain.hinted(self.pin.hint):
+        hinted = [c for hint in self.pin.hints for c in self.chain.hinted(hint)]
+        for coin in hinted:
             if coin.puzzle_hash != launcher_hash or coin.amount != 1:
                 continue
             lid = coin.coin_id()
@@ -305,6 +308,7 @@ class Fleet:
         return {"network": self.network, "primary": self.primary.hex() if self.primary else None, "peak": peak,
                 "template": self.primary is None, "build": self.pin.to_json() if self.pin else None,
                 "router_ready": self.router_sk is not None, "operator_ready": self.operator is not None,
+                "operators": [k.puzzle_hash.hex() for k in self.operators],
                 "distributors": rows, "refused": {k.hex(): v for k, v in self.rejected.items()}}
 
     # --- the loop -------------------------------------------------------------------------

@@ -285,6 +285,26 @@ class TestBuildPin(unittest.TestCase):
                                                                          chain_state=rotated), config=got.config)
         self.refused("rotation", got=fake)
 
+    def test_an_older_operator_the_host_still_holds_is_accepted(self):
+        """After a rotation the host launches under a new operator; a distributor born under, or
+        still run by, an older key it holds is still its own (flpcr.service.keys)."""
+        old, new = self.fx.op.puzzle_hash, b"\x05" * 32
+        rotated = dataclasses.replace(self.pin, operator_ph=new, operators=(old,))
+        rotated.check(self.got, reward_asset=XCH, pins=pins_fingerprint())
+        self.assertIn(self.pin.hint, rotated.hints, "discovery still finds what the old key launched")
+        self.assertEqual(rotated.hints[0], rotated.hint, "the launching operator's hint first")
+        self.refused("wrong operator", dataclasses.replace(self.pin, operator_ph=new))
+
+    def test_a_pending_rotation_to_a_held_key_is_accepted(self):
+        got, new = self.got, b"\x05" * 32
+        state = got.distributor.chain_state
+        rotated = dataclasses.replace(state, rotation=types.SimpleNamespace(engine_ph=new, effective_at=0))
+        fake = types.SimpleNamespace(distributor=types.SimpleNamespace(finalizer_kind=got.distributor.finalizer_kind,
+                                                                         chain_state=rotated), config=got.config,
+                                     initial_state_hash=got.initial_state_hash)
+        dataclasses.replace(self.pin, operators=(new,)).check(fake)
+        self.refused("rotation", got=fake)
+
     def test_the_canonical_order(self):
         a, b, c = b"\x0a" * 32, b"\x0b" * 32, b"\x0c" * 32
         self.assertEqual(canonical_order([(b, 7), (c, 5), (a, 7)]), [c, a, b])
@@ -316,6 +336,14 @@ class TestDiscovery(unittest.TestCase):
         self.assertEqual(fx.fleet.canonical(XCH), fx.w.launcher_id)
         self.assertEqual(fx.fleet.gate(good), fx.w.launcher_id)
 
+
+    def test_discovery_still_finds_what_an_older_operator_launched(self):
+        """After `keys new-operator` the host launches under the new key, and still finds and hosts
+        the distributors its older keys launched (their hint names the older key)."""
+        fx = self.fx
+        old_launch = raw_launch(fx)
+        fx.fleet.pin = dataclasses.replace(fx.fleet.pin, operator_ph=b"" * 32, operators=(fx.op.puzzle_hash,))
+        self.assertEqual(fx.fleet.discover_new(), [old_launch])
 
     def test_a_distributor_not_born_empty_is_refused_and_never_canonical(self):
         """F-B1 (2026-11-14 conformance review, part B): the launch chooses the eve's State, so a
