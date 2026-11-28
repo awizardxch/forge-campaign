@@ -180,7 +180,8 @@ class ServiceState:
 class CampaignService:
     def __init__(self, chain, launcher_id: bytes, network: str, source_for: Callable[[Sequence[Campaign]], object],
                  operator: Optional[OperatorKey] = None, every: int = 180, puzzles_factory=None,
-                 manifests_dir: Optional[pathlib.Path] = None, registry=None, on_demand: bool = False):
+                 manifests_dir: Optional[pathlib.Path] = None, registry=None, on_demand: bool = False,
+                 root_margin: int = 0):
         self.chain = chain
         self.launcher_id = launcher_id
         self.network = network
@@ -195,6 +196,11 @@ class CampaignService:
         # only that it start where the last ended and end by now), so nothing is lost by waiting.
         self.on_demand = on_demand
         self.root_requested = False
+        # A root ends this many blocks behind the tip (owner, 2026-11-28: "add the 32 block
+        # margin"). Its freshest blocks are the ones a node or an indexer may not have settled yet
+        # (a transfer coinset has not indexed, a block reorganized away); left out, they go into
+        # the next root, and a campaign's final root goes up `root_margin` blocks after it ends.
+        self.root_margin = max(0, int(root_margin))
         self.puzzles_factory = puzzles_factory or (lambda: Puzzles(Clvm()))
         # Two locks (2026-11-10: reads stalled for minutes while a batch waited to confirm):
         # `write_lock` lets one builder at a time (operator, sequencer, create intake, follow,
@@ -664,13 +670,14 @@ class CampaignService:
         if self.s.mismatch:
             return None  # never post on top of a root the engine cannot rebuild
         last_end = self.s.engine.height if self.s.engine.height is not None else min(c.start for c in live)
-        end = min(h, max(c.end for c in live))
-        if end <= last_end or h <= min(c.start for c in live):
+        settled = h - self.root_margin  # the newest block a root may cover
+        end = min(settled, max(c.end for c in live))
+        if end <= last_end or settled <= min(c.start for c in live):
             return None
         if self.on_demand:
             # A campaign that ended since the last root gets its final root; a request waits until
             # the stretch is `every` blocks long, so asking again and again posts no more often.
-            if any(last_end < c.end <= h for c in live):
+            if any(last_end < c.end <= settled for c in live):
                 return end
             if self.root_requested and end - last_end >= self.every:
                 return end
@@ -694,7 +701,7 @@ class CampaignService:
             return {"on_demand": True, "requested": False, "why": "no campaign has accrued anything to post yet"}
         self.root_requested = True
         start = last_end if last_end is not None else min(c.start for c in live)
-        posts_at = max(h, start + self.every)
+        posts_at = max(h, start + self.every + self.root_margin)
         return {"on_demand": True, "requested": True, "posts_at": posts_at,
                 "claimable_from": posts_at + self.d.cfg.dispute_blocks,
                 "dispute_blocks": self.d.cfg.dispute_blocks, "every": self.every}

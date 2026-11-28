@@ -93,6 +93,7 @@ class Fleet:
     watcher_factory: Optional[Callable] = None  # (launcher_id) -> a Watcher for each hosted one
     mempool_fill: Optional[Callable] = None  # () -> the mempool's fill 0..1 (intake.forge_mempool_fill), or None
     on_demand: bool = False  # roots when a holder asks and when a campaign ends, not on a clock
+    root_margin: int = 0  # a root ends this many blocks behind the tip (main: FLPCR_ROOT_MARGIN, 32)
 
     def __post_init__(self) -> None:
         self.hosted: Dict[bytes, Hosted] = {}
@@ -149,7 +150,8 @@ class Fleet:
             return self.service_factory(launcher_id)
         return CampaignService(self.chain, launcher_id, self.network, self.source_for, operator=self.operator,
                                every=self.every, manifests_dir=self.manifests_dir, registry=self.registry,
-                               puzzles_factory=self.puzzles_factory, on_demand=self.on_demand)
+                               puzzles_factory=self.puzzles_factory, on_demand=self.on_demand,
+                               root_margin=self.root_margin)
 
     def _host(self, launcher_id: bytes, service: CampaignService) -> Hosted:
         d = service.d

@@ -45,6 +45,29 @@ class TestOnDemandRoots(ServiceTest):
         self.assertEqual(posted["end"], self.c.end)
 
 
+class TestRootMargin(ServiceTest):
+    """A root ends `root_margin` blocks behind the tip (owner, 2026-11-28): the freshest blocks wait
+    for the next root, and a campaign's final root goes up that many blocks after it ends."""
+
+    def test_a_root_ends_behind_the_tip(self):
+        svc, w = self.service(every=10, root_margin=5), self.w
+        w.advance_to(self.c.start + 12)
+        self.assertIsNone(svc.operator_step(wait=5, poll=0), "12 blocks in, only 7 are settled: under `every`")
+        w.advance_to(self.c.start + 16)
+        posted = svc.operator_step(wait=5, poll=0)
+        self.assertIsNotNone(posted)
+        self.assertEqual(posted["end"], self.c.start + 16 - 5, "the root stops 5 blocks short of the tip")
+
+    def test_the_final_root_waits_for_the_margin(self):
+        svc, w = self.service(every=1000, root_margin=5), self.w
+        w.advance_to(self.c.end + 2)
+        self.assertIsNone(svc.operator_step(wait=5, poll=0), "2 blocks after the end: its last blocks are not settled")
+        w.advance_to(self.c.end + 5)
+        posted = svc.operator_step(wait=5, poll=0)
+        self.assertIsNotNone(posted, "5 blocks after the end: the final root")
+        self.assertEqual(posted["end"], self.c.end)
+
+
 class TestScheduledRoots(ServiceTest):
     def test_scheduled_is_the_default_and_ignores_requests(self):
         svc, w = self.service(every=10), self.w
