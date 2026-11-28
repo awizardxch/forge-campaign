@@ -181,12 +181,17 @@ class CampaignService:
     def __init__(self, chain, launcher_id: bytes, network: str, source_for: Callable[[Sequence[Campaign]], object],
                  operator: Optional[OperatorKey] = None, every: int = 180, puzzles_factory=None,
                  manifests_dir: Optional[pathlib.Path] = None, registry=None, on_demand: bool = False,
-                 root_margin: int = 0):
+                 root_margin: int = 0, operators: Sequence[OperatorKey] = ()):
         self.chain = chain
         self.launcher_id = launcher_id
         self.network = network
         self.source_for = source_for
-        self.operator = operator
+        # Every operator key this host holds (flpcr.service.keys: the newest and each one rotated
+        # from). A root is signed with the key the distributor's engine names at that height, so a
+        # guardian rotation to another held key carries on without a restart.
+        held = [k for k in [*operators, operator] if k is not None]
+        self.operators: Dict[bytes, OperatorKey] = {k.puzzle_hash: k for k in held}
+        self.operator = operator or (held[0] if held else None)
         self.every = every
         # Roots on demand (owner, 2026-11-28: "build roots on demand as a user who clicks claim is
         # actually claiming old confirmed rewards after the dispute window"; "we still want
@@ -210,7 +215,7 @@ class CampaignService:
         self.write_lock = threading.RLock()
         self.lock = threading.RLock()
         self.s: Optional[ServiceState] = None
-        self.signer = KeySigner.for_network([operator.secret] if operator else [], network)
+        self.signer = KeySigner.for_network([k.secret for k in self.operators.values()], network)
         self.lease = SingletonLease()  # held by a create the intake has quoted (flpcr.service.lease)
         self._reclaims = None  # the creator's reclaim desk (flpcr.service.reclaim), made on first use
         self.manifests_dir = pathlib.Path(manifests_dir) if manifests_dir else None  # <hash>.json per posted root
@@ -523,7 +528,7 @@ class CampaignService:
                 "dispute": st.dispute and {"root_id": st.dispute.root_id, "disputer": st.dispute.disputer_ph.hex()},
                 "rotation": st.rotation and {"engine_ph": st.rotation.engine_ph.hex(), "effective_at": st.rotation.effective_at},
                 "proofs_through_root": max(self.s.roots, default=0), "proof_gap": self.s.mismatch,
-                "operator": self.operator.puzzle_hash.hex() if self.operator else None,
+                "operator": (self.operators.get(d.engine_at(h)) or self.operator).puzzle_hash.hex() if self.operator else None,
                 "roots": "on-demand" if self.on_demand else "scheduled", "root_requested": self.root_requested,
             }
 
@@ -708,7 +713,7 @@ class CampaignService:
 
     def operator_step(self, wait: float = 1800, poll: float = 15) -> Optional[dict]:
         """Post a root if one is due. Returns what was posted, or None."""
-        if self.operator is None:
+        if not self.operators:
             return None
         with self.write_lock:
             if self.lease.busy():  # a quoted create holds the singleton's next generation
@@ -719,7 +724,8 @@ class CampaignService:
             if end is None:
                 return None
             d = self.d
-            if d.engine_at(h) != self.operator.puzzle_hash:
+            op = self.operators.get(d.engine_at(h))
+            if op is None:
                 raise RuntimeError("the service's operator key is not this distributor's engine")
             live = [self.s.campaigns[c.id] for c in d.chain_state.campaigns if c.id in self.s.campaigns]
             engine, root = run_epoch(self.s.engine, live, self.source_for(live), end)
@@ -731,11 +737,11 @@ class CampaignService:
                 publish_manifest(self.manifests_dir, root)
             prepared = d.prepare([d.post_root(h, root.root_id, root.start, root.end, root.root, totals,
                                               manifest_hash=mh)])
-            own = self._message_spends(prepared, d.coin.coin_id())
+            own = self._message_spends(prepared, d.coin.coin_id(), op=op)
             spends = list(prepared.spends) + own
             fee = max(MIN_FEE, FEE_PER_COST * d.spend_cost(spends))
             if fee > MIN_FEE:  # rebuild the operator's spend with the fee the bundle's cost needs
-                own = self._message_spends(prepared, d.coin.coin_id(), fee)
+                own = self._message_spends(prepared, d.coin.coin_id(), fee, op=op)
                 spends = list(prepared.spends) + own
             successor = d.successor_coin(prepared)
             self.chain.push(spends, self.signer.sign(own))
@@ -753,22 +759,38 @@ class CampaignService:
                 self.s.log.append(entry)
             return entry
 
-    def _message_spends(self, prepared, coin_id: bytes, fee: int = MIN_FEE) -> list:
-        """The operator's coin spend carrying every message the leaves need from it, and the fee."""
+    def _message_spends(self, prepared, coin_id: bytes, fee: int = MIN_FEE, op: Optional[OperatorKey] = None) -> list:
+        """The operator's coin spend carrying every message the leaves need from it, and the fee.
+
+        After a rotation the new engine's address starts empty while creators' prepaid post fees
+        sit at the old one. With no coin of its own, a coin of another held operator key moves
+        whole to the engine's address in this same bundle, and that new coin carries the messages."""
+        from ..chain.values import to_program
+
         clvm = Clvm()
-        op = self.operator.puzzle_hash
+        key = op or self.operator
+        op = key.puzzle_hash
         coins = sorted((c for c in self.chain.unspent_at([op]) if c.amount >= fee + 1), key=lambda c: c.amount)
-        if not coins:
-            raise RuntimeError(f"the operator address holds no coin of at least {fee + 1:,} mojos; fund it")
-        coin = coins[0]
+        if coins:
+            coin = coins[0]
+        else:
+            others = [k for ph, k in self.operators.items() if ph != op]
+            by_ph = {k.puzzle_hash: k for k in others}
+            found = sorted((c for c in (self.chain.unspent_at(list(by_ph)) if by_ph else []) if c.amount >= fee + 1),
+                           key=lambda c: c.amount)
+            if not found:
+                raise RuntimeError(f"the operator address holds no coin of at least {fee + 1:,} mojos; fund it")
+            src = found[0]
+            clvm.spend_standard_coin(src, by_ph[src.puzzle_hash].public_key,
+                                     clvm.delegated_spend([to_program(clvm, [51, op, src.amount, [op]])]))
+            coin = Coin(src.coin_id(), op, src.amount)
         conds = []
         for m in prepared.messages:
             if m.sender != op:
                 raise RuntimeError("a leaf asks for a message the operator cannot send")
             conds.append([66, m.mode, m.message] + ([] if m.mode == 16 else [coin_id]))
         conds += [[51, op, coin.amount - fee, [op]], [52, fee]]
-        from ..chain.values import to_program
-        clvm.spend_standard_coin(coin, self.operator.public_key, clvm.delegated_spend([to_program(clvm, c) for c in conds]))
+        clvm.spend_standard_coin(coin, key.public_key, clvm.delegated_spend([to_program(clvm, c) for c in conds]))
         return list(clvm.coin_spends())
 
     def _wait(self, coin_id: bytes, wait: float, poll: float) -> int:

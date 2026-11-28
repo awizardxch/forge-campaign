@@ -22,6 +22,10 @@ Environment (the host's service variables):
     FLPCR_FORGE_API      Forge router for pool -> LP asset ids, and for each CAT reward's terms
                          (/api/campaign-assets: the operator's switch and minimum, the Forge price
                          the $1 floor is set from) (default: the network's router)
+    FLPCR_KEY_FILE       the host's own keys (flpcr.service.keys): made on the first start and
+                         kept there (mainnet: /app/data/keys/mainnet.json, in the service's
+                         volume). Holds the router key and every operator key, so the guardian can
+                         rotate the operator. Not with FLPCR_OPERATOR_SK / FLPCR_ROUTER_SK.
     FLPCR_OPERATOR_SK    the operator's synthetic secret key, hex. Unset: the service serves
                          reads and claims but posts no roots.
     FLPCR_ROUTER_SK      the router's synthetic secret key, hex: a second key, separate from the
@@ -92,6 +96,7 @@ from ..model import Kind
 from .chain import NodeChain
 from .core import OperatorKey
 from .fleet import Fleet
+from .keys import from_env as keys_from_env
 from .http import serve
 from .intake import forge_mempool_fill, cached, forge_cat_policies, forge_pool_infos, router_create_gate
 from ..registry import Registry
@@ -150,7 +155,7 @@ def rules_from_env(text: str, post_fee: str = "") -> RouterRules:
     return RouterRules(**given)
 
 
-def template_from_env(network: str, env, operator, router_sk) -> BuildPin:
+def template_from_env(network: str, env, operator, router_sk, operators=()) -> BuildPin:
     """Template mode's build pin: the guardian (FLPCR_GUARDIAN_ADDRESS), the admin and dev fee
     address (flpcr.networks), this host's operator and router keys, production Config defaults."""
     if operator is None or router_sk is None:
@@ -164,6 +169,7 @@ def template_from_env(network: str, env, operator, router_sk) -> BuildPin:
                              router_ph=standard_puzzle_hash(router_sk.public_key()),
                              guardian_ph=decode(guardian, network), admin_ph=roles.admin_ph,
                              dev_fee_ph=roles.dev_fee_ph, pins=pins_fingerprint(),
+                             operators=[k.puzzle_hash for k in operators],
                              **(MAINNET_TEMPLATE if network == "mainnet" else {}))
 
 
@@ -177,8 +183,14 @@ def main() -> int:
         return 2
     node = env.get("FLPCR_NODE_URL", "").strip() or NODES[network]
     api = env.get("FLPCR_FORGE_API", "").strip() or ROUTERS[network]
+    try:
+        ring = keys_from_env(env, network)
+    except (ValueError, OSError) as e:
+        print(f"keys: {e}", file=sys.stderr)
+        return 2
     sk_hex = env.get("FLPCR_OPERATOR_SK", "").strip().removeprefix("0x")
-    operator = OperatorKey(SecretKey.from_bytes(bytes.fromhex(sk_hex))) if sk_hex else None
+    operator = ring.operator if ring else (OperatorKey(SecretKey.from_bytes(bytes.fromhex(sk_hex))) if sk_hex else None)
+    operators = ring.all_operators if ring else []
     every = int(env.get("FLPCR_EVERY", "180"))
     loop_seconds = int(env.get("FLPCR_LOOP_SECONDS", "60"))
     cache = pathlib.Path(env.get("FLPCR_CACHE_DIR", "data"))
@@ -188,18 +200,18 @@ def main() -> int:
     source_for = live_source_factory(network, node, api, cache)
     manifests_dir = cache / "manifests"
     router_hex = env.get("FLPCR_ROUTER_SK", "").strip().removeprefix("0x")
-    router_sk = SecretKey.from_bytes(bytes.fromhex(router_hex)) if router_hex else None
+    router_sk = ring.router if ring else (SecretKey.from_bytes(bytes.fromhex(router_hex)) if router_hex else None)
     more = [bytes.fromhex(x.strip().removeprefix("0x")) for x in env.get("FLPCR_LAUNCHERS", "").split(",")
             if len(x.strip().removeprefix("0x")) == 64]
     template = None
     if not launcher:
         try:
-            template = template_from_env(network, env, operator, router_sk)
+            template = template_from_env(network, env, operator, router_sk, operators)
         except ValueError as e:
             print(f"template mode: {e}", file=sys.stderr)
             return 2
     fleet = Fleet(chain, network, bytes.fromhex(launcher) if launcher else None, source_for, operator=operator,
-                  router_sk=router_sk, template=template,
+                  operators=operators, router_sk=router_sk, template=template,
                   rules=rules_from_env(env.get("FLPCR_ROUTER_RULES", ""), env.get("FLPCR_POST_FEE", "")), pools=cached(lambda: forge_pool_infos(api)),
                   cat_policies=cached(lambda: forge_cat_policies(api), 120), every=every, manifests_dir=manifests_dir,
                   mempool_fill=cached(lambda: forge_mempool_fill(api), 20),
